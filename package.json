@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "node --test dist/**/*.test.js",
+    "test": "node scripts/run-tests.mjs",
     "security:check": "node scripts/check-secrets.mjs --all",
     "gate1:verify": "node scripts/run_gate1_tests.mjs",
     "gate2:verify": "node scripts/run_gate2_tests.mjs",

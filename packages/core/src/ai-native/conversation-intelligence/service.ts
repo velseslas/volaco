@@ -11,6 +11,7 @@ import type { ApplicationUnderstandingService } from '../application-understandi
 import type { ImpactIntelligenceService } from '../impact-intelligence/service.js';
 import type { MutationOrchestratorService } from '../mutation-orchestrator/service.js';
 import { ConversationSessionLruCache } from './cache.js';
+import { dataFilePath, readJsonFile, writeJsonFileSync } from '../../persistence/json-disk-cache.js';
 import { deepFreeze } from './engine/canonical.js';
 import { ConversationAssumptionEngine } from './engine/assumption-engine.js';
 import { ClarificationEngine } from './engine/clarification-engine.js';
@@ -62,6 +63,31 @@ export class ConversationIntelligenceService {
   private readonly engine: ConversationEngine;
 
   private totalTurnsProcessed = 0;
+  // ÉTAPE 3 — sessions DURABLES : les sessions vivent dans la LRU cache mais
+  // sont aussi persistées (SQLite via json-disk-cache). Une session évincée
+  // de la LRU ou un redémarrage du serveur ne perd plus la conversation —
+  // l'auto-réparation côté Studio devient un simple filet.
+  private readonly durableSessionsFile = dataFilePath('conversation-sessions');
+  private durableSessions: Record<string, ConversationSession> = {};
+  private durableSessionsLoaded = false;
+
+  private loadDurableSessions(): void {
+    if (this.durableSessionsLoaded) return;
+    const loaded = readJsonFile<Record<string, ConversationSession>>(this.durableSessionsFile, {});
+    this.durableSessions = (loaded && typeof loaded === 'object') ? loaded : {};
+    this.durableSessionsLoaded = true;
+  }
+
+  private persistSession(session: ConversationSession): void {
+    this.loadDurableSessions();
+    const key = ConversationSessionLruCache.buildKey(session.tenantId, session.projectId, session.sessionId);
+    this.durableSessions[key] = session;
+    try {
+      writeJsonFileSync(this.durableSessionsFile, this.durableSessions);
+    } catch {
+      // La persistance ne doit jamais faire échouer le traitement
+    }
+  }
 
   constructor(
     private readonly understandingService?: ApplicationUnderstandingService | undefined,
@@ -147,6 +173,7 @@ export class ConversationIntelligenceService {
 
     const cacheKey = ConversationSessionLruCache.buildKey(tenantId, projectId, sessionId);
     this.cache.set(cacheKey, session);
+    this.persistSession(session);
 
     auditStore.record({
       tenantId,
@@ -172,7 +199,17 @@ export class ConversationIntelligenceService {
     assertPermission(userRole, 'PROJECT_READ', requestId);
 
     const cacheKey = ConversationSessionLruCache.buildKey(tenantId.trim(), projectId.trim(), sessionId.trim());
-    return this.cache.get(cacheKey);
+    const cached = this.cache.get(cacheKey);
+    if (cached) return cached;
+    // ÉTAPE 3 — cache miss (éviction LRU ou redémarrage) -> rechargement
+    // depuis la persistance durable
+    this.loadDurableSessions();
+    const durable = this.durableSessions[cacheKey];
+    if (durable) {
+      this.cache.set(cacheKey, durable);
+      return durable;
+    }
+    return undefined;
   }
 
   public async processTurn(
@@ -215,6 +252,7 @@ export class ConversationIntelligenceService {
 
     const cacheKey = ConversationSessionLruCache.buildKey(tenantId.trim(), projectId.trim(), sessionId.trim());
     this.cache.set(cacheKey, updatedSession);
+    this.persistSession(updatedSession);
 
     this.traceCollector.recordTrace(turn.trace);
     this.totalTurnsProcessed++;
@@ -281,6 +319,7 @@ export class ConversationIntelligenceService {
 
     const cacheKey = ConversationSessionLruCache.buildKey(params.tenantId.trim(), params.projectId.trim(), params.sessionId.trim());
     this.cache.set(cacheKey, updatedSession);
+    this.persistSession(updatedSession);
 
     auditStore.record({
       tenantId: params.tenantId,
@@ -337,6 +376,7 @@ export class ConversationIntelligenceService {
 
     const cacheKey = ConversationSessionLruCache.buildKey(params.tenantId.trim(), params.projectId.trim(), params.sessionId.trim());
     this.cache.set(cacheKey, updatedSession);
+    this.persistSession(updatedSession);
 
     return { session: updatedSession, executionResult };
   }
@@ -388,6 +428,7 @@ export class ConversationIntelligenceService {
 
     const cacheKey = ConversationSessionLruCache.buildKey(params.tenantId.trim(), params.projectId.trim(), params.sessionId.trim());
     this.cache.set(cacheKey, updatedSession);
+    this.persistSession(updatedSession);
 
     auditStore.record({
       tenantId: params.tenantId,
@@ -436,6 +477,7 @@ export class ConversationIntelligenceService {
 
     const cacheKey = ConversationSessionLruCache.buildKey(params.tenantId.trim(), params.projectId.trim(), params.sessionId.trim());
     this.cache.set(cacheKey, updatedSession);
+    this.persistSession(updatedSession);
 
     return updatedSession;
   }

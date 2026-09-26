@@ -5,7 +5,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readJsonFile, writeJsonFileSync } from '../src/persistence/json-disk-cache.js';
 
-describe('PERS-001 : Persistance JSON sur disque (Unit Tests)', () => {
+// Ce fichier teste le BACKEND FICHIERS (hérité, VOLACO_PERSISTENCE=json) :
+// depuis l'étape 3, le backend par défaut de json-disk-cache est SQLite.
+process.env.VOLACO_PERSISTENCE = 'json';
+
+describe('PERS-001 : Persistance fichiers JSON — backend hérité (VOLACO_PERSISTENCE=json)', () => {
   const tmpDir = mkdtempSync(join(tmpdir(), 'volaco-persist-test-'));
 
   after(() => {

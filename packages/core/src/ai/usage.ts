@@ -1,4 +1,5 @@
 ﻿import { randomUUID } from 'node:crypto';
+import { dataFilePath, readJsonFile, writeJsonFileSync } from '../persistence/json-disk-cache.js';
 
 export interface ModelPricing {
   promptCostPerMillion: number;
@@ -35,6 +36,24 @@ export interface UsageSummary {
 
 export class AiUsageTracker {
   private records: AiUsageRecord[] = [];
+  // ÉTAPE 3 — les coûts IA sont PERSISTANTS (la mémoire volatile rendait
+  // toute comptabilité impossible à travers un redémarrage).
+  private readonly filePath = dataFilePath('ai-usage');
+
+  constructor() {
+    const loaded = readJsonFile<AiUsageRecord[]>(this.filePath, []);
+    if (Array.isArray(loaded)) {
+      this.records = loaded.map((r) => ({ ...r, timestamp: new Date(r.timestamp) }));
+    }
+  }
+
+  private persist(): void {
+    try {
+      writeJsonFileSync(this.filePath, this.records.slice(-10_000));
+    } catch {
+      // La comptabilité ne doit jamais faire échouer la requête
+    }
+  }
 
   public calculateCost(model: string, promptTokens: number, completionTokens: number): number {
     const pricing = MODEL_PRICING[model] || MODEL_PRICING['default']!;
@@ -66,6 +85,7 @@ export class AiUsageTracker {
     };
 
     this.records.push(record);
+    this.persist();
     return record;
   }
 
@@ -96,6 +116,7 @@ export class AiUsageTracker {
 
   public clear(): void {
     this.records = [];
+    this.persist();
   }
 }
 
