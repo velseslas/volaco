@@ -469,6 +469,12 @@ export async function handleConversationRoutes(
     let currentSectionHtml = '';
     let currentSectionText = '';
     let sectionIndex = 0;
+    // === ACCUMULATEUR DE SECTIONS CÔTÉ SERVEUR ===
+    // Pour pouvoir sauvegarder le HTML final dans fileStore à la fin du stream,
+    // le serveur doit accumuler les sections au fur et à mesure qu'elles arrivent.
+    // Sinon, la prochaine demande de modification ne trouvera pas de HTML existant
+    // et l'IA repassera en mode création (recréera tout le site).
+    const serverSections: Array<{ name: string; mode: string; after: string; html: string }> = [];
     try {
       // @ts-expect-error — generateStream existe sur MistralProviderAdapter
       const stream = adapter.generateStream(
@@ -503,8 +509,8 @@ export async function handleConversationRoutes(
           }
           inSection = true;
           currentSectionName = openMatch[1] || '';
-          currentSectionMode = openMatch[2] || 'create'; // 'create' par défaut, peut être 'modify', 'add', 'delete'
-          currentSectionAfter = openMatch[3] || ''; // pour mode="add" : nom de la section précédente
+          currentSectionMode = openMatch[2] || 'create';
+          currentSectionAfter = openMatch[3] || '';
           currentSectionHtml = '';
           currentSectionText = '';
           sectionIndex++;
@@ -548,6 +554,14 @@ export async function handleConversationRoutes(
               html: currentSectionHtml
             });
 
+            // === ACCUMULE LA SECTION CÔTÉ SERVEUR pour sauvegarde finale ===
+            serverSections.push({
+              name: currentSectionName,
+              mode: currentSectionMode,
+              after: currentSectionAfter,
+              html: currentSectionHtml
+            });
+
             // Reset pour la prochaine section
             inSection = false;
             currentSectionName = '';
@@ -560,8 +574,6 @@ export async function handleConversationRoutes(
           }
 
           // Pendant la section : envoie juste le chat text qui précède les tags HTML
-          // (mais on ne peut pas savoir à l'avance où commence le HTML, donc on attend
-          // la fin de section pour envoyer le HTML complet)
           sendSSE({ type: 'token', token: chunk });
         } else {
           // Hors section : texte conversationnel normal
@@ -577,14 +589,103 @@ export async function handleConversationRoutes(
         }
       }
 
-      // Assemble le HTML final à partir de toutes les sections reçues
-      const fullSectionMatches = [...fullText.matchAll(/<SECTION\s+name=["']([^"']+)["']\s*>([\s\S]*?)<\/SECTION>/g)];
-      // Note: fullText a été modifié pendant le stream, on doit reconstituer
-      // Pour simplifier, le Studio assemble les sections au fur et à mesure
+      // === ASSEMBLE LE HTML FINAL ET SAUVEGARDE DANS FILESTORE ===
+      // Pour que la prochaine demande de modification trouve un HTML existant.
+      let assembledHtml = '';
+
+      if (isModificationMode && currentHtml) {
+        // Mode modification : on part du HTML existant et on applique les modifications
+        // Détecte les sections existantes dans le HTML actuel via les data-section
+        // ou par les IDs des balises <section>, <header>, <footer>, etc.
+        // Pour simplifier, on parse les balises principales.
+
+        // Pour chaque section modifiée par l'IA, on remplace dans le HTML existant
+        let modifiedHtml = currentHtml;
+        for (const sec of serverSections) {
+          if (sec.mode === 'delete') {
+            // Supprime la section existante avec cet attribut data-section
+            const deleteRegex = new RegExp(`<div[^>]*data-section="${sec.name}"[^>]*>[\\s\\S]*?(?=<div[^>]*data-section|<\\/body>|$)`, 'g');
+            modifiedHtml = modifiedHtml.replace(deleteRegex, '');
+            // Ou supprime par ID de section
+            const idRegex = new RegExp(`<section[^>]*id="${sec.name}"[^>]*>[\\s\\S]*?<\\/section>`, 'g');
+            modifiedHtml = modifiedHtml.replace(idRegex, '');
+            // Ou supprime par balise (header, footer, etc.)
+            if (sec.name === 'header' || sec.name === 'footer' || sec.name === 'nav') {
+              const tagRegex = new RegExp(`<${sec.name}[\\s\\S]*?<\\/${sec.name}>`, 'g');
+              modifiedHtml = modifiedHtml.replace(tagRegex, '');
+            }
+          } else if (sec.mode === 'modify' && sec.html) {
+            // Remplace la section existante par la nouvelle version
+            // IMPORTANT : sec.html peut déjà contenir un wrapper <div data-section="...">
+            // si le LLM l'a inclus (cf system prompt example). On ne re-wrappe PAS.
+            const cleanHtml = sec.html.replace(/^<div[^>]*data-section="[^"]*"[^>]*>([\s\S]*)<\/div>$/, '$1').trim();
+            // Tente par data-section d'abord (notre format stitchReveal)
+            const dataAttrRegex = new RegExp(`<div[^>]*data-section="${sec.name}"[^>]*>[\\s\\S]*?(?=<div[^>]*data-section|<\\/body>|$)`, 'g');
+            const before = modifiedHtml;
+            modifiedHtml = modifiedHtml.replace(dataAttrRegex, `<div data-section="${sec.name}">${cleanHtml}</div>`);
+            // Si pas de remplacement, tente par ID de section
+            if (modifiedHtml === before) {
+              const idRegex = new RegExp(`<section[^>]*id="${sec.name}"[^>]*>[\\s\\S]*?<\\/section>`, 'g');
+              const before2 = modifiedHtml;
+              modifiedHtml = modifiedHtml.replace(idRegex, sec.html);
+              // Si toujours pas, tente par balise (header, footer, nav)
+              if (modifiedHtml === before2 && (sec.name === 'header' || sec.name === 'footer' || sec.name === 'nav')) {
+                const tagRegex = new RegExp(`<${sec.name}[\\s\\S]*?<\\/${sec.name}>`, 'g');
+                modifiedHtml = modifiedHtml.replace(tagRegex, sec.html);
+              }
+            }
+          } else if (sec.mode === 'add' && sec.html) {
+            // Ajoute après la section 'after'
+            // Nettoie aussi le wrapper si présent
+            const cleanAddHtml = sec.html.replace(/^<div[^>]*data-section="[^"]*"[^>]*>([\s\S]*)<\/div>$/, '$1').trim();
+            const afterRegex = new RegExp(`(<div[^>]*data-section="${sec.after}"[^>]*>[\\s\\S]*?</div>)(\\s*<div[^>]*data-section)`, 'g');
+            const before = modifiedHtml;
+            modifiedHtml = modifiedHtml.replace(afterRegex, `$1\n<div data-section="${sec.name}">${cleanAddHtml}</div>$2`);
+            if (modifiedHtml === before) {
+              // Tente par ID
+              const idAfterRegex = new RegExp(`(<section[^>]*id="${sec.after}"[^>]*>[\\s\\S]*?<\\/section>)`, 'g');
+              modifiedHtml = modifiedHtml.replace(idAfterRegex, `$1\n${sec.html}`);
+            }
+          } else if (sec.mode === 'create' && sec.html) {
+            // En mode modification, une section "create" = ajout à la fin
+            // Nettoie aussi le wrapper si présent
+            const cleanCreateHtml = sec.html.replace(/^<div[^>]*data-section="[^"]*"[^>]*>([\s\S]*)<\/div>$/, '$1').trim();
+            modifiedHtml += `<div data-section="${sec.name}">${cleanCreateHtml}</div>`;
+          }
+        }
+        assembledHtml = modifiedHtml;
+      } else {
+        // Mode création : assemble simplement les sections dans l'ordre
+        for (const sec of serverSections) {
+          if (sec.html) {
+            assembledHtml += `<div data-section="${sec.name}">${sec.html}</div>\n`;
+          }
+        }
+      }
+
+      // Sauvegarde dans fileStore pour que la prochaine demande trouve le HTML
+      if (assembledHtml.trim().length > 100) {
+        try {
+          fileStore.saveFile(context.tenantId, projectId, 'index.html', assembledHtml);
+          logger.info('HTML final sauvegardé dans fileStore après stream', {
+            component: 'conversation-route-stream',
+            tenantId: context.tenantId,
+            projectId,
+            htmlLength: assembledHtml.length,
+            sectionsCount: serverSections.length
+          });
+        } catch (saveErr) {
+          logger.warn('Échec sauvegarde HTML final dans fileStore', {
+            component: 'conversation-route-stream',
+            error: saveErr instanceof Error ? saveErr.message : String(saveErr)
+          });
+        }
+      }
 
       sendSSE({
         type: 'done',
         updated: true,
+        html: assembledHtml,
         thinking: fullText.replace(/<SECTION[^>]*>[\s\S]*?<\/SECTION>/g, '').trim()
       });
     } catch (err) {

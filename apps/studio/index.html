@@ -3024,6 +3024,31 @@
 
         if (loadEl && loadEl.parentElement) loadEl.remove();
 
+        // === CHARGE LE HTML ACTUEL DEPUIS LE SERVEUR (SOURCE DE VÉRITÉ) ===
+        // CRITIQUE : le serveur est la source de vérité pour le HTML. Le assembledHtml
+        // du Studio peut être désynchronisé (après reload, ou avec des skeletons
+        // non retirés, ou avec le format classe vibe-section-stitched qui diffère
+        // du format serveur). On charge TOUJOURS le HTML serveur avant la modification.
+        try {
+          const fileResp = await fetch(`/api/v1/projects/${serverProjectId}/files/content?path=index.html`, {
+            headers: studioApiHeaders()
+          });
+          if (fileResp.ok) {
+            const fileData = await fileResp.json();
+            const serverHtml = fileData?.file?.content || fileData?.content || '';
+            // Si le serveur a un HTML existant (> 200 chars), on l'utilise comme base
+            // Sinon, c'est une première création → assembledHtml reste vide
+            if (serverHtml.length > 200) {
+              assembledHtml = serverHtml;
+              currentAppHtml = buildHtmlDoc(assembledHtml);
+              renderWorkspaceIframe(currentAppHtml);
+              updateEditorContent(currentAppHtml);
+            }
+          }
+        } catch (e) {
+          console.warn('Chargement HTML serveur échoué (ok si première création) :', e.message);
+        }
+
         // Crée un message "agent" vide qu'on va remplir au fur et à mesure
         const msgId = 'stream-msg-' + Date.now();
         const streamHtml = `
@@ -3234,7 +3259,7 @@ ${sectionsHtml}
                 // Ajoute le skeleton dans l'iframe en attendant la vraie section
                 assembledHtml += skeletonHtml;
                 currentAppHtml = buildHtmlDoc(assembledHtml);
-                renderWorkspaceIframe(currentAppHtml);
+                renderWorkspaceIframeDebounced(currentAppHtml);
                 updateEditorContent(currentAppHtml);
               } else if (event.type === 'section_end') {
                 inSection = false;
@@ -3242,29 +3267,32 @@ ${sectionsHtml}
 
                 if (mode === 'delete') {
                   // === MODE DELETE : supprime la section existante ===
-                  const sectionPattern = new RegExp(`<div class="vibe-section-stitched" data-section="${event.name}">[\\s\\S]*?</div>\\s*</div>\\s*</div>`, 'g');
-                  const beforeLen = assembledHtml.length;
-                  assembledHtml = assembledHtml.replace(new RegExp(`<div class="vibe-section-stitched" data-section="${event.name}">[\\s\\S]*?(?=<div class="vibe-section-stitched"|$)`, 'g'), '');
+                  const deleteRegex = new RegExp(`<div class="vibe-section-stitched" data-section="${event.name}">[\\s\\S]*?(?=<div class="vibe-section-stitched"|<\\/body>|$)`, 'g');
+                  assembledHtml = assembledHtml.replace(deleteRegex, '');
                   // Si on a aussi un skeleton en attente pour cette section, le retire
-                  const skeletonPattern = new RegExp(`<div class="vibe-stitch-container">[\\s\\S]*?Construction de ${event.name}[\\s\\S]*?</div>\\s*</div>`, 'g');
+                  const skeletonPattern = /<div class="vibe-stitch-container">[\s\S]*?<\/div>\s*<\/div>\s*/g;
                   assembledHtml = assembledHtml.replace(skeletonPattern, '');
                   if (statusEl) {
                     statusEl.innerHTML = `<span class="text-amber-400">🗑️ Section <strong>${event.name}</strong> supprimée</span>`;
                   }
                 } else if (mode === 'modify') {
                   // === MODE MODIFY : remplace la section existante par la nouvelle version ===
-                  // 1. Retire le skeleton de cette section (s'il existe encore)
-                  const skeletonRegex = new RegExp(`<div class="vibe-stitch-container">[\\s\\S]*?Construction de ${event.name}[\\s\\S]*?</div>\\s*</div>`, 'g');
-                  assembledHtml = assembledHtml.replace(skeletonRegex, '');
+                  // 1. Retire le skeleton de cette section (s'il existe encore) — regex tolérante
+                  const skeletonRemoveRegex = /<div class="vibe-stitch-container">[\s\S]*?<\/div>\s*<\/div>\s*/g;
+                  assembledHtml = assembledHtml.replace(skeletonRemoveRegex, '');
                   // 2. Remplace la section existante par la nouvelle version
                   if (event.html && event.html.length > 0) {
-                    const newSectionHtml = `<div class="vibe-section-stitched" data-section="${event.name}">${event.html}</div>`;
-                    // Cherche la section existante avec ce name et la remplace
-                    const existingRegex = new RegExp(`<div class="vibe-section-stitched" data-section="${event.name}">[\\s\\S]*?(?=<div class="vibe-section-stitched|<\\/body>|$)`, 'g');
-                    if (existingRegex.test(assembledHtml)) {
-                      assembledHtml = assembledHtml.replace(existingRegex, newSectionHtml);
-                    } else {
-                      // La section n'existait pas encore, on l'ajoute à la fin
+                    // IMPORTANT : nettoie le wrapper <div data-section="..."> si le LLM l'a inclus
+                    // Sinon on se retrouve avec un doubling : <div data-section="X"><div data-section="X">...</div></div>
+                    const cleanHtml = event.html.replace(/^<div[^>]*data-section="[^"]*"[^>]*>([\s\S]*)<\/div>$/, '$1').trim();
+                    const newSectionHtml = `<div class="vibe-section-stitched" data-section="${event.name}">${cleanHtml}</div>`;
+                    // Regex FLEXIBLE : matche <div data-section="X"> ET <div class="vibe-section-stitched" data-section="X">
+                    // (le serveur sauve sans la classe, le Studio l'ajoute pour l'animation)
+                    const replaceRegex = new RegExp(`<div[^>]*data-section="${event.name}"[^>]*>[\\s\\S]*?(?=<div[^>]*data-section|<\\/body>|$)`, 'g');
+                    const before = assembledHtml;
+                    assembledHtml = assembledHtml.replace(replaceRegex, newSectionHtml);
+                    // Si rien n'a été remplacé, ajoute à la fin
+                    if (assembledHtml === before) {
                       assembledHtml += newSectionHtml;
                     }
                   }
@@ -3274,13 +3302,14 @@ ${sectionsHtml}
                 } else if (mode === 'add' && event.after) {
                   // === MODE ADD : insère une nouvelle section APRÈS une section existante ===
                   if (event.html && event.html.length > 0) {
-                    const newSectionHtml = `<div class="vibe-section-stitched" data-section="${event.name}">${event.html}</div>`;
-                    // Cherche la section 'after' et insère après elle
-                    const afterRegex = new RegExp(`(<div class="vibe-section-stitched" data-section="${event.after}">[\\s\\S]*?</div>\\s*</div>)`, 'g');
-                    if (afterRegex.test(assembledHtml)) {
-                      assembledHtml = assembledHtml.replace(afterRegex, '$1\n' + newSectionHtml);
-                    } else {
-                      // Section 'after' pas trouvée, ajoute à la fin
+                    // Nettoie aussi le wrapper si présent
+                    const cleanAddHtml = event.html.replace(/^<div[^>]*data-section="[^"]*"[^>]*>([\s\S]*)<\/div>$/, '$1').trim();
+                    const newSectionHtml = `<div class="vibe-section-stitched" data-section="${event.name}">${cleanAddHtml}</div>`;
+                    // Regex flexible pour matcher les deux formats
+                    const afterRegex = new RegExp(`(<div[^>]*data-section="${event.after}"[^>]*>[\\s\\S]*?</div>)(\\s*<div[^>]*data-section)`, 'g');
+                    const before = assembledHtml;
+                    assembledHtml = assembledHtml.replace(afterRegex, `$1\n${newSectionHtml}$2`);
+                    if (assembledHtml === before) {
                       assembledHtml += newSectionHtml;
                     }
                   }
@@ -3288,18 +3317,15 @@ ${sectionsHtml}
                     statusEl.innerHTML = `<span class="text-emerald-400">➕ Section <strong>${event.name}</strong> ajoutée après <strong>${event.after}</strong></span>`;
                   }
                 } else {
-                  // === MODE CREATE (défaut) : ajoute simplement la section (comportement précédent) ===
+                  // === MODE CREATE (défaut) : ajoute simplement la section ===
                   if (event.html && event.html.length > 0) {
+                    // Nettoie aussi le wrapper si présent
+                    const cleanCreateHtml = event.html.replace(/^<div[^>]*data-section="[^"]*"[^>]*>([\s\S]*)<\/div>$/, '$1').trim();
                     // Retire le dernier skeleton ajouté (celui de cette section)
-                    const lastContainerIdx = assembledHtml.lastIndexOf('<div class="vibe-stitch-container">');
-                    if (lastContainerIdx !== -1) {
-                      const containerEndIdx = assembledHtml.indexOf('</div>\n                  </div>', lastContainerIdx);
-                      if (containerEndIdx !== -1) {
-                        assembledHtml = assembledHtml.slice(0, lastContainerIdx) +
-                                      assembledHtml.slice(containerEndIdx + '</div>\n                  </div>'.length);
-                      }
-                    }
-                    const sectionHtml = `<div class="vibe-section-stitched" data-section="${event.name}">${event.html}</div>`;
+                    const skeletonRemoveRegex = /<div class="vibe-stitch-container">[\s\S]*?<\/div>\s*<\/div>\s*/g;
+                    assembledHtml = assembledHtml.replace(skeletonRemoveRegex, '');
+                    // Ajoute la vraie section avec l'animation stitchReveal
+                    const sectionHtml = `<div class="vibe-section-stitched" data-section="${event.name}">${cleanCreateHtml}</div>`;
                     assembledHtml += sectionHtml;
                   }
                   if (statusEl) {
@@ -3309,7 +3335,7 @@ ${sectionsHtml}
 
                 // Met à jour l'iframe avec le HTML assemblé en live
                 currentAppHtml = buildHtmlDoc(assembledHtml);
-                renderWorkspaceIframe(currentAppHtml);
+                renderWorkspaceIframeDebounced(currentAppHtml);
                 updateEditorContent(currentAppHtml);
 
                 if (textEl && event.text) {
@@ -3322,10 +3348,17 @@ ${sectionsHtml}
                   textEl.innerHTML = displayText;
                 }
               } else if (event.type === 'done') {
+                // === SYNCHRONISATION FINALE AVEC LE SERVEUR ===
+                // Le serveur envoie event.html qui est la version assemblée finale
+                // (source de vérité). On l'utilise pour resynchroniser assembledHtml
+                // afinas que la prochaine modification parte sur un HTML valide.
+                if (event.html && event.html.length > 100) {
+                  assembledHtml = event.html;
+                }
                 // Sauvegarde le HTML final
                 if (assembledHtml.length > 100) {
                   currentAppHtml = buildHtmlDoc(assembledHtml);
-                  renderWorkspaceIframe(currentAppHtml);
+                  renderWorkspaceIframeNow(currentAppHtml);
                   updateEditorContent(currentAppHtml);
                   try {
                     const activeProj = userProjects.find(p => p.id === activeProjectId);
@@ -5105,6 +5138,34 @@ npx serve .
           message: `Rendu de l'application actualisé dans l'iframe sandbox (${(htmlCode || '').length} octets)`
         });
       }
+    }
+
+    // === DEBOUNCE — Pendant le streaming, l'iframe re-render à chaque section_start
+    // et section_end. Ça force le navigateur à recharger l'iframe → "saute" visuellement.
+    // Cette version debounce à 250ms pour éviter les re-renders trop fréquents.
+    let _pendingRenderHtml = null;
+    let _renderTimer = null;
+    function renderWorkspaceIframeDebounced(htmlCode) {
+      _pendingRenderHtml = htmlCode;
+      if (_renderTimer) return; // Un render est déjà programmé
+      _renderTimer = setTimeout(() => {
+        _renderTimer = null;
+        if (_pendingRenderHtml !== null) {
+          const html = _pendingRenderHtml;
+          _pendingRenderHtml = null;
+          renderWorkspaceIframe(html);
+        }
+      }, 250);
+    }
+
+    // Force un render immédiat (sans debounce) — pour la fin du stream ou les actions manuelles
+    function renderWorkspaceIframeNow(htmlCode) {
+      if (_renderTimer) {
+        clearTimeout(_renderTimer);
+        _renderTimer = null;
+      }
+      _pendingRenderHtml = null;
+      renderWorkspaceIframe(htmlCode);
     }
 
     function reloadPreviewIframe() {
