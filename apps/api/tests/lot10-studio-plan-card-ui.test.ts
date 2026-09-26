@@ -133,4 +133,23 @@ describe('LOT 10 — Câblage réel de l\'interface Studio', () => {
       'Le mode modification doit travailler sur le document existant (modWorkingDoc)'
     );
   });
+
+  it('8. Explorer, Timeline et Terminal réels (plus de données fictives en dur)', () => {
+    // Explorer : arbre dynamique depuis GET /files (plus d'arbre statique)
+    assert.ok(indexContent.includes('function loadFileTree()'), 'loadFileTree doit être définie');
+    assert.ok(indexContent.includes("fetch(`/api/v1/projects/${pid}/files`"), 'L\'arbre doit venir de GET /files');
+    assert.ok(!indexContent.includes("selectCodeFile('Header.jsx')"), 'L\'arbre statique (Header.jsx) doit avoir disparu');
+    // Timeline : révisions et activité réelles
+    assert.ok(indexContent.includes('async function loadServerHistoryData()'), 'loadServerHistoryData doit être définie');
+    assert.ok(indexContent.includes('/revisions`'), 'Les révisions doivent venir de GET /revisions');
+    assert.ok(indexContent.includes('/activity`'), 'L\'activité doit venir de GET /activity');
+    assert.ok(!indexContent.includes("id: 'rev-001'"), 'Les révisions fictives doivent avoir disparu');
+    assert.ok(!indexContent.includes("id: 'act_1'"), 'Les activités fictives doivent avoir disparu');
+    assert.ok(indexContent.includes('async function executeRollback(revId)'), 'executeRollback doit appeler l\'API serveur');
+    // Terminal : plus de sorties fictives ni d'eval client
+    assert.ok(!indexContent.includes('94 passed (94)'), 'La fausse sortie "94 tests passed" doit avoir disparu');
+    assert.ok(!indexContent.includes('commit 7f3b89a'), 'Les faux commits git doivent avoir disparu');
+    assert.ok(!indexContent.includes('String(eval(expr))'), 'L\'eval arbitraire côté client doit avoir disparu');
+    assert.ok(indexContent.includes('le backend n\'a pas répondu'), 'Le fallback terminal doit être honnête');
+  });
 });
