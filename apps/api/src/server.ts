@@ -179,6 +179,26 @@ function bootstrapConversationEngine(): void {
 }
 
 /**
+ * En-têtes de sécurité de base (CDC Annexe F — Security Baseline), appliqués
+ * à TOUTES les réponses. Additifs et non cassants.
+ *
+ * EXCEPTION DOCUMENTÉE (Annexe F : « toute exception doit être documentée et
+ * limitée ») : la Content-Security-Policy stricte n'est PAS appliquée à la
+ * page Studio tant que le preview utilise un iframe srcdoc — un document
+ * srcdoc hérite de la CSP de son parent, et les applications générées
+ * chargent des CDNs arbitraires (Tailwind, FontAwesome, chart.js…) : une
+ * CSP parente les casserait. La CSP sera introduite à l'étape « fichiers
+ * matérialisés sur disque », quand les previews seront servis comme vrais
+ * documents HTTP avec leur propre CSP. Exception temporaire, tracée ici.
+ */
+function setSecurityHeaders(res: ServerResponse): void {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+}
+
+/**
  * Applique les en-têtes CORS. Si `CORS_ALLOWED_ORIGINS` n'est pas défini (comportement
  * historique), tous les sites sont autorisés (comme avant). Si elle est définie, seuls
  * les sites listés (ou '*' explicite dans la liste) sont acceptés.
@@ -259,6 +279,7 @@ export function createApiServer(configOverride: Partial<AppConfig> = {}) {
 
     res.setHeader('X-Request-Id', requestId);
     setCorsHeaders(req, res, config);
+    setSecurityHeaders(res);
 
     res.on('finish', () => {
       const durationMs = Math.round(performance.now() - startTime);

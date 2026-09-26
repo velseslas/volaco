@@ -1,0 +1,3 @@
+#!/bin/sh
+# Anti-fuite de secrets + garde-fous (ÉTAPE 1 — blindage)
+node scripts/check-secrets.mjs --staged || exit 1

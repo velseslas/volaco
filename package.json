@@ -8,14 +8,14 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "node --test dist/**/*.test.js",
+    "security:check": "node scripts/check-secrets.mjs --all",
     "gate1:verify": "node scripts/run_gate1_tests.mjs",
     "gate2:verify": "node scripts/run_gate2_tests.mjs",
     "start": "node dist/apps/api/src/server.js"
-          },
+  },
   "devDependencies": {
     "@types/node": "^26.4.1",
-    "typescript": "^5.4.5",
-    "vitest": "^1.6.0"
+    "typescript": "^5.4.5"
   },
   "dependencies": {
     "playwright-core": "^1.63.0"
