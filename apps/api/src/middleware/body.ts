@@ -19,11 +19,20 @@ export function readBody(req: IncomingMessage, maxBytes: number = MAX_BODY_BYTES
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
+    let settled = false;
 
     req.on('data', (chunk: Buffer) => {
+      if (settled) return;
       size += chunk.length;
       if (size > maxBytes) {
-        req.destroy();
+        settled = true;
+        // On ne détruit PAS le socket : on retire les handlers, on draine le
+        // reste du corps, puis on laisse la route répondre 413 proprement.
+        // (req.destroy() ici donnerait au client une connexion reset au lieu
+        // du message d'erreur JSON.)
+        req.removeAllListeners('data');
+        req.removeAllListeners('end');
+        req.resume();
         reject(new AppError(
           `Corps de requête trop volumineux (max ${maxBytes} octets)`,
           'PAYLOAD_TOO_LARGE',
@@ -33,7 +42,15 @@ export function readBody(req: IncomingMessage, maxBytes: number = MAX_BODY_BYTES
       }
       chunks.push(chunk);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    req.on('error', (err) => reject(err));
+    req.on('end', () => {
+      if (settled) return;
+      settled = true;
+      resolve(Buffer.concat(chunks).toString('utf8'));
+    });
+    req.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    });
   });
 }

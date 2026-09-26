@@ -1,16 +1,20 @@
 /**
  * Volaco Core - LOT 10 Dedicated Test Suite
- * Validation de la Carte Plan First et de l'Interface Interactive Studio
+ * Validation du câblage réel de l'interface Studio
  *
  * Tests:
- * 1. Présence des boutons canoniques [Confirmer et exécuter], [Modifier le plan] et [Ignorer]
- * 2. Dépliage et soumission du conteneur de modification interactive du plan
- * 3. Écran d'attente informée "Plan First Gate" pour l'aperçu (createPlanFirstGateScreen)
- * 4. Activation visuelle du Conversation Compass (suppression du display:none)
+ * 1. Flux de confirmation de plan câblé au serveur (confirmConversationPlan
+ *    -> /confirm -> /execute -> mise à jour du preview avec le VRAI contenu)
+ * 2. Consommation du stream SSE conversationnel (Accept event-stream,
+ *    getReader, événements section_start/section_end)
+ * 3. Terminal web câblé à la route réelle /terminal/execute
+ * 4. Conversation Compass piloté dynamiquement (setCompassState)
+ * 5. Handlers Features/Feedback câblés (plus de stubs no-op) + tenant unifié
  *
- * L'ancien test 5 (« parité binaire » avec volaco_studio.html) a été retiré :
- * les duplicatas obsolètes du Studio ont été supprimés — apps/studio/index.html
- * est désormais l'unique source de vérité de l'interface.
+ * Les anciens tests 1-4 (boutons « Confirmer et exécuter », planModifyContainer,
+ * createPlanFirstGateScreen, compass non masqué) portaient sur une itération
+ * précédente de l'UI dont ces éléments ont disparu — ils ont été réécrits sur
+ * l'interface actuelle pour redevenir des garde-fous réels.
  */
 
 import { describe, it } from 'node:test';
@@ -18,38 +22,68 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-describe('LOT 10 — Carte Interactive Plan First Studio', () => {
+describe('LOT 10 — Câblage réel de l\'interface Studio', () => {
   const indexPath = join(process.cwd(), 'apps', 'studio', 'index.html');
 
   const indexContent = readFileSync(indexPath, 'utf8');
 
-  it('1. renderVolacoPlanCard déclare les boutons de confirmation et de modification interactive', () => {
-    assert.ok(indexContent.includes('confirmAndExecuteVolacoPlan'), 'Doit inclure confirmAndExecuteVolacoPlan');
-    assert.ok(indexContent.includes('togglePlanModification'), 'Doit inclure togglePlanModification');
-    assert.ok(indexContent.includes('submitPlanModification'), 'Doit inclure submitPlanModification');
-    assert.ok(indexContent.includes('dismissVolacoPlan'), 'Doit inclure dismissVolacoPlan');
-    assert.ok(indexContent.includes('Confirmer et exécuter'), 'Doit afficher le libellé Confirmer et exécuter');
-    assert.ok(indexContent.includes('Modifier le plan'), 'Doit afficher le libellé Modifier le plan');
-    assert.ok(indexContent.includes('Ignorer'), 'Doit afficher le libellé Ignorer');
+  it('1. Le plan conversationnel est confirmé auprès du serveur puis exécuté pour de vrai', () => {
+    assert.ok(
+      indexContent.includes('async function confirmConversationPlan(planId, approved)'),
+      'confirmConversationPlan doit être déclarée'
+    );
+    assert.ok(
+      indexContent.includes('window.confirmConversationPlan = confirmConversationPlan'),
+      'confirmConversationPlan doit être exposée globalement'
+    );
+    assert.ok(
+      indexContent.includes('/conversation/sessions/${sessionId}/confirm'),
+      'Doit appeler la route serveur /confirm'
+    );
+    assert.ok(
+      indexContent.includes('/conversation/sessions/${sessionId}/execute'),
+      'Doit enchaîner sur la route serveur /execute'
+    );
+    assert.ok(
+      indexContent.includes('execData.fileUpdate && execData.fileUpdate.updated'),
+      'Doit vérifier la MISE À JOUR RÉELLE du fichier renvoyée par le serveur (jamais un faux succès)'
+    );
   });
 
-  it('2. Présence du conteneur repliable pour modification du plan', () => {
-    assert.ok(indexContent.includes('planModifyContainer-'), 'Doit contenir planModifyContainer-');
-    assert.ok(indexContent.includes('planModifyInput-'), 'Doit contenir planModifyInput-');
-    assert.ok(indexContent.includes('Ajuster ce plan'), 'Doit permettre d ajuster le plan');
-    assert.ok(indexContent.includes('Mettre à jour le plan'), 'Doit proposer le bouton Mettre à jour le plan');
+  it('2. Le chat consomme le stream SSE (effet machine à écrire section par section)', () => {
+    assert.ok(
+      indexContent.includes("'Accept': 'text/event-stream'"),
+      'La requête de stream doit négocier text/event-stream'
+    );
+    assert.ok(
+      indexContent.includes('response.body.getReader()'),
+      'Doit lire le corps en streaming (getReader)'
+    );
+    assert.ok(
+      indexContent.includes("event.type === 'section_start'"),
+      'Doit traiter les événements section_start'
+    );
+    assert.ok(
+      indexContent.includes("event.type === 'section_end'"),
+      'Doit traiter les événements section_end'
+    );
   });
 
-  it('3. Écran Plan First Gate dédié pour le Preview iframe', () => {
-    assert.ok(indexContent.includes('function createPlanFirstGateScreen'), 'Doit déclarer createPlanFirstGateScreen');
-    assert.ok(indexContent.includes('Volaco Plan First Gate'), 'Doit inclure le badge Plan First Gate');
-    assert.ok(indexContent.includes('EN ATTENTE DE CONFIRMATION'), 'Doit expliciter l attente de confirmation');
-    assert.ok(indexContent.includes('createPlanFirstGateScreen(plan, text)'), 'Doit appeler createPlanFirstGateScreen lors de la réception du plan');
+  it('3. Le terminal web est câblé à la route réelle /terminal/execute', () => {
+    assert.ok(
+      indexContent.includes('/terminal/execute'),
+      'Doit appeler POST /api/v1/projects/:id/terminal/execute'
+    );
   });
 
-  it('4. Conversation Compass est actif et visible (non masqué)', () => {
-    assert.ok(indexContent.includes('<div id="conversationCompassBar"'), 'Doit contenir conversationCompassBar');
-    assert.ok(!indexContent.includes('<div id="conversationCompassBar" style="display:none !important;"'), 'Ne doit pas masquer conversationCompassBar');
+  it('4. Le Conversation Compass existe et est piloté dynamiquement', () => {
+    assert.ok(indexContent.includes('id="conversationCompassBar"'), 'Doit contenir conversationCompassBar');
+    assert.ok(
+      indexContent.includes('function setCompassState(state, label, dotColor, badgeText)'),
+      'setCompassState doit piloter les états du compass'
+    );
+    assert.ok(indexContent.includes('setCompassState("EXECUTING"'), 'État EXECUTING utilisé');
+    assert.ok(indexContent.includes('setCompassState("VALIDATING"'), 'État VALIDATING utilisé');
   });
 
   it('5. Handlers Features/Feedback câblés (plus de stubs no-op)', () => {

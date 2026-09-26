@@ -72,10 +72,21 @@ export class TerminalService {
           windowsHide: true
         });
       } catch (err) {
-        const e = err as { status?: number; stdout?: string; stderr?: string; message: string };
+        const e = err as { status?: number; stdout?: string; stderr?: string; code?: string; message: string };
         exitCode = typeof e.status === 'number' ? e.status : 1;
         stdout = e.stdout ?? '';
-        stderr = e.stderr || e.message;
+        if (e.code === 'ENOENT') {
+          // Sur Windows, npm/pnpm sont des wrappers .cmd : Node refuse de les
+          // spawner sans shell (CVE-2024-27980) — et un shell est justement
+          // ce que ce service s'interdit. On l'explique au lieu de renvoyer
+          // un "spawnSync npm ENOENT" cryptique.
+          stderr =
+            `Binaire "${parsed.binary}" introuvable ou non exécutable directement sur ce système. ` +
+            `Sur Windows, npm/pnpm sont des wrappers .cmd que Node bloque sans shell pour raisons de sécurité ; ` +
+            `seuls les binaires natifs (node, git) sont exécutables réellement ici.`;
+        } else {
+          stderr = e.stderr || e.message;
+        }
         logger.warn('Échec d\'exécution d\'une commande terminal indépendante du projet', {
           component: 'terminal',
           binary: parsed.binary,

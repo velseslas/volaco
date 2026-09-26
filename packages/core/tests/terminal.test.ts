@@ -43,9 +43,18 @@ describe('CORE-005 : Terminal Service & Security Whitelist Unit Tests', () => {
       { command: 'npm --version' },
       'ENGINEER'
     );
-    assert.equal(npmRes.exitCode, 0);
     assert.equal(npmRes.binary, 'npm');
-    assert.match(npmRes.stdout.trim(), /^\d+\.\d+\.\d+/);
+    if (process.platform === 'win32') {
+      // Windows : npm est un wrapper .cmd que Node refuse de spawner sans
+      // shell (CVE-2024-27980) — le service renvoie un échec PROPRE avec un
+      // message explicite, il ne plante pas et ne simule pas un succès.
+      assert.notEqual(npmRes.exitCode, 0);
+      assert.match(npmRes.stderr, /non exécutable|wrapper \.cmd/i);
+      assert.equal(npmRes.stdout, '');
+    } else {
+      assert.equal(npmRes.exitCode, 0);
+      assert.match(npmRes.stdout.trim(), /^\d+\.\d+\.\d+/);
+    }
 
     // Vérifier l'événement d'audit
     const audits = auditStore.query(tenantId, { action: 'TERMINAL_EXECUTE' });
