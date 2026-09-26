@@ -130,9 +130,17 @@ function setCorsHeaders(req: IncomingMessage, res: ServerResponse, config: AppCo
   const requestOrigin = req.headers['origin'];
   const allowList = config.corsAllowedOrigins;
 
+  // Défaut fermé : sans CORS_ALLOWED_ORIGINS, AUCUNE en-tête ACAO n'est émise.
+  // Les requêtes same-origin du Studio (servi par ce même serveur) continuent
+  // de fonctionner — CORS ne s'applique qu'aux origines croisées. Avant ce
+  // correctif, le défaut était '*' : n'importe quel site web visité par
+  // l'utilisateur pouvait appeler l'API locale (consommation de la clé IA,
+  // écriture de fichiers projets, etc.).
   if (allowList.length === 0) {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-  } else if (allowList.includes('*')) {
+    return;
+  }
+
+  if (allowList.includes('*')) {
     res.setHeader('Access-Control-Allow-Origin', '*');
   } else if (typeof requestOrigin === 'string' && allowList.includes(requestOrigin)) {
     res.setHeader('Access-Control-Allow-Origin', requestOrigin);
@@ -143,6 +151,41 @@ function setCorsHeaders(req: IncomingMessage, res: ServerResponse, config: AppCo
 
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Request-Id, X-Tenant-Id, X-User-Role, Authorization');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+}
+
+// --- Rate limiting en mémoire (par IP + catégorie de route) -----------------
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_API_MAX = 600;   // requêtes /api génériques / minute / IP
+const RATE_LIMIT_AI_MAX = 60;     // appels proxy IA / minute / IP (quota Mistral)
+
+const rateBuckets = new Map<string, { count: number; windowStart: number }>();
+
+/**
+ * Fenêtre glissante simplifiée (compteur par minute). Retourne false si la
+ * limite est dépassée. Le bucket est purgé périodiquement pour éviter toute
+ * fuite mémoire face à des IPs usurpées.
+ */
+function checkRateLimit(req: IncomingMessage, pathname: string): boolean {
+  const isAiRoute = pathname.startsWith('/api/v1/ai/');
+  const ip = req.socket.remoteAddress || 'unknown';
+  const key = `${ip}:${isAiRoute ? 'ai' : 'api'}`;
+  const max = isAiRoute ? RATE_LIMIT_AI_MAX : RATE_LIMIT_API_MAX;
+  const now = Date.now();
+
+  const bucket = rateBuckets.get(key);
+  if (!bucket || now - bucket.windowStart >= RATE_LIMIT_WINDOW_MS) {
+    if (rateBuckets.size > 10_000) {
+      for (const [k, b] of rateBuckets) {
+        if (now - b.windowStart >= RATE_LIMIT_WINDOW_MS) {
+          rateBuckets.delete(k);
+        }
+      }
+    }
+    rateBuckets.set(key, { count: 1, windowStart: now });
+    return true;
+  }
+  bucket.count += 1;
+  return bucket.count <= max;
 }
 
 export function createApiServer(configOverride: Partial<AppConfig> = {}) {
@@ -175,15 +218,58 @@ export function createApiServer(configOverride: Partial<AppConfig> = {}) {
     const parsedUrl = new URL(req.url || '/', `http://${host}`);
     const pathname = parsedUrl.pathname;
 
-    const context = extractRequestContext(req);
-
-    logger.info(
-      'RequÃªte HTTP',
-      { method: req.method, path: pathname, tenantId: context.tenantId, role: context.role },
-      requestId
-    );
-
     try {
+      // 0bis. Endpoints d'observation volontairement publics (monitoring,
+      // lanceur) : traités AVANT le contrôle d'accès, qui s'applique à tout
+      // le reste.
+      if (req.method === 'GET' && (pathname === '/health' || pathname === `${config.apiPrefix}/health`)) {
+        const payload = getHealthResponse(config, requestId);
+        res.setHeader('Content-Type', 'application/json');
+        res.statusCode = 200;
+        res.end(JSON.stringify(payload));
+        return;
+      }
+      if (req.method === 'GET' && (pathname === '/status' || pathname === `${config.apiPrefix}/status`)) {
+        res.setHeader('Content-Type', 'application/json');
+        res.statusCode = 200;
+        res.end(JSON.stringify({
+          status: 'ready',
+          phase: 'PHASE-2',
+          architecture: 'MODULAR_MONOLITH',
+          requestId
+        }));
+        return;
+      }
+
+      // Contexte d'authentification — DOIT recevoir la config : sans elle, la
+      // vérification du Bearer n'était jamais exécutée et toutes les routes
+      // répondaient sans authentification. Peut lever UnauthorizedError (401)
+      // en production sans token valide, d'où sa place dans le try.
+      const context = extractRequestContext(req, config, requestId);
+
+      logger.info(
+        'RequÃªte HTTP',
+        { method: req.method, path: pathname, tenantId: context.tenantId, role: context.role },
+        requestId
+      );
+
+      // Rate limiting minimal en mémoire (anti-martèlement / anti-DoS simple).
+      // Le proxy IA a une limite plus stricte : chaque appel consomme le quota
+      // de la clé Mistral du serveur.
+      if (pathname.startsWith('/api') && !checkRateLimit(req, pathname)) {
+        res.statusCode = 429;
+        res.setHeader('Retry-After', '60');
+        res.end(JSON.stringify({
+          error: {
+            code: 'RATE_LIMITED',
+            message: 'Trop de requêtes — réessayez dans une minute.',
+            statusCode: 429,
+            requestId
+          }
+        }));
+        return;
+      }
+
       // 0. Distribution Statique du Workspace Studio et de ses Ressources
       if (req.method === 'GET') {
         if (pathname === '/' || pathname === '/index.html' || pathname === '/volaco_studio.html' || pathname === '/shell' || pathname === '/studio') {
@@ -227,27 +313,7 @@ export function createApiServer(configOverride: Partial<AppConfig> = {}) {
         }
       }
 
-      // 1. Healthcheck
-      if (req.method === 'GET' && (pathname === '/health' || pathname === `${config.apiPrefix}/health`)) {
-        const payload = getHealthResponse(config, requestId);
-        res.setHeader('Content-Type', 'application/json');
-        res.statusCode = 200;
-        res.end(JSON.stringify(payload));
-        return;
-      }
-
-      // 2. Status
-      if (req.method === 'GET' && (pathname === '/status' || pathname === `${config.apiPrefix}/status`)) {
-        res.setHeader('Content-Type', 'application/json');
-        res.statusCode = 200;
-        res.end(JSON.stringify({
-          status: 'ready',
-          phase: 'PHASE-2',
-          architecture: 'MODULAR_MONOLITH',
-          requestId
-        }));
-        return;
-      }
+      // 1-2. /health et /status sont traités plus haut (endpoints publics).
 
       // 3. ObservabilitÃ© & MÃ©triques (FND-005)
       res.setHeader('Content-Type', 'application/json');

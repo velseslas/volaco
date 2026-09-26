@@ -1,6 +1,7 @@
 import type { IncomingMessage } from 'node:http';
 import type { Role } from '../../../../packages/core/src/identity/permissions.js';
 import type { AppConfig } from '../../../../packages/core/src/config.js';
+import { UnauthorizedError } from '../../../../packages/core/src/errors.js';
 import { logger } from '../../../../packages/core/src/logger.js';
 
 export interface RequestContext {
@@ -28,22 +29,28 @@ export function verifyAuthToken(req: IncomingMessage, config: AppConfig): Reques
   };
 }
 
-export function extractRequestContext(req: IncomingMessage, config?: AppConfig): RequestContext {
+export function extractRequestContext(req: IncomingMessage, config?: AppConfig, requestId?: string): RequestContext {
   if (config && config.apiKey) {
     const authContext = verifyAuthToken(req, config);
     if (authContext) {
       return authContext;
     }
-    const env = config.env;
-    if (env === 'production') {
+    if (config.env === 'production') {
       logger.warn('Requete sans Bearer valide en production - acces refuse', {
-        component: 'auth', env, path: req.url, method: req.method
+        component: 'auth', env: config.env, path: req.url, method: req.method
       });
-    } else {
-      logger.warn('Requete sans Bearer - en-tetes legacy (mode dev)', {
-        component: 'auth', env: env || 'development', path: req.url
-      });
+      // Sécurité : en production, toute requête sans Bearer valide est refusée.
+      // Avant ce correctif, l'exécution continuait avec un contexte fabriqué
+      // depuis les en-têtes client (rôle/tenant spoofables) — l'API était
+      // ouverte même avec une clé configurée.
+      throw new UnauthorizedError(
+        'Authentification requise : fournissez un en-tête Authorization: Bearer <VOLACO_API_KEY>',
+        requestId
+      );
     }
+    logger.warn('Requete sans Bearer - en-tetes legacy (mode dev)', {
+      component: 'auth', env: config.env || 'development', path: req.url
+    });
   }
 
   const tenantHeader = req.headers['x-tenant-id'];

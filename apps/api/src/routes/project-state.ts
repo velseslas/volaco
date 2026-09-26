@@ -11,6 +11,7 @@ import { WorkspaceService } from '../../../../packages/core/src/workspace/servic
 import { ValidationError } from '../../../../packages/core/src/errors.js';
 import type { RequestContext } from '../middleware/auth.js';
 
+import { readBody } from '../middleware/body.js';
 export const workspaceServiceInstance = new WorkspaceService(projectStore, auditStore, fileStore, revisionStore);
 export const projectStateService = new ProjectStateService(
   projectStore,
@@ -135,11 +136,3 @@ export async function handleProjectStateRoutes(
   return false;
 }
 
-function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let body = '';
-    req.on('data', (chunk) => { body += chunk; });
-    req.on('end', () => resolve(body));
-    req.on('error', (err) => reject(err));
-  });
-}

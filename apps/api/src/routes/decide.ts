@@ -26,6 +26,7 @@ import type { IntelligenceRecommendation } from '../../../../packages/core/src/a
 import type { FileStore } from '../../../../packages/core/src/file-explorer/store.js';
 import { ConversationCompass } from '../../../../packages/core/src/ai-native/conversation-intelligence/engine/conversation-compass.js';
 
+import { readBody } from '../middleware/body.js';
 interface DecideRouteDeps {
   decisionEngine: DecisionEngine;
   analystRegistry: AnalystRegistry;
@@ -38,15 +39,6 @@ const compass = new ConversationCompass();
 export function configureDecideRoute(d: DecideRouteDeps): void {
   deps = d;
   logger.info('DecisionEngine route configurée (Phase 9.5)', { component: 'decide-route' });
-}
-
-function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let data = '';
-    req.on('data', (chunk: Buffer) => (data += chunk));
-    req.on('end', () => resolve(data));
-    req.on('error', reject);
-  });
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {

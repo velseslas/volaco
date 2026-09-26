@@ -19,6 +19,7 @@ import { assertPermission } from '../../../../packages/core/src/identity/permiss
 import { NotFoundError, ValidationError } from '../../../../packages/core/src/errors.js';
 import type { RequestContext } from '../middleware/auth.js';
 
+import { readBody } from '../middleware/body.js';
 export const strategyService = new StrategyOptimizerService();
 export const strategyConversationBridge = new StrategyConversationBridge();
 export const strategyOrchestratorBridge = new StrategyOrchestratorBridge();
@@ -315,11 +316,3 @@ export async function handleStrategyRoutes(
   return false;
 }
 
-function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on('data', chunk => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    req.on('error', reject);
-  });
-}

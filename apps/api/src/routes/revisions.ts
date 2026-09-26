@@ -5,6 +5,7 @@ import { assertPermission } from '../../../../packages/core/src/identity/permiss
 import { NotFoundError, ValidationError } from '../../../../packages/core/src/errors.js';
 import type { RequestContext } from '../middleware/auth.js';
 
+import { readBody } from '../middleware/body.js';
 export async function handleRevisionsRoutes(
   req: IncomingMessage,
   res: ServerResponse,
@@ -104,11 +105,3 @@ export async function handleRevisionsRoutes(
   return false;
 }
 
-function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let body = '';
-    req.on('data', (chunk) => { body += chunk; });
-    req.on('end', () => resolve(body));
-    req.on('error', (err) => reject(err));
-  });
-}

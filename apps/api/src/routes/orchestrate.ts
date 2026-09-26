@@ -6,20 +6,12 @@ import type { RequestContext } from '../middleware/auth.js';
 import type { AIOrchestratorService } from '../../../../packages/core/src/ai-native/ai-orchestrator/service.js';
 import type { EngineeringPlan, IntentResult } from '../../../../packages/core/src/ai-native/conversation-intelligence/types.js';
 
+import { readBody } from '../middleware/body.js';
 let orchestratorService: AIOrchestratorService | undefined;
 
 export function configureOrchestratorService(service: AIOrchestratorService): void {
   orchestratorService = service;
   logger.info('AIOrchestratorService configure (Phase 9)', { component: 'orchestrate-route' });
-}
-
-function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let data = '';
-    req.on('data', (chunk: Buffer) => (data += chunk));
-    req.on('end', () => resolve(data));
-    req.on('error', reject);
-  });
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {

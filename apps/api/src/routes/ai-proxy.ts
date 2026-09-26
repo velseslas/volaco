@@ -11,15 +11,7 @@ import { assertPermission } from '../../../../packages/core/src/identity/permiss
 import { logger } from '../../../../packages/core/src/logger.js';
 import type { RequestContext } from '../middleware/auth.js';
 
-function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let data = '';
-    req.on('data', (chunk: Buffer) => (data += chunk));
-    req.on('end', () => resolve(data));
-    req.on('error', reject);
-  });
-}
-
+import { readBody } from '../middleware/body.js';
 interface ChatCompletionRequestBody {
   model?: string;
   messages?: { role: string; content: string }[];

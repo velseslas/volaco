@@ -4,7 +4,9 @@
   | 'VALIDATION_ERROR'
   | 'UNAUTHORIZED'
   | 'FORBIDDEN'
-  | 'BAD_REQUEST';
+  | 'BAD_REQUEST'
+  | 'PAYLOAD_TOO_LARGE'
+  | 'RATE_LIMITED';
 
 export interface ErrorDetails {
   code: ErrorCode;
@@ -55,6 +57,13 @@ export class NotFoundError extends AppError {
   constructor(resource: string, requestId?: string | undefined) {
     super(`Ressource non trouvÃ©e : ${resource}`, 'NOT_FOUND', 404, { resource }, requestId);
     this.name = 'NotFoundError';
+  }
+}
+
+export class UnauthorizedError extends AppError {
+  constructor(message = 'Authentification requise : token Bearer manquant ou invalide', requestId?: string | undefined) {
+    super(message, 'UNAUTHORIZED', 401, {}, requestId);
+    this.name = 'UnauthorizedError';
   }
 }
 

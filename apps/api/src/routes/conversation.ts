@@ -19,6 +19,7 @@ import { logger } from '../../../../packages/core/src/logger.js';
 import type { EngineeringPlan } from '../../../../packages/core/src/ai-native/conversation-intelligence/types.js';
 import type { RequestContext } from '../middleware/auth.js';
 
+import { readBody } from '../middleware/body.js';
 /**
  * Instance unique du service de conversation pour tout le serveur.
  * Le moteur IA réel (Gemini/Mistral) ou le simulateur (Mock, avec avertissement)
@@ -32,15 +33,6 @@ export let conversationIntelligenceService = new ConversationIntelligenceService
  */
 export function configureConversationIntelligenceService(service: ConversationIntelligenceService): void {
   conversationIntelligenceService = service;
-}
-
-function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let data = '';
-    req.on('data', (chunk) => (data += chunk));
-    req.on('end', () => resolve(data));
-    req.on('error', reject);
-  });
 }
 
 function sendJson(res: ServerResponse, statusCode: number, payload: unknown): void {
@@ -324,8 +316,15 @@ export async function handleConversationRoutes(
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no'); // Désactive buffering nginx
 
+    // Déconnexion client : si l'utilisateur ferme l'onglet ou annule, on coupe
+    // la consommation du stream LLM (sinon on continue de facturer des tokens
+    // jusqu'à 120 s pour un socket mort) et on cesse d'écrire sur la réponse.
+    let clientGone = false;
+    req.on('close', () => { clientGone = true; });
+
     // Fonction helper pour envoyer un event SSE formaté
     const sendSSE = (data: Record<string, unknown>): void => {
+      if (clientGone) return;
       res.write(`data: ${JSON.stringify(data)}\n\n`);
     };
 
@@ -492,6 +491,7 @@ export async function handleConversationRoutes(
       );
 
       for await (const chunk of stream) {
+        if (clientGone) break;
         fullText += chunk;
 
         // Détecte l'ouverture d'une nouvelle section <SECTION name="...">
@@ -579,6 +579,19 @@ export async function handleConversationRoutes(
           // Hors section : texte conversationnel normal
           sendSSE({ type: 'token', token: chunk });
         }
+      }
+
+      // Client parti en cours de génération : on n'assemble ni ne sauvegarde un
+      // HTML partiel (on éviterait d'écraser le fichier existant avec du contenu
+      // tronqué) ; le finally ci-dessous ferme proprement la réponse.
+      if (clientGone) {
+        logger.warn('Client déconnecté pendant le stream — génération interrompue, HTML non sauvegardé', {
+          component: 'conversation-route-stream',
+          tenantId: context.tenantId,
+          projectId,
+          charsReceived: fullText.length
+        });
+        return true;
       }
 
       // À la fin, envoie tout texte restant comme chat final

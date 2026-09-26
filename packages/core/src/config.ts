@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 export interface AppConfig {
   env: 'development' | 'test' | 'production';
   port: number;
@@ -18,7 +20,11 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     .split(',')
     .map((origin) => origin.trim())
     .filter((origin) => origin.length > 0);
-  const apiKey = process.env.VOLACO_API_KEY || (env === 'production' ? '' : 'dev-key-change-me');
+  // En production, une clé vide désactiverait toute authentification : on
+  // génère donc une clé éphémère (à définir explicitement via VOLACO_API_KEY
+  // pour un secret stable entre redémarrages).
+  const apiKey = process.env.VOLACO_API_KEY
+    || (env === 'production' ? randomUUID() : 'dev-key-change-me');
 
   return {
     env,

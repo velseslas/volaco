@@ -7,6 +7,7 @@ import { revisionStore } from '../../../../packages/core/src/model/revision-stor
 import { ValidationError } from '../../../../packages/core/src/errors.js';
 import type { RequestContext } from '../middleware/auth.js';
 
+import { readBody } from '../middleware/body.js';
 export const fileExplorerService = new FileExplorerService(projectStore, fileStore, auditStore, revisionStore);
 export const editorService = new EditorService(projectStore, fileStore, undefined, auditStore);
 
@@ -276,11 +277,3 @@ export async function handleFilesRoutes(
   return false;
 }
 
-function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let body = '';
-    req.on('data', (chunk) => { body += chunk; });
-    req.on('end', () => resolve(body));
-    req.on('error', (err) => reject(err));
-  });
-}
