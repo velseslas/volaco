@@ -343,12 +343,14 @@ export async function handleConversationRoutes(
       return true;
     }
 
-    // System prompt : construction incrémentale section par section.
-    // L'utilisateur doit voir le site se construire en LIVE dans le preview,
-    // chaque section apparaissant l'une après l'autre avec un effet pulse.
-    // Le chat zone reste conversationnel (comme Claude/ChatGPT), mais le preview
-    // assemble les sections au fur et à mesure qu'elles arrivent dans le stream.
-    const systemPrompt =
+    // Détection du mode : CRÉATION vs MODIFICATION
+    // Si on a un HTML existant > 200 chars, on est en mode modification.
+    // Sinon, on est en mode création (comportement actuel).
+    const isModificationMode = isModification || (currentHtml.trim().length > 200);
+
+    // === SYSTÈME PROMPT MODE CRÉATION ===
+    // (comportement actuel : génère un site complet section par section)
+    const creationSystemPrompt =
       "Tu es le Lead Engineer IA de VibeCode Studio. L'utilisateur te parle en français, tu réponds en français.\n\n" +
       "RÔLE : Tu construis le site EN LIVE devant l'utilisateur, section par section, dans le preview. L'utilisateur doit VOIR le site se construire sous ses yeux — chaque section apparaît l'une après l'autre avec un effet de pulse.\n\n" +
       "FORMAT OBLIGATOIRE de ta réponse :\n\n" +
@@ -400,9 +402,61 @@ export async function handleConversationRoutes(
       "[... continues pour menu, reservation, footer ...]\n\n" +
       "Voilà, ta landing page pour Bella Italia est prête ! Tu peux cliquer sur les boutons pour tester l'interactivité.";
 
-    const userPrompt = isModification
-      ? `Voici le code HTML actuel de l'application :\n\`\`\`html\n${currentHtml}\n\`\`\`\n\nDemande de l'utilisateur : ${body.message}`
-      : `Demande de l'utilisateur : ${body.message}`;
+    // === SYSTÈME PROMPT MODE MODIFICATION ===
+    // (nouveau : l'IA reçoit le HTML existant et modifie SEULEMENT les sections concernées)
+    const modificationSystemPrompt =
+      "Tu es le Lead Engineer IA de VibeCode Studio. L'utilisateur te parle en français, tu réponds en français.\n\n" +
+      "CONTEXTE CRITIQUE : L'utilisateur a DÉJÀ une application web existante (le code HTML complet t'est fourni dans le message utilisateur). Il veut la MODIFIER, pas la recréer.\n\n" +
+      "RÔLE : Tu modifies UNIQUEMENT les sections concernées par la demande de l'utilisateur. Tu ne renvoies pas les sections non modifiées. L'utilisateur doit voir les changements apparaître en temps réel dans le preview, section par section, avec un effet de remplacement fluide.\n\n" +
+      "FORMAT OBLIGATOIRE de ta réponse en mode modification :\n\n" +
+      "1. Phrase courte pour annoncer ce que tu vas modifier (1 phrase max, conversationnelle)\n" +
+      "   Ex: \"OK, je passe le bouton du Hero en bleu et j'ajoute une ombre.\"\n" +
+      "   Ex: \"Compris, j'ajoute une nouvelle section témoignages entre le Menu et la Réservation.\"\n\n" +
+      "2. Pour CHAQUE section à modifier ou ajouter, écris un bloc au format EXACT :\n\n" +
+      "   <SECTION name=\"nom-de-la-section\" mode=\"modify\">\n" +
+      "   Phrase courte décrivant ce que tu modifies (ex: \"Je passe le bouton 'Réserver' du Hero en bleu.\")\n" +
+      "   [HTML COMPLET de la section modifiée, avec les changements appliqués]\n" +
+      "   </SECTION>\n\n" +
+      "3. Pour AJOUTER une nouvelle section à un endroit précis, utilise :\n" +
+      "   <SECTION name=\"nom-nouvelle-section\" mode=\"add\" after=\"nom-section-précédente\">\n" +
+      "   Phrase courte\n" +
+      "   [HTML COMPLET de la nouvelle section]\n" +
+      "   </SECTION>\n\n" +
+      "4. Pour SUPPRIMER une section, utilise :\n" +
+      "   <SECTION name=\"nom-section\" mode=\"delete\">\n" +
+      "   Phrase courte expliquant la suppression\n" +
+      "   </SECTION>\n\n" +
+      "5. Termine par une phrase de confirmation\n" +
+      "   Ex: \"Voilà, le bouton est maintenant bleu ! Tu peux voir le changement dans le Hero.\"\n\n" +
+      "RÈGLES CRITIQUES :\n" +
+      "- Le name doit correspondre à une section EXISTANTE dans le HTML fourni (header, hero, menu, reservation, footer, etc.) quand mode=\"modify\" ou mode=\"delete\"\n" +
+      "- Le HTML modifié doit être COMPLET (toute la section, pas juste la partie changée)\n" +
+      "- Ne renvoie QUE les sections modifiées/ajoutées — JAMAIS les sections non modifiées\n" +
+      "- Garde le style et la structure globale de l'application (ne change pas la palette ou le thème si non demandé)\n" +
+      "- Si la demande concerne plusieurs sections, renvoie-les toutes avec leur propre bloc <SECTION>\n" +
+      "- Le texte décrivant chaque modification doit être COURT (1 phrase max) et conversationnel\n\n" +
+      "EXEMPLE pour demande \"change le bouton du Hero en bleu\" :\n\n" +
+      "OK, je passe le bouton 'Réserver' du Hero en bleu avec une ombre.\n\n" +
+      "<SECTION name=\"hero\" mode=\"modify\">\n" +
+      "Je modifie le Hero — le bouton passe de rose à bleu.\n" +
+      "<section class=\"relative min-h-screen flex items-center justify-center overflow-hidden\">\n" +
+      "  <div class=\"absolute inset-0 bg-slate-900\"></div>\n" +
+      "  <div class=\"relative z-10 max-w-4xl mx-auto px-6 text-center\">\n" +
+      "    <h1>Bienvenue</h1>\n" +
+      "    <a href=\"#menu\" class=\"bg-blue-500 hover:bg-blue-400 text-white font-bold px-8 py-3 rounded-lg shadow-lg shadow-blue-500/50\">Voir le menu</a>\n" +
+      "  </div>\n" +
+      "</section>\n" +
+      "</SECTION>\n\n" +
+      "Voilà, le bouton est maintenant bleu !";
+
+    const systemPrompt = isModificationMode ? modificationSystemPrompt : creationSystemPrompt;
+
+    // Pour le mode modification, on inclut TOUJOURS le HTML actuel comme contexte
+    const userPrompt = isModificationMode
+      ? `Voici le code HTML ACTUEL de l'application :\n\`\`\`html\n${currentHtml}\n\`\`\`\n\nDemande de modification de l'utilisateur : ${body.message}\n\nApplique les modifications nécessaires en respectant le format <SECTION name="..." mode="modify">.`
+      : (isModification
+        ? `Voici le code HTML actuel de l'application :\n\`\`\`html\n${currentHtml}\n\`\`\`\n\nDemande de l'utilisateur : ${body.message}`
+        : `Demande de l'utilisateur : ${body.message}`);
 
     // Signale au Studio que le stream commence
     sendSSE({ type: 'start', isModification });
@@ -410,6 +464,8 @@ export async function handleConversationRoutes(
     let fullText = '';
     let inSection = false;
     let currentSectionName = '';
+    let currentSectionMode = 'create'; // 'create' | 'modify' | 'add' | 'delete'
+    let currentSectionAfter = ''; // pour mode="add" : nom de la section précédente
     let currentSectionHtml = '';
     let currentSectionText = '';
     let sectionIndex = 0;
@@ -433,7 +489,8 @@ export async function handleConversationRoutes(
         fullText += chunk;
 
         // Détecte l'ouverture d'une nouvelle section <SECTION name="...">
-        const openMatch = fullText.match(/<SECTION\s+name=["']([^"']+)["']\s*>/);
+        // Regex enrichie pour capter aussi le mode (modify/add/delete) et after
+        const openMatch = fullText.match(/<SECTION\s+name=["']([^"']+)["']\s*(?:\s+mode=["']([^"']+)["'])?\s*(?:\s+after=["']([^"']+)["'])?\s*>/);
         if (!inSection && openMatch && openMatch.index !== undefined) {
           // Le texte avant la section est du thinking/chat conversationnel
           const textBeforeSection = fullText.slice(0, openMatch.index);
@@ -446,10 +503,18 @@ export async function handleConversationRoutes(
           }
           inSection = true;
           currentSectionName = openMatch[1] || '';
+          currentSectionMode = openMatch[2] || 'create'; // 'create' par défaut, peut être 'modify', 'add', 'delete'
+          currentSectionAfter = openMatch[3] || ''; // pour mode="add" : nom de la section précédente
           currentSectionHtml = '';
           currentSectionText = '';
           sectionIndex++;
-          sendSSE({ type: 'section_start', name: currentSectionName, index: sectionIndex });
+          sendSSE({
+            type: 'section_start',
+            name: currentSectionName,
+            mode: currentSectionMode,
+            after: currentSectionAfter,
+            index: sectionIndex
+          });
 
           // Continue à accumuler le contenu de la section après le marqueur
           const afterMarker = fullText.slice(openMatch.index + openMatch[0].length);
@@ -476,6 +541,8 @@ export async function handleConversationRoutes(
             sendSSE({
               type: 'section_end',
               name: currentSectionName,
+              mode: currentSectionMode,
+              after: currentSectionAfter,
               index: sectionIndex,
               text: currentSectionText,
               html: currentSectionHtml
@@ -484,6 +551,8 @@ export async function handleConversationRoutes(
             // Reset pour la prochaine section
             inSection = false;
             currentSectionName = '';
+            currentSectionMode = 'create';
+            currentSectionAfter = '';
             currentSectionHtml = '';
             currentSectionText = '';
             fullText = fullText.slice(closeIdx + '</SECTION>'.length);

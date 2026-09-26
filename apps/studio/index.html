@@ -3238,30 +3238,80 @@ ${sectionsHtml}
                 updateEditorContent(currentAppHtml);
               } else if (event.type === 'section_end') {
                 inSection = false;
-                // === CROSS-FADE : remplace le skeleton par le vrai HTML avec animation stitchReveal ===
-                if (event.html && event.html.length > 0) {
-                  // Retire le dernier skeleton ajouté (celui de cette section)
-                  const lastContainerIdx = assembledHtml.lastIndexOf('<div class="vibe-stitch-container">');
-                  if (lastContainerIdx !== -1) {
-                    // Trouve la fin du container (</div></div>)
-                    const containerEndIdx = assembledHtml.indexOf('</div>\n                  </div>', lastContainerIdx);
-                    if (containerEndIdx !== -1) {
-                      assembledHtml = assembledHtml.slice(0, lastContainerIdx) +
-                                    assembledHtml.slice(containerEndIdx + '</div>\n                  </div>'.length);
+                const mode = event.mode || 'create'; // 'create' | 'modify' | 'add' | 'delete'
+
+                if (mode === 'delete') {
+                  // === MODE DELETE : supprime la section existante ===
+                  const sectionPattern = new RegExp(`<div class="vibe-section-stitched" data-section="${event.name}">[\\s\\S]*?</div>\\s*</div>\\s*</div>`, 'g');
+                  const beforeLen = assembledHtml.length;
+                  assembledHtml = assembledHtml.replace(new RegExp(`<div class="vibe-section-stitched" data-section="${event.name}">[\\s\\S]*?(?=<div class="vibe-section-stitched"|$)`, 'g'), '');
+                  // Si on a aussi un skeleton en attente pour cette section, le retire
+                  const skeletonPattern = new RegExp(`<div class="vibe-stitch-container">[\\s\\S]*?Construction de ${event.name}[\\s\\S]*?</div>\\s*</div>`, 'g');
+                  assembledHtml = assembledHtml.replace(skeletonPattern, '');
+                  if (statusEl) {
+                    statusEl.innerHTML = `<span class="text-amber-400">🗑️ Section <strong>${event.name}</strong> supprimée</span>`;
+                  }
+                } else if (mode === 'modify') {
+                  // === MODE MODIFY : remplace la section existante par la nouvelle version ===
+                  // 1. Retire le skeleton de cette section (s'il existe encore)
+                  const skeletonRegex = new RegExp(`<div class="vibe-stitch-container">[\\s\\S]*?Construction de ${event.name}[\\s\\S]*?</div>\\s*</div>`, 'g');
+                  assembledHtml = assembledHtml.replace(skeletonRegex, '');
+                  // 2. Remplace la section existante par la nouvelle version
+                  if (event.html && event.html.length > 0) {
+                    const newSectionHtml = `<div class="vibe-section-stitched" data-section="${event.name}">${event.html}</div>`;
+                    // Cherche la section existante avec ce name et la remplace
+                    const existingRegex = new RegExp(`<div class="vibe-section-stitched" data-section="${event.name}">[\\s\\S]*?(?=<div class="vibe-section-stitched|<\\/body>|$)`, 'g');
+                    if (existingRegex.test(assembledHtml)) {
+                      assembledHtml = assembledHtml.replace(existingRegex, newSectionHtml);
+                    } else {
+                      // La section n'existait pas encore, on l'ajoute à la fin
+                      assembledHtml += newSectionHtml;
                     }
                   }
-                  // Ajoute le vrai HTML avec l'animation stitchReveal
-                  const sectionHtml = `<div class="vibe-section-stitched" data-section="${event.name}">${event.html}</div>`;
-                  assembledHtml += sectionHtml;
+                  if (statusEl) {
+                    statusEl.innerHTML = `<span class="text-blue-400">✏️ Section <strong>${event.name}</strong> modifiée</span>`;
+                  }
+                } else if (mode === 'add' && event.after) {
+                  // === MODE ADD : insère une nouvelle section APRÈS une section existante ===
+                  if (event.html && event.html.length > 0) {
+                    const newSectionHtml = `<div class="vibe-section-stitched" data-section="${event.name}">${event.html}</div>`;
+                    // Cherche la section 'after' et insère après elle
+                    const afterRegex = new RegExp(`(<div class="vibe-section-stitched" data-section="${event.after}">[\\s\\S]*?</div>\\s*</div>)`, 'g');
+                    if (afterRegex.test(assembledHtml)) {
+                      assembledHtml = assembledHtml.replace(afterRegex, '$1\n' + newSectionHtml);
+                    } else {
+                      // Section 'after' pas trouvée, ajoute à la fin
+                      assembledHtml += newSectionHtml;
+                    }
+                  }
+                  if (statusEl) {
+                    statusEl.innerHTML = `<span class="text-emerald-400">➕ Section <strong>${event.name}</strong> ajoutée après <strong>${event.after}</strong></span>`;
+                  }
+                } else {
+                  // === MODE CREATE (défaut) : ajoute simplement la section (comportement précédent) ===
+                  if (event.html && event.html.length > 0) {
+                    // Retire le dernier skeleton ajouté (celui de cette section)
+                    const lastContainerIdx = assembledHtml.lastIndexOf('<div class="vibe-stitch-container">');
+                    if (lastContainerIdx !== -1) {
+                      const containerEndIdx = assembledHtml.indexOf('</div>\n                  </div>', lastContainerIdx);
+                      if (containerEndIdx !== -1) {
+                        assembledHtml = assembledHtml.slice(0, lastContainerIdx) +
+                                      assembledHtml.slice(containerEndIdx + '</div>\n                  </div>'.length);
+                      }
+                    }
+                    const sectionHtml = `<div class="vibe-section-stitched" data-section="${event.name}">${event.html}</div>`;
+                    assembledHtml += sectionHtml;
+                  }
+                  if (statusEl) {
+                    statusEl.innerHTML = `<span class="text-emerald-400">✓ Section <strong>${event.name}</strong> assemblée (${sectionCount} section${sectionCount > 1 ? 's' : ''})</span>`;
+                  }
                 }
+
                 // Met à jour l'iframe avec le HTML assemblé en live
                 currentAppHtml = buildHtmlDoc(assembledHtml);
                 renderWorkspaceIframe(currentAppHtml);
                 updateEditorContent(currentAppHtml);
 
-                if (statusEl) {
-                  statusEl.innerHTML = `<span class="text-emerald-400">✓ Section <strong>${event.name}</strong> assemblée (${sectionCount} section${sectionCount > 1 ? 's' : ''})</span>`;
-                }
                 if (textEl && event.text) {
                   // Ajoute la description courte de la section au chat
                   chatText += (chatText ? '\n\n' : '') + `▸ ${event.text}`;
