@@ -32,8 +32,9 @@ interface CriticFinding {
 /**
  * Score déterministe 0-100 : chaque finding pénalise selon sa sévérité.
  * Déterministe par construction — reproductible à preuves identiques.
+ * Exporté pour le Self-Repair (ÉTAPE 7) : mêmes règles côté réparation.
  */
-function computeCriticScore(findings: readonly CriticFinding[]): number {
+export function computeCriticScore(findings: readonly CriticFinding[]): number {
   const penalty = { CRITICAL: 25, HIGH: 12, MEDIUM: 6, LOW: 2 } as const;
   const total = findings.reduce((acc, f) => acc + penalty[f.severity], 0);
   return Math.max(0, Math.min(100, 100 - total));

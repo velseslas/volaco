@@ -5462,7 +5462,8 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
           <span class="text-[10px] font-normal opacity-80">${findings.length} finding(s)${criticals ? ' · ' + criticals + ' critique(s)' : ''}${data.renderAvailable ? '' : ' · rendu réel indisponible'}</span>
         </div>
         <div class="flex items-center space-x-2">
-          ${criticals ? '<button onclick="repairViaChat()" class="px-3 py-1 rounded-lg bg-[#141a2e]/80 hover:bg-[#1c2440] text-slate-200 text-[11px] font-semibold transition">Réparer via le chat</button>' : ''}
+          ${criticals ? '<button onclick="autoRepair()" class="px-3 py-1 rounded-lg bg-rose-600/80 hover:bg-rose-500 text-white text-[11px] font-bold transition">Auto-réparer</button>' : ''}
+          ${criticals ? '<button onclick="repairViaChat()" class="px-3 py-1 rounded-lg bg-[#141a2e]/80 hover:bg-[#1c2440] text-slate-200 text-[11px] font-semibold transition">Via le chat</button>' : ''}
           <button onclick="this.parentElement.parentElement.remove()" class="px-2 py-1 rounded-lg hover:bg-white/10 text-[11px] transition">✕</button>
         </div>`;
       panel.appendChild(banner);
@@ -5476,6 +5477,39 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
       }
       const banner = document.getElementById('qualityGateBanner');
       if (banner) banner.remove();
+    }
+
+    /**
+     * ÉTAPE 7 — Self-Repair serveur borné (§26 CDC) : diagnosis → patch LLM →
+     * re-validation, rollback si le score ne s'améliore pas (Pareto-Safe).
+     */
+    async function autoRepair() {
+      const proj = userProjects.find(p => p.id === activeProjectId);
+      const pid = proj && proj.serverProjectId;
+      if (!pid) { showCaptureToast('Aucun projet serveur.'); return; }
+      showCaptureToast('Auto-réparation en cours (max 2 itérations)…');
+      try {
+        const res = await fetch(`/api/v1/projects/${pid}/repair`, {
+          method: 'POST',
+          headers: studioApiHeaders(),
+          body: JSON.stringify({ maxIterations: 2 })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          showCaptureToast(`Auto-réparation : score ${data.initialScore ?? '?'} → ${data.finalScore}/100 (${data.repaired ? 'réparé' : 'non réparé'})`);
+          const fresh = await loadServerFileContent('index.html');
+          if (fresh !== null) {
+            currentAppHtml = fresh;
+            renderWorkspaceIframe(currentAppHtml);
+            updateEditorContent(currentAppHtml);
+          }
+          await runQualityGate();
+        } else {
+          showCaptureToast(`Auto-réparation indisponible : ${data.message || 'HTTP ' + res.status}`);
+        }
+      } catch (_) {
+        showCaptureToast('Serveur injoignable pendant la réparation.');
+      }
     }
 
     /**

@@ -32,6 +32,7 @@ import { handleDecideRoutes, configureDecideRoute } from './routes/decide.js';
 import { handleOrchestrateRoutes, configureOrchestratorService } from './routes/orchestrate.js';
 import { handleDnaRoutes, configureDnaRoute } from './routes/dna.js';
 import { handleDecisionsRoutes, configureDecisionsRoute } from './routes/decisions.js';
+import { handleRepairRoutes } from './routes/repair.js';
 import { handleVisualRoutes } from './routes/visual.js';
 import { ConversationIntelligenceService } from '../../../packages/core/src/ai-native/conversation-intelligence/service.js';
 import { AgentRuntimeService } from '../../../packages/core/src/ai-native/agent-runtime/service.js';
@@ -339,6 +340,7 @@ const API_ROUTES: readonly RouteEntry[] = [
   { name: 'dna (AINT-002)', handler: handleDnaRoutes },
   { name: 'decisions (ADR)', handler: handleDecisionsRoutes },
   { name: 'visual-critic (AINT-012)', handler: handleVisualRoutes },
+  { name: 'self-repair (ÉTAPE 7)', handler: handleRepairRoutes },
   { name: 'ai-proxy', handler: handleAiProxyRoutes },
   { name: 'files (CORE-003/004)', handler: handleFilesRoutes },
   { name: 'terminal (CORE-005)', handler: handleTerminalRoutes },
