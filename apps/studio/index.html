@@ -5183,6 +5183,33 @@ npx serve .
   var haloStyle = document.createElement('style');
   haloStyle.textContent = '.vibe-focus-halo { outline: 2px solid rgba(139,92,246,.95) !important; outline-offset: 4px; box-shadow: 0 0 0 6px rgba(139,92,246,.22), 0 0 34px rgba(139,92,246,.5) !important; border-radius: 8px; transition: box-shadow .3s ease, outline-offset .3s ease; }';
   document.head.appendChild(haloStyle);
+  // Qualité preview — filet anti-images-cassées : les LLM hallucinent parfois
+  // des URL d'images. Toute image en échec est remplacée par un placeholder
+  // déterministe élégant (dégradé de la palette + image de secours fiable).
+  var vibeImgSeed = 0;
+  function vibeFixImages(scope) {
+    var imgs = (scope || document).querySelectorAll('img:not([data-vibefixed])');
+    Array.prototype.forEach.call(imgs, function(img){
+      img.dataset.vibefixed = '1';
+      img.setAttribute('referrerpolicy', 'no-referrer');
+      var vibeFallback = function(){
+        if (img.dataset.vibeSwapped) return;
+        img.dataset.vibeSwapped = '1';
+        vibeImgSeed++;
+        var label = (img.alt || 'image').replace(/[^a-zA-Z0-9]/g, '-').slice(0, 30) + '-' + vibeImgSeed;
+        img.style.background = 'linear-gradient(135deg,#1e293b,#0f172a)';
+        img.style.minHeight = img.style.minHeight || '180px';
+        img.style.objectFit = img.style.objectFit || 'cover';
+        img.src = 'https://picsum.photos/seed/' + encodeURIComponent(label) + '/800/520';
+      };
+      img.addEventListener('error', vibeFallback);
+      if (img.complete && img.naturalWidth === 0) vibeFallback();
+    });
+  }
+  vibeFixImages(document);
+  document.addEventListener('DOMContentLoaded', function(){ vibeFixImages(document); });
+  window.addEventListener('load', function(){ vibeFixImages(document); });
+  new MutationObserver(function(){ vibeFixImages(document); }).observe(document.documentElement, { childList: true, subtree: true });
   function send(lvl, args) {
     try {
       var msg = Array.from(args).map(function(x){
