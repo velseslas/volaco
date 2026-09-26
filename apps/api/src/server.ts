@@ -8,6 +8,7 @@ import { metricsCollector } from '../../../packages/core/src/observability/metri
 import { auditStore } from '../../../packages/core/src/observability/audit.js';
 import { getHealthResponse } from './routes/health.js';
 import { extractRequestContext } from './middleware/auth.js';
+import type { RequestContext } from './middleware/auth.js';
 import { handleProjectsRoutes } from './routes/projects.js';
 import { handleDashboardRoutes } from './routes/dashboard.js';
 import { handleFilesRoutes } from './routes/files.js';
@@ -265,6 +266,79 @@ function checkRateLimit(req: IncomingMessage, pathname: string): boolean {
   return bucket.count <= max;
 }
 
+// --- Mini-routeur : table de routes API déclarative --------------------------
+// ÉTAPE 2 : remplace la longue chaîne if-return. L'ordre des entrées est une
+// priorité STRICTE (la première qui répond true termine la requête). Pour
+// ajouter une route : une entrée ici, c'est tout.
+type RouteHandler = (
+  req: IncomingMessage, res: ServerResponse, pathname: string,
+  context: RequestContext, requestId: string
+) => Promise<boolean> | boolean;
+
+interface RouteEntry {
+  readonly name: string;
+  readonly handler: RouteHandler;
+}
+
+// Enrobe les handlers avec effet d'audit lié au POST (comportement historique
+// du dispatcher conservé à l'identique).
+const projectsWithAudit: RouteHandler = async (req, res, pathname, context, requestId) => {
+  const handled = await handleProjectsRoutes(req, res, pathname, context, requestId);
+  if (handled && req.method === 'POST') {
+    auditStore.record({
+      tenantId: context.tenantId,
+      userId: context.role,
+      action: 'PROJECT_CREATE',
+      resourceType: 'PROJECT',
+      resourceId: 'new',
+      status: 'SUCCESS',
+      requestId
+    });
+  }
+  return handled;
+};
+
+const revisionsWithAudit: RouteHandler = async (req, res, pathname, context, requestId) => {
+  const handled = await handleRevisionsRoutes(req, res, pathname, context, requestId);
+  if (handled && req.method === 'POST') {
+    auditStore.record({
+      tenantId: context.tenantId,
+      userId: context.role,
+      action: pathname.endsWith('/rollback') ? 'ROLLBACK_TRIGGERED' : 'REVISION_CREATE',
+      resourceType: 'REVISION',
+      resourceId: 'action',
+      status: 'SUCCESS',
+      requestId
+    });
+  }
+  return handled;
+};
+
+const API_ROUTES: readonly RouteEntry[] = [
+  { name: 'observability (FND-005)', handler: handleObservabilityRoutes },
+  { name: 'dashboard (CORE-002)', handler: handleDashboardRoutes },
+  { name: 'workspace (CAPP-001)', handler: handleWorkspaceRoutes },
+  { name: 'project-state (CAPP-004)', handler: handleProjectStateRoutes },
+  { name: 'studio-shell (CAPP-005)', handler: handleStudioRoutes },
+  { name: 'activity/history (CAPP-007)', handler: handleActivityRoutes },
+  { name: 'application-audit (AINT-013)', handler: handleAuditRoutes },
+  { name: 'feature-intelligence (AINT-014)', handler: handleFeatureIntelligenceRoutes },
+  { name: 'user-feedback (AINT-015)', handler: handleFeedbackRoutes },
+  { name: 'ai-strategy (AINT-016)', handler: handleStrategyRoutes },
+  { name: 'conversation (SSE)', handler: handleConversationRoutes },
+  { name: 'decide (Phase 9.5)', handler: handleDecideRoutes },
+  { name: 'orchestrate (Phase 9)', handler: handleOrchestrateRoutes },
+  { name: 'render (headless)', handler: handleRenderRoutes },
+  { name: 'dna (AINT-002)', handler: handleDnaRoutes },
+  { name: 'visual-critic (AINT-012)', handler: handleVisualRoutes },
+  { name: 'ai-proxy', handler: handleAiProxyRoutes },
+  { name: 'files (CORE-003/004)', handler: handleFilesRoutes },
+  { name: 'terminal (CORE-005)', handler: handleTerminalRoutes },
+  { name: 'settings (CORE-006)', handler: handleSettingsRoutes },
+  { name: 'projects (FND-003)', handler: projectsWithAudit },
+  { name: 'revisions (FND-004)', handler: revisionsWithAudit }
+];
+
 export function createApiServer(configOverride: Partial<AppConfig> = {}) {
   const config = loadConfig(configOverride);
   bootstrapConversationEngine();
@@ -393,118 +467,15 @@ export function createApiServer(configOverride: Partial<AppConfig> = {}) {
 
       // 1-2. /health et /status sont traités plus haut (endpoints publics).
 
-      // 3. ObservabilitÃ© & MÃ©triques (FND-005)
+      // 3+. Routes API — table déclarative, ordre de priorité STRICT
+      // (la première entrée qui répond true termine la requête).
       res.setHeader('Content-Type', 'application/json');
-      const handledObs = handleObservabilityRoutes(req, res, pathname, context, requestId);
-      if (handledObs) return;
-
-      // 4. Dashboard (CORE-002)
-      const handledDashboard = handleDashboardRoutes(req, res, pathname, context, requestId);
-      if (handledDashboard) return;
-
-      // 4b. Workspace & Summary (CAPP-001)
-      const handledWorkspace = await handleWorkspaceRoutes(req, res, pathname, context, requestId);
-      if (handledWorkspace) return;
-
-      // 4c. Project State & Application Status (CAPP-004)
-      const handledProjectState = await handleProjectStateRoutes(req, res, pathname, context, requestId);
-      if (handledProjectState) return;
-
-      // 4d. Studio Shell API (CAPP-005)
-      const handledStudio = await handleStudioRoutes(req, res, pathname, context, requestId);
-      if (handledStudio) return;
-
-      // 4e. Project Activity & History (CAPP-007)
-      const handledActivity = await handleActivityRoutes(req, res, pathname, context, requestId);
-      if (handledActivity) return;
-
-      // 4f. Application Audit & Quality Intelligence (AINT-013)
-      const handledAudit = await handleAuditRoutes(req, res, pathname, context, requestId);
-      if (handledAudit) return;
-
-      // 4g. Feature Intelligence & Product Evolution (AINT-014)
-      const handledFeatureIntelligence = await handleFeatureIntelligenceRoutes(req, res, pathname, context, requestId);
-      if (handledFeatureIntelligence) return;
-
-      // 4h. User Feedback & Bug Intelligence (AINT-015)
-      const handledFeedback = await handleFeedbackRoutes(req, res, pathname, context, requestId);
-      if (handledFeedback) return;
-
-      // 4i. AI Strategy Optimizer (AINT-016)
-      const handledStrategy = await handleStrategyRoutes(req, res, pathname, context, requestId);
-      if (handledStrategy) return;
-
-      const handledConversation = await handleConversationRoutes(req, res, pathname, context, requestId);
-      if (handledConversation) return;
-
-      // LOT 1 — Decision Engine (Phase 9.5) et AI Orchestrator (Phase 9)
-      const handledDecide = await handleDecideRoutes(req, res, pathname, context, requestId);
-      if (handledDecide) return;
-
-      const handledOrchestrate = await handleOrchestrateRoutes(req, res, pathname, context, requestId);
-      if (handledOrchestrate) return;
-
-      const handledRender = await handleRenderRoutes(req, res, pathname, context, requestId);
-      if (handledRender) return;
-
-      // LOT 3 — Application DNA réelle
-      const handledDna = await handleDnaRoutes(req, res, pathname, context, requestId);
-      if (handledDna) return;
-
-      // LOT 5 — Design Critic v1 (rendu réel + analyse visuelle déterministe)
-      const handledVisual = await handleVisualRoutes(req, res, pathname, context, requestId);
-      if (handledVisual) return;
-
-      const handledAiProxy = await handleAiProxyRoutes(req, res, pathname, context, requestId);
-      if (handledAiProxy) return;
-
-      // 5. File Explorer & Editor (CORE-003, CORE-004)
-      const handledFiles = await handleFilesRoutes(req, res, pathname, context, requestId);
-      if (handledFiles) return;
-
-      // 6. Terminal (CORE-005)
-      const handledTerminal = await handleTerminalRoutes(req, res, pathname, context, requestId);
-      if (handledTerminal) return;
-
-      // 7. Project Settings (CORE-006)
-      const handledSettings = await handleSettingsRoutes(req, res, pathname, context, requestId);
-      if (handledSettings) return;
-
-      // 8. Projets (FND-003)
-      const handledProjects = await handleProjectsRoutes(req, res, pathname, context, requestId);
-      if (handledProjects) {
-        if (req.method === 'POST') {
-          auditStore.record({
-            tenantId: context.tenantId,
-            userId: context.role,
-            action: 'PROJECT_CREATE',
-            resourceType: 'PROJECT',
-            resourceId: 'new',
-            status: 'SUCCESS',
-            requestId
-          });
-        }
-        return;
+      for (const route of API_ROUTES) {
+        const handled = await route.handler(req, res, pathname, context, requestId);
+        if (handled) return;
       }
 
-      // 5. RÃ©visions & ModÃ¨le (FND-004)
-      const handledRevisions = await handleRevisionsRoutes(req, res, pathname, context, requestId);
-      if (handledRevisions) {
-        if (req.method === 'POST') {
-          auditStore.record({
-            tenantId: context.tenantId,
-            userId: context.role,
-            action: pathname.endsWith('/rollback') ? 'ROLLBACK_TRIGGERED' : 'REVISION_CREATE',
-            resourceType: 'REVISION',
-            resourceId: 'action',
-            status: 'SUCCESS',
-            requestId
-          });
-        }
-        return;
-      }
-
-      // 6. Route non trouvÃ©e
+      // Route non trouvée
       throw new NotFoundError(pathname, requestId);
     } catch (err: unknown) {
       res.setHeader('Content-Type', 'application/json');
