@@ -3061,6 +3061,39 @@
         const startTime = Date.now();
         const S_END_LOCAL = '<' + '/script>';
 
+        // MODE MODIFICATION : on part du document complet existant (s'il est
+        // chargé) pour que chaque section modifiée remplace l'ancienne en live.
+        // Null = mode création (assemblage progressif de fragments).
+        let modWorkingDoc = (isModification && typeof currentAppHtml === 'string' && /<html[\s>]/i.test(currentAppHtml)) ? currentAppHtml : null;
+
+        /**
+         * Applique une section renvoyée par l'IA (modify/add/delete/create)
+         * sur un document HTML complet, au même format que le côté serveur.
+         */
+        const applySectionToDoc = (doc, name, mode, after, newHtml) => {
+          if (!doc) return doc;
+          try {
+            if (mode === 'delete') {
+              return doc.replace(new RegExp('<div[^>]*data-section="' + name + '"[^>]*>[\\s\\S]*?(?=<div[^>]*data-section|</body>|$)', 'i'), '');
+            }
+            if (!newHtml) return doc;
+            const wrapped = '<div class="vibe-stitched" data-section="' + name + '">' + newHtml + '</div>';
+            if (mode === 'modify') {
+              const out = doc.replace(new RegExp('<div[^>]*data-section="' + name + '"[^>]*>[\\s\\S]*?(?=<div[^>]*data-section|</body>|$)', 'i'), wrapped);
+              if (out !== doc) return out;
+              // Variante par id de balise (header/footer/section/nav)
+              const idRe = new RegExp('<(section|header|footer|nav)[^>]*id="' + name + '"[^>]*>[\\s\\S]*?</\\1>', 'i');
+              return doc.replace(idRe, newHtml);
+            }
+            if (mode === 'add' && after) {
+              const afterRe = new RegExp('(<div[^>]*data-section="' + after + '"[^>]*>[\\s\\S]*?</div>)', 'i');
+              if (afterRe.test(doc)) return doc.replace(afterRe, '$1\n' + wrapped);
+            }
+            // 'create' = ajout à la fin
+            return doc.replace('</body>', wrapped + '\n</body>');
+          } catch (e) { return doc; }
+        };
+
         // Template HTML de base
         const buildHtmlDoc = (sections) => `<!DOCTYPE html>
 <html lang="fr" class="dark scroll-smooth">
@@ -3150,12 +3183,22 @@ ${sections}
                 assembledHtml = assembledHtml.replace(/<div style="padding:24px;border:1px dashed[^"]*"[^>]*>[\s\S]*?<\/div><\/div>/g, '');
                 // Nettoie le wrapper si présent
                 let cleanHtml = (event.html || '').replace(/^<div[^>]*data-section="[^"]*"[^>]*>([\s\S]*)<\/div>$/, '$1').trim();
-                if (cleanHtml.length > 50) {
+                if (modWorkingDoc) {
+                  // MODE MODIFICATION : applique la modification sur le
+                  // document EXISTANT — le preview garde toute l'application,
+                  // seule la section concernée change en direct (au lieu de
+                  // n'afficher que des fragments isolés perdus).
+                  modWorkingDoc = applySectionToDoc(modWorkingDoc, event.name, event.mode, event.after, cleanHtml);
+                  currentAppHtml = modWorkingDoc;
+                  renderDebounced(currentAppHtml);
+                  updateEditorContent(currentAppHtml);
+                } else if (cleanHtml.length > 50) {
+                  // MODE CRÉATION : assemblage progressif des fragments
                   assembledHtml += '<div class="vibe-stitched" data-section="' + event.name + '">' + cleanHtml + '</div>\n';
+                  currentAppHtml = buildHtmlDoc(assembledHtml);
+                  renderDebounced(currentAppHtml);
+                  updateEditorContent(currentAppHtml);
                 }
-                currentAppHtml = buildHtmlDoc(assembledHtml);
-                renderDebounced(currentAppHtml);
-                updateEditorContent(currentAppHtml);
                 if (statusEl) statusEl.innerHTML = '<span style="color:#4ade80;">✓ Section ' + event.name + ' assemblée</span>';
                 if (textEl && event.text) {
                   chatText += (chatText ? '\n' : '') + '▸ ' + event.text;
@@ -3169,7 +3212,13 @@ ${sections}
                   assembledHtml = event.html;
                 }
                 if (assembledHtml.length > 100) {
-                  currentAppHtml = buildHtmlDoc(assembledHtml);
+                  // Le serveur renvoie soit des fragments (création), soit un
+                  // DOCUMENT COMPLET (modification). Ré-emballer un document
+                  // complet dans buildHtmlDoc produisait un document imbriqué
+                  // (DOCTYPE dans <body>) : preview cassé à partir de la 2ᵉ
+                  // demande, puis corruption propagée à chaque sauvegarde.
+                  const isFullDoc = /<!DOCTYPE|<html[\s>]/i.test(assembledHtml);
+                  currentAppHtml = isFullDoc ? assembledHtml : buildHtmlDoc(assembledHtml);
                   renderNow(currentAppHtml);
                   updateEditorContent(currentAppHtml);
                   // Sauvegarde

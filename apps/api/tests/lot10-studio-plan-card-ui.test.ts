@@ -114,4 +114,23 @@ describe('LOT 10 — Câblage réel de l\'interface Studio', () => {
       "Le fallback 'default-project' (404 garanti : projet jamais créé côté serveur) doit avoir disparu"
     );
   });
+
+  it('7. Le preview n\'est plus cassé en modification (pas de double-emballage du document)', () => {
+    assert.ok(
+      indexContent.includes('const isFullDoc = /<!DOCTYPE|<html[\\s>]/i.test(assembledHtml);'),
+      'Le handler done doit détecter un document complet avant de choisir d\'emballer ou non'
+    );
+    assert.ok(
+      indexContent.includes('currentAppHtml = isFullDoc ? assembledHtml : buildHtmlDoc(assembledHtml);'),
+      'Un document complet doit être utilisé tel quel (jamais ré-emballé)'
+    );
+    assert.ok(
+      indexContent.includes('applySectionToDoc'),
+      'applySectionToDoc doit exister (modification appliquée sur le document existant en live)'
+    );
+    assert.ok(
+      indexContent.includes('modWorkingDoc'),
+      'Le mode modification doit travailler sur le document existant (modWorkingDoc)'
+    );
+  });
 });
