@@ -177,4 +177,16 @@ describe('LOT 10 — Câblage réel de l\'interface Studio', () => {
     assert.ok(indexContent.includes('event.awaitingConfirmation'), 'Le done d\'attente de confirmation doit être traité');
     assert.ok(indexContent.includes('Approuver et générer'), 'Le bouton d\'approbation doit exister');
   });
+
+  it('11. Quality Gate + Comparaison avant/après (§19-20 V8)', () => {
+    assert.ok(indexContent.includes('async function runQualityGate()'), 'runQualityGate doit être définie');
+    assert.ok(indexContent.includes('/visual/analyze`'), 'Le Quality Gate doit appeler POST /visual/analyze');
+    assert.ok(indexContent.includes('function showQualityGateBanner('), 'Le bandeau Quality Gate doit exister');
+    assert.ok(indexContent.includes('Quality Gate — '), 'Le bandeau doit afficher le score');
+    assert.ok(indexContent.includes('function repairViaChat()'), 'La réparation via le chat doit être proposée');
+    assert.ok(indexContent.includes('window._preGenerationHtml'), 'La version AVANT doit être capturée pour la comparaison');
+    assert.ok(indexContent.includes('function runCompare()'), 'runCompare doit être définie');
+    assert.ok(indexContent.includes('id="compareModal"'), 'La modale de comparaison doit exister');
+    assert.ok(indexContent.includes('compareBefore') && indexContent.includes('compareAfter'), 'Les deux rendus A/B doivent exister');
+  });
 });

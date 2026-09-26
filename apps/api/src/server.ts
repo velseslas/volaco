@@ -29,6 +29,7 @@ import { handleAiProxyRoutes } from './routes/ai-proxy.js';
 import { handleDecideRoutes, configureDecideRoute } from './routes/decide.js';
 import { handleOrchestrateRoutes, configureOrchestratorService } from './routes/orchestrate.js';
 import { handleDnaRoutes, configureDnaRoute } from './routes/dna.js';
+import { handleVisualRoutes } from './routes/visual.js';
 import { ConversationIntelligenceService } from '../../../packages/core/src/ai-native/conversation-intelligence/service.js';
 import { AgentRuntimeService } from '../../../packages/core/src/ai-native/agent-runtime/service.js';
 import { aiProviderRegistry } from '../../../packages/core/src/ai/providers/registry.js';
@@ -428,6 +429,10 @@ export function createApiServer(configOverride: Partial<AppConfig> = {}) {
       // LOT 3 — Application DNA réelle
       const handledDna = await handleDnaRoutes(req, res, pathname, context, requestId);
       if (handledDna) return;
+
+      // LOT 5 — Design Critic v1 (rendu réel + analyse visuelle déterministe)
+      const handledVisual = await handleVisualRoutes(req, res, pathname, context, requestId);
+      if (handledVisual) return;
 
       const handledAiProxy = await handleAiProxyRoutes(req, res, pathname, context, requestId);
       if (handledAiProxy) return;

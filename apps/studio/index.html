@@ -1063,6 +1063,17 @@
             <i class="fa-solid fa-camera-retro text-xs"></i>
           </button>
 
+          <!-- LOT 5 : Comparaison avant/après -->
+          <button
+            id="btnTopPreviewCompare"
+            type="button"
+            onclick="runCompare()"
+            class="w-7 h-7 rounded-full text-slate-400 hover:text-violet-300 hover:bg-violet-500/10 flex items-center justify-center text-xs transition duration-150 active:scale-95"
+            title="Comparer avant / après (§20 V8 : Visual Version Comparison)"
+          >
+            <i class="fa-solid fa-columns text-xs"></i>
+          </button>
+
         </div>
       </div>
 
@@ -3064,6 +3075,11 @@
         const titleEl = document.getElementById(msgId)?.querySelector('.text-violet-400');
 
         // Ouvre la connexion SSE
+        // LOT 5 — capture la version AVANT pour la comparaison A/B
+        if (typeof currentAppHtml === 'string' && currentAppHtml.length > 100) {
+          window._preGenerationHtml = currentAppHtml;
+        }
+
         const response = await fetch(`/api/v1/projects/${serverProjectId}/conversation/sessions/${sessionId}/stream`, {
           method: 'POST',
           headers: { ...studioApiHeaders(), 'Accept': 'text/event-stream' },
@@ -3265,6 +3281,8 @@ ${sections}
                   } catch (e) { console.warn('Sauvegarde:', e); }
                   // LOT 2 — l'arborescence réelle change après génération
                   loadFileTree();
+                  // LOT 5 — Quality Gate automatique (§25 V8 : No Quality Regression)
+                  runQualityGate();
                   if (titleEl) titleEl.innerHTML = '<i class="fa-solid fa-circle-check text-sm" style="color:#4ade80;"></i><span style="color:#4ade80;">Application générée</span>';
                   if (statusEl) {
                     const dur = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -5272,6 +5290,90 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
 
     function closeRealRenderModal() {
       const m = document.getElementById('realRenderModal');
+      if (m) m.classList.add('hidden');
+    }
+
+    // ==================== LOT 5 : QUALITY GATE + COMPARAISON (§19-20 V8) ====================
+    /**
+     * Quality Gate automatique après génération/modification : synchronise le
+     * HTML courant puis appelle le Design Critic v1 (POST /visual/analyze) et
+     * affiche un bandeau score + findings dans le preview.
+     */
+    async function runQualityGate() {
+      const proj = userProjects.find(p => p.id === activeProjectId);
+      const pid = proj && proj.serverProjectId;
+      if (!pid || !currentAppHtml || currentAppHtml.length < 100) return;
+      try {
+        await fetch(`/api/v1/projects/${pid}/files/content`, {
+          method: 'PUT',
+          headers: studioApiHeaders(),
+          body: JSON.stringify({ path: 'index.html', content: currentAppHtml })
+        });
+        const res = await fetch(`/api/v1/projects/${pid}/visual/analyze`, { method: 'POST', headers: studioApiHeaders() });
+        if (res.ok) showQualityGateBanner(await res.json());
+      } catch (_) { /* gate indisponible : silencieux, ne casse jamais le flux */ }
+    }
+
+    function showQualityGateBanner(data) {
+      const panel = document.getElementById('wsSubPanel-preview');
+      if (!panel) return;
+      const old = document.getElementById('qualityGateBanner');
+      if (old) old.remove();
+      const score = Number(data.score) || 0;
+      const scoreColor = score >= 90
+        ? 'text-emerald-300 border-emerald-500/40 bg-emerald-950/60'
+        : score >= 70
+          ? 'text-amber-300 border-amber-500/40 bg-amber-950/50'
+          : 'text-rose-300 border-rose-500/40 bg-rose-950/60';
+      const findings = data.findings || [];
+      const criticals = findings.filter((f) => f.severity === 'CRITICAL').length;
+      const banner = document.createElement('div');
+      banner.id = 'qualityGateBanner';
+      banner.className = `absolute top-2 left-2 right-2 z-30 flex items-center justify-between px-4 py-2 rounded-2xl border backdrop-blur-md ${scoreColor}`;
+      banner.innerHTML = `
+        <div class="flex items-center space-x-3 text-xs font-bold">
+          <i class="fa-solid fa-shield-halved"></i>
+          <span>Quality Gate — ${score}/100</span>
+          <span class="text-[10px] font-normal opacity-80">${findings.length} finding(s)${criticals ? ' · ' + criticals + ' critique(s)' : ''}${data.renderAvailable ? '' : ' · rendu réel indisponible'}</span>
+        </div>
+        <div class="flex items-center space-x-2">
+          ${criticals ? '<button onclick="repairViaChat()" class="px-3 py-1 rounded-lg bg-[#141a2e]/80 hover:bg-[#1c2440] text-slate-200 text-[11px] font-semibold transition">Réparer via le chat</button>' : ''}
+          <button onclick="this.parentElement.parentElement.remove()" class="px-2 py-1 rounded-lg hover:bg-white/10 text-[11px] transition">✕</button>
+        </div>`;
+      panel.appendChild(banner);
+    }
+
+    function repairViaChat() {
+      const input = document.getElementById('wsPromptInput');
+      if (input) {
+        input.value = 'Corrige les erreurs runtime détectées par le Quality Gate (erreurs au chargement / console) sans casser le reste de l\'application.';
+        input.focus();
+      }
+      const banner = document.getElementById('qualityGateBanner');
+      if (banner) banner.remove();
+    }
+
+    /**
+     * LOT 5 — Comparaison visuelle avant / après (§20 V8). La version "avant"
+     * est capturée au début de chaque génération/modification.
+     */
+    function runCompare() {
+      const before = window._preGenerationHtml;
+      const after = currentAppHtml;
+      if (!before || before === after) {
+        showCaptureToast('Aucune version antérieure à comparer — effectuez d\'abord une modification.');
+        return;
+      }
+      const beforeFrame = document.getElementById('compareBefore');
+      const afterFrame = document.getElementById('compareAfter');
+      if (beforeFrame) beforeFrame.srcdoc = before;
+      if (afterFrame) afterFrame.srcdoc = after;
+      const modal = document.getElementById('compareModal');
+      if (modal) modal.classList.remove('hidden');
+    }
+
+    function closeCompareModal() {
+      const m = document.getElementById('compareModal');
       if (m) m.classList.add('hidden');
     }
 
@@ -11520,6 +11622,34 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
           <span>Créer &amp; Ouvrir le Projet</span>
         </button>
       </div>
+    </div>
+  </div>
+
+  <!-- LOT 5 : Modale Comparaison avant / après (§20 V8) -->
+  <div id="compareModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="bg-[#0c1020] border border-violet-500/40 rounded-2xl max-w-5xl w-full p-6 space-y-4 shadow-2xl text-slate-100 max-h-[90vh] overflow-y-auto">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center space-x-2.5 text-violet-300 font-bold text-sm">
+          <i class="fa-solid fa-columns text-base"></i>
+          <span>Comparaison de versions — Avant / Après</span>
+        </div>
+        <button onclick="closeCompareModal()" class="text-slate-400 hover:text-white"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <div class="text-[11px] font-bold text-slate-400 mb-1"><i class="fa-solid fa-clock-rotate-left mr-1"></i>AVANT</div>
+          <div class="rounded-xl overflow-hidden border border-[#1e2642] bg-white h-80">
+            <iframe id="compareBefore" class="w-full h-full" sandbox="allow-scripts" title="Version avant"></iframe>
+          </div>
+        </div>
+        <div>
+          <div class="text-[11px] font-bold text-emerald-300 mb-1"><i class="fa-solid fa-clock mr-1"></i>APRÈS</div>
+          <div class="rounded-xl overflow-hidden border border-[#1e2642] bg-white h-80">
+            <iframe id="compareAfter" class="w-full h-full" sandbox="allow-scripts" title="Version après"></iframe>
+          </div>
+        </div>
+      </div>
+      <div class="text-[10px] text-slate-500">Rendus isolés (sandbox). Le score Quality Gate de la version courante est visible dans le bandeau du preview.</div>
     </div>
   </div>
 
