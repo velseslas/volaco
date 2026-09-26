@@ -3046,19 +3046,21 @@
       const cardId = 'planfirst-' + Date.now();
       window._planFirstContexts = window._planFirstContexts || {};
       window._planFirstContexts[cardId] = { message, isModification, cleanTitle };
+      const gate = planFirstEnabled();
+      // Conversation vivante : le chat affiche une carte DISCRÈTE et humaine.
+      // Les étapes mécaniques (anglais technique du PlanGenerator) ne sont
+      // montrées QUE en mode Plan First, où l'utilisateur doit décider.
       const steps = (plan.steps || []).map((s, i) =>
         `<li class="ml-4 list-disc text-slate-300 text-[11px]"><strong>${canonicalEscape(s.title || ('Étape ' + (i + 1)))}</strong>${s.description ? ' — ' + canonicalEscape(s.description) : ''}</li>`
       ).join('');
-      const gate = planFirstEnabled();
       appendChatMessage('assistant', `
         <div class="p-3 rounded-xl bg-[#0d1226] border border-violet-500/30 space-y-2" id="${cardId}">
           <div class="flex items-center justify-between border-b border-[#182036] pb-2">
-            <div class="flex items-center space-x-2 text-violet-300 font-bold text-xs"><i class="fa-solid fa-list-check"></i><span>Plan d'ingénierie${gate ? ' — confirmation requise' : ''}</span></div>
-            <span class="text-[10px] text-slate-500">${(plan.steps || []).length} étape(s) · ${canonicalEscape(plan.status || '')}</span>
+            <div class="flex items-center space-x-2 text-violet-300 font-bold text-xs"><i class="fa-solid fa-list-check"></i><span>${gate ? 'Mon plan — valide et je démarre' : 'Ce que je vais faire'}</span></div>
+            <span class="text-[10px] text-slate-500">${(plan.steps || []).length} étape(s)</span>
           </div>
           <div class="text-[11px] text-slate-400">${canonicalEscape(plan.summary || '')}</div>
-          <ul class="space-y-1">${steps}</ul>
-          ${gate ? `
+          ${gate ? `<ul class="space-y-1">${steps}</ul>
           <div class="flex items-center justify-end space-x-2 pt-2 border-t border-[#161c32]">
             <button onclick="rejectPlanFirstCard('${cardId}')" class="px-3 py-1.5 rounded-lg bg-[#141a2e] hover:bg-[#1c2440] text-slate-300 text-xs font-semibold">Rejeter</button>
             <button onclick="approvePlanFirstCard('${cardId}')" class="px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold transition active:scale-95">Approuver et générer</button>
