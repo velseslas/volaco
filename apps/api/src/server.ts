@@ -443,6 +443,9 @@ export function createApiServer(configOverride: Partial<AppConfig> = {}) {
           for (const p of candidatePaths) {
             if (existsSync(p)) {
               const html = readFileSync(p, 'utf8');
+              // Le Studio évolue à chaque correctif : jamais de cache navigateur
+              // (sinon l'usager reste sur une page périmée après un restart).
+              res.setHeader('Cache-Control', 'no-cache');
               res.setHeader('Content-Type', 'text/html; charset=utf-8');
               res.statusCode = 200;
               res.end(html);
