@@ -6585,7 +6585,8 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
 
       // 1. Tenter l'appel API HTTP /api/v1/projects/:projectId/audit ou /api/v1/audit
       try {
-        const projId = (typeof currentProjectId !== 'undefined' && currentProjectId) ? currentProjectId : 'default-project';
+        const projId = await resolveServerProjectId();
+        if (!projId) throw new Error('Aucun projet actif — créez ou ouvrez un projet dans le Studio.');
         const res = await fetch(`/api/v1/projects/${projId}/audit`, {
           method: 'POST',
           headers: {
@@ -10080,7 +10081,8 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
 
       // 1. Try backend API (AINT-016 route)
       try {
-        const projId = (typeof currentProjectId !== 'undefined' && currentProjectId) ? currentProjectId : 'default-project';
+        const projId = await resolveServerProjectId();
+        if (!projId) throw new Error('Aucun projet actif — créez ou ouvrez un projet dans le Studio.');
         const res = await fetch(`/api/v1/projects/${projId}/strategy/analyze`, {
           method: 'POST',
           headers: {
@@ -10324,16 +10326,39 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
     let lastFeedbackReport = null;
     let feedbackActiveFilter = 'ALL';
 
-    function getStudioProjectId() {
-      return (typeof currentProjectId !== 'undefined' && currentProjectId) ? currentProjectId : 'default-project';
+    /**
+     * Résout l'identifiant de PROJET SERVEUR à utiliser pour les appels API
+     * (audit, stratégie, features, feedback). L'ancien fallback vers un projet
+     * "default-project" inexistant renvoyait systématiquement 404 : ce projet
+     * n'est jamais créé côté serveur (currentProjectId n'est affecté nulle
+     * part). On réutilise donc le vrai projet créé par le chat, en le créant
+     * et le synchronisant à la volée si nécessaire (même logique que le chat).
+     */
+    async function resolveServerProjectId() {
+      const proj = userProjects.find(p => p.id === activeProjectId);
+      if (proj && proj.serverProjectId) return proj.serverProjectId;
+      if (typeof ensureServerProjectSynced === 'function') {
+        try {
+          return await ensureServerProjectSynced();
+        } catch (_) {
+          return null; // aucun projet actif : l'appelant affiche un message clair
+        }
+      }
+      return null;
     }
 
     async function runFeaturesDiscovery() {
-      const projId = getStudioProjectId();
       const btn = document.getElementById('btnRescanFeatures');
       const icon = document.getElementById('iconFeaturesRescan');
       if (icon) icon.classList.add('fa-spin');
       if (btn) btn.disabled = true;
+      const projId = await resolveServerProjectId();
+      if (!projId) {
+        if (icon) icon.classList.remove('fa-spin');
+        if (btn) btn.disabled = false;
+        alert('Aucun projet actif — créez ou ouvrez un projet dans le Studio.');
+        return;
+      }
       try {
         const res = await fetch(`/api/v1/projects/${projId}/features/analyze`, {
           method: 'POST',
@@ -10417,11 +10442,17 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
 
     // ==================== AINT-015 : USER FEEDBACK & BUG INTELLIGENCE (câblé) ====================
     async function runFeedbackAnalysis() {
-      const projId = getStudioProjectId();
       const btn = document.getElementById('btnRescanFeedback');
       const icon = document.getElementById('iconFeedbackRescan');
       if (icon) icon.classList.add('fa-spin');
       if (btn) btn.disabled = true;
+      const projId = await resolveServerProjectId();
+      if (!projId) {
+        if (icon) icon.classList.remove('fa-spin');
+        if (btn) btn.disabled = false;
+        alert('Aucun projet actif — créez ou ouvrez un projet dans le Studio.');
+        return;
+      }
       try {
         const res = await fetch(`/api/v1/projects/${projId}/feedback/analyze`, {
           method: 'POST',
@@ -10559,7 +10590,11 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
         alert('Décrivez le signal avant de l\'ingérer.');
         return;
       }
-      const projId = getStudioProjectId();
+      const projId = await resolveServerProjectId();
+      if (!projId) {
+        alert('Aucun projet actif — créez ou ouvrez un projet dans le Studio.');
+        return;
+      }
       try {
         const res = await fetch(`/api/v1/projects/${projId}/feedback/analyze`, {
           method: 'POST',

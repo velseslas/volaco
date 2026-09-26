@@ -99,4 +99,19 @@ describe('LOT 10 — Câblage réel de l\'interface Studio', () => {
     assert.ok(indexContent.includes('async function submitSimulatedSignal()'), 'submitSimulatedSignal doit être définie');
     assert.ok(!indexContent.includes("'tenant_default'"), 'Le tenant incohérent tenant_default doit avoir disparu');
   });
+
+  it('6. Les appels projets utilisent le vrai projet serveur (plus de fallback default-project mort)', () => {
+    assert.ok(
+      indexContent.includes('async function resolveServerProjectId()'),
+      'resolveServerProjectId doit réutiliser/créer le vrai projet serveur'
+    );
+    assert.ok(
+      indexContent.includes('await resolveServerProjectId()'),
+      'Les appels API doivent passer par resolveServerProjectId'
+    );
+    assert.ok(
+      !indexContent.includes("'default-project'"),
+      "Le fallback 'default-project' (404 garanti : projet jamais créé côté serveur) doit avoir disparu"
+    );
+  });
 });
