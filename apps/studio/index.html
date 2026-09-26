@@ -2977,7 +2977,7 @@
       const syncRes = await fetch(`/api/v1/projects/${proj.serverProjectId}/files/content`, {
         method: 'PUT',
         headers: studioApiHeaders(),
-        body: JSON.stringify({ path: 'index.html', content: currentAppHtml || '<html><body></body></html>' })
+        body: JSON.stringify({ path: 'index.html', content: (proj.isCustom && proj.code) ? proj.code : '<html><body></body></html>' })
       });
       if (!syncRes.ok) {
         const data = await syncRes.json().catch(() => ({}));
@@ -3024,34 +3024,9 @@
 
         if (loadEl && loadEl.parentElement) loadEl.remove();
 
-        // === CHARGE LE HTML ACTUEL DEPUIS LE SERVEUR (SOURCE DE VÉRITÉ) ===
-        // CRITIQUE : le serveur est la source de vérité pour le HTML. Le assembledHtml
-        // du Studio peut être désynchronisé (après reload, ou avec des skeletons
-        // non retirés, ou avec le format classe vibe-section-stitched qui diffère
-        // du format serveur). On charge TOUJOURS le HTML serveur avant la modification.
-        try {
-          const fileResp = await fetch(`/api/v1/projects/${serverProjectId}/files/content?path=index.html`, {
-            headers: studioApiHeaders()
-          });
-          if (fileResp.ok) {
-            const fileData = await fileResp.json();
-            const serverHtml = fileData?.file?.content || fileData?.content || '';
-            // Si le serveur a un HTML existant (> 200 chars), on l'utilise comme base
-            // Sinon, c'est une première création → assembledHtml reste vide
-            if (serverHtml.length > 200) {
-              assembledHtml = serverHtml;
-              currentAppHtml = buildHtmlDoc(assembledHtml);
-              renderWorkspaceIframe(currentAppHtml);
-              updateEditorContent(currentAppHtml);
-            }
-          }
-        } catch (e) {
-          console.warn('Chargement HTML serveur échoué (ok si première création) :', e.message);
-        }
-
         // Crée un message "agent" vide qu'on va remplir au fur et à mesure
         const msgId = 'stream-msg-' + Date.now();
-        const streamHtml = `
+        appendChatMessage('assistant', `
           <div class="space-y-2" id="${msgId}">
             <div class="flex items-center justify-between border-b border-[#182036] pb-2">
               <div class="flex items-center space-x-2 text-violet-400 font-bold">
@@ -3060,18 +3035,15 @@
               </div>
               <span class="text-[10px] bg-violet-500/15 text-violet-300 border border-violet-500/30 px-2 py-0.5 rounded-full font-mono">Streaming Live</span>
             </div>
-            <div class="text-slate-300 text-xs leading-relaxed whitespace-pre-wrap stream-text"></div>
-            <div class="text-[10px] text-slate-500 stream-status">en cours...</div>
+            <div class="text-slate-300 text-xs leading-relaxed whitespace-pre-wrap" id="${msgId}-text"></div>
+            <div class="text-[10px] text-slate-500" id="${msgId}-status">en cours...</div>
           </div>
-        `;
-        appendChatMessage('assistant', streamHtml);
-        const streamEl = document.getElementById(msgId);
-        const textEl = streamEl?.querySelector('.stream-text');
-        const statusEl = streamEl?.querySelector('.stream-status');
-        const titleEl = streamEl?.querySelector('.text-violet-400');
+        `);
+        const textEl = document.getElementById(msgId + '-text');
+        const statusEl = document.getElementById(msgId + '-status');
+        const titleEl = document.getElementById(msgId)?.querySelector('.text-violet-400');
 
-        // Ouvre la connexion SSE via fetch streaming (pas EventSource car on
-        // a besoin de POST + body)
+        // Ouvre la connexion SSE
         const response = await fetch(`/api/v1/projects/${serverProjectId}/conversation/sessions/${sessionId}/stream`, {
           method: 'POST',
           headers: { ...studioApiHeaders(), 'Accept': 'text/event-stream' },
@@ -3082,107 +3054,57 @@
           throw new Error('HTTP ' + response.status);
         }
 
-        // Lit le stream en live
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder('utf-8');
-        let buffer = '';
-        let fullText = '';
-        let chatText = '';  // Texte conversationnel uniquement (hors sections)
-        let assembledHtml = '';  // HTML assemblé des sections reçues
-        let currentSectionHtml = '';  // HTML de la section en cours
-        let inSection = false;
-        let sectionCount = 0;
+        // Variables pour l'assemblage
+        let assembledHtml = '';
+        let chatText = '';
         let tokenCount = 0;
         const startTime = Date.now();
+        const S_END_LOCAL = '<' + '/script>';
 
-        // Template HTML de base qu'on va remplir avec les sections au fur et à mesure
-        // IMPORTANT : on utilise S_END ('<' + '/script>') au lieu de la balise
-        // de fermeture litterale, sinon le parser HTML du Studio ferme prematurement
-        // le script principal et tout le code suivant devient du texte affiche.
-        const buildHtmlDoc = (sectionsHtml) => `<!DOCTYPE html>
+        // Template HTML de base
+        const buildHtmlDoc = (sections) => `<!DOCTYPE html>
 <html lang="fr" class="dark scroll-smooth">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Application VibeCode Studio</title>
-  <script src="https://cdn.tailwindcss.com">` + S_END + `
+  <title>VibeCode Studio</title>
+  <script src="https://cdn.tailwindcss.com">` + S_END_LOCAL + `
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
   <style>
     body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #070913; color: #f1f5f9; margin: 0; }
-
-    /* === ANIMATION SHIMMER (effet Google Stitch - skeleton loader) === */
-    @keyframes shimmer {
-      0% { background-position: -1000px 0; }
-      100% { background-position: 1000px 0; }
-    }
-    .vibe-skeleton {
-      background: linear-gradient(90deg, rgba(30, 41, 59, 0.5) 0%, rgba(51, 65, 85, 0.8) 50%, rgba(30, 41, 59, 0.5) 100%);
-      background-size: 1000px 100%;
-      animation: shimmer 1.5s infinite linear;
-      border-radius: 8px;
-      position: relative;
-      overflow: hidden;
-    }
-    .vibe-skeleton-header { height: 80px; margin: 0 0 24px 0; }
-    .vibe-skeleton-hero { height: 320px; margin: 0 0 24px 0; }
-    .vibe-skeleton-cards {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-      gap: 24px;
-      margin: 0 0 24px 0;
-    }
-    .vibe-skeleton-card { height: 280px; border-radius: 12px; }
-
-    /* === ANIMATION CROSS-FADE (skeleton -> contenu réel) === */
-    @keyframes stitchReveal {
-      0% { opacity: 0; transform: translateY(8px); filter: blur(4px); }
-      50% { opacity: 0.8; filter: blur(2px); }
-      100% { opacity: 1; transform: translateY(0); filter: blur(0); }
-    }
-    .vibe-section-stitched { animation: stitchReveal 0.6s ease-out forwards; }
-
-    /* === PROGRESS INDICATOR au-dessus du skeleton === */
-    .vibe-stitch-progress {
-      position: relative;
-      padding: 16px 24px;
-      margin: 0 0 8px 0;
-      background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(139, 92, 246, 0.1));
-      border-left: 3px solid #8b5cf6;
-      border-radius: 4px;
-      font-size: 13px;
-      color: #c4b5fd;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-    .vibe-stitch-progress::before {
-      content: '';
-      display: inline-block;
-      width: 12px;
-      height: 12px;
-      border: 2px solid #8b5cf6;
-      border-top-color: transparent;
-      border-radius: 50%;
-      animation: spin 0.8s linear infinite;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
-
-    /* === Container de section en cours === */
-    .vibe-stitch-container {
-      position: relative;
-      padding: 24px;
-      margin: 0 0 32px 0;
-      border: 1px dashed rgba(139, 92, 246, 0.3);
-      border-radius: 16px;
-      background: rgba(15, 23, 42, 0.4);
-    }
+    @keyframes shimmer { 0% { background-position: -1000px 0; } 100% { background-position: 1000px 0; } }
+    .vibe-skeleton { background: linear-gradient(90deg, rgba(30,41,59,.5) 0%, rgba(51,65,85,.8) 50%, rgba(30,41,59,.5) 100%); background-size: 1000px 100%; animation: shimmer 1.5s infinite linear; border-radius: 8px; }
+    @keyframes stitchReveal { 0% { opacity: 0; transform: translateY(8px); filter: blur(4px); } 50% { opacity: 0.8; filter: blur(2px); } 100% { opacity: 1; transform: translateY(0); filter: blur(0); } }
+    .vibe-stitched { animation: stitchReveal 0.6s ease-out forwards; }
   </style>
 </head>
 <body>
-${sectionsHtml}
+${sections}
 </body>
 </html>`;
+
+        // Debounce pour éviter les sauts visuels
+        let renderTimer = null;
+        let pendingHtml = null;
+        const renderDebounced = (html) => {
+          pendingHtml = html;
+          if (renderTimer) return;
+          renderTimer = setTimeout(() => {
+            renderTimer = null;
+            if (pendingHtml) { const h = pendingHtml; pendingHtml = null; renderWorkspaceIframe(h); }
+          }, 250);
+        };
+        const renderNow = (html) => {
+          if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
+          pendingHtml = null;
+          renderWorkspaceIframe(html);
+        };
+
+        // Lit le stream
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let buffer = '';
 
         while (true) {
           const { done, value } = await reader.read();
@@ -3202,237 +3124,88 @@ ${sectionsHtml}
               const event = JSON.parse(dataStr);
 
               if (event.type === 'start') {
-                if (statusEl) statusEl.textContent = 'Connexion au LLM établie...';
+                if (statusEl) statusEl.textContent = 'Connexion au LLM...';
               } else if (event.type === 'chat' && event.text) {
-                // Texte conversationnel (hors section)
                 chatText += event.text;
-                if (textEl) {
-                  let displayText = chatText;
-                  displayText = displayText.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-                  displayText = displayText.replace(/^- (.+)$/gm, '<li class="ml-4 list-disc">$1</li>');
-                  textEl.innerHTML = displayText;
-                }
                 tokenCount++;
+                if (textEl) {
+                  let d = chatText.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+                  d = d.replace(/^- (.+)$/gm, '<li class="ml-4 list-disc">$1</li>');
+                  textEl.innerHTML = d;
+                }
               } else if (event.type === 'token' && event.token) {
-                // Pendant une section, on ne fait rien de spécial — la section arrive d'un coup à la fin
                 tokenCount++;
               } else if (event.type === 'section_start') {
-                sectionCount++;
-                if (statusEl) statusEl.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i> Construction de la section <strong class="text-violet-300">${event.name}</strong> (${event.index})`;
-                if (titleEl) {
-                  titleEl.innerHTML = '<i class="fa-solid fa-hammer text-sm"></i><span>Construction en cours...</span>';
-                }
-                inSection = true;
-
-                // === EFFET GOOGLE STITCH ===
-                // Ajoute un skeleton (placeholder shimmer) pendant que la section se construit.
-                // Le type de skeleton dépend du nom de la section.
-                let skeletonHtml = '';
-                if (event.name === 'header' || event.name === 'nav' || event.name === 'navbar') {
-                  skeletonHtml = `<div class="vibe-stitch-container">
-                    <div class="vibe-stitch-progress">Construction du Header...</div>
-                    <div class="vibe-skeleton vibe-skeleton-header"></div>
-                  </div>`;
-                } else if (event.name === 'hero') {
-                  skeletonHtml = `<div class="vibe-stitch-container">
-                    <div class="vibe-stitch-progress">Construction du Hero...</div>
-                    <div class="vibe-skeleton vibe-skeleton-hero"></div>
-                  </div>`;
-                } else if (event.name === 'menu' || event.name === 'features' || event.name === 'pricing' || event.name === 'testimonials' || event.name === 'cards' || event.name === 'services') {
-                  skeletonHtml = `<div class="vibe-stitch-container">
-                    <div class="vibe-stitch-progress">Construction de ${event.name}...</div>
-                    <div class="vibe-skeleton vibe-skeleton-cards">
-                      <div class="vibe-skeleton vibe-skeleton-card"></div>
-                      <div class="vibe-skeleton vibe-skeleton-card"></div>
-                      <div class="vibe-skeleton vibe-skeleton-card"></div>
-                    </div>
-                  </div>`;
-                } else {
-                  // Skeleton générique pour les autres sections
-                  skeletonHtml = `<div class="vibe-stitch-container">
-                    <div class="vibe-stitch-progress">Construction de ${event.name}...</div>
-                    <div class="vibe-skeleton" style="height: 200px;"></div>
-                    <div class="vibe-skeleton" style="height: 24px; width: 60%; margin-top: 16px;"></div>
-                    <div class="vibe-skeleton" style="height: 24px; width: 80%; margin-top: 8px;"></div>
-                  </div>`;
-                }
-                // Ajoute le skeleton dans l'iframe en attendant la vraie section
-                assembledHtml += skeletonHtml;
-                currentAppHtml = buildHtmlDoc(assembledHtml);
-                renderWorkspaceIframeDebounced(currentAppHtml);
-                updateEditorContent(currentAppHtml);
+                tokenCount++;
+                if (statusEl) statusEl.innerHTML = `Construction de <strong>${event.name}</strong>...`;
+                if (titleEl) titleEl.innerHTML = '<i class="fa-solid fa-hammer text-sm"></i><span>Construction...</span>';
+                // Skeleton placeholder
+                let sk = '<div style="padding:24px;border:1px dashed rgba(139,92,246,.3);border-radius:16px;background:rgba(15,23,42,.4);margin-bottom:16px;">';
+                sk += '<div style="padding:12px 16px;background:linear-gradient(135deg,rgba(99,102,241,.1),rgba(139,92,246,.1));border-left:3px solid #8b5cf6;border-radius:4px;color:#c4b5fd;font-size:13px;margin-bottom:12px;">Construction de ' + event.name + '...</div>';
+                sk += '<div class="vibe-skeleton" style="height:200px;"></div></div>';
+                assembledHtml += sk;
+                renderDebounced(buildHtmlDoc(assembledHtml));
               } else if (event.type === 'section_end') {
-                inSection = false;
-                const mode = event.mode || 'create'; // 'create' | 'modify' | 'add' | 'delete'
-
-                if (mode === 'delete') {
-                  // === MODE DELETE : supprime la section existante ===
-                  const deleteRegex = new RegExp(`<div class="vibe-section-stitched" data-section="${event.name}">[\\s\\S]*?(?=<div class="vibe-section-stitched"|<\\/body>|$)`, 'g');
-                  assembledHtml = assembledHtml.replace(deleteRegex, '');
-                  // Si on a aussi un skeleton en attente pour cette section, le retire
-                  const skeletonPattern = /<div class="vibe-stitch-container">[\s\S]*?<\/div>\s*<\/div>\s*/g;
-                  assembledHtml = assembledHtml.replace(skeletonPattern, '');
-                  if (statusEl) {
-                    statusEl.innerHTML = `<span class="text-amber-400">🗑️ Section <strong>${event.name}</strong> supprimée</span>`;
-                  }
-                } else if (mode === 'modify') {
-                  // === MODE MODIFY : remplace la section existante par la nouvelle version ===
-                  // 1. Retire le skeleton de cette section (s'il existe encore) — regex tolérante
-                  const skeletonRemoveRegex = /<div class="vibe-stitch-container">[\s\S]*?<\/div>\s*<\/div>\s*/g;
-                  assembledHtml = assembledHtml.replace(skeletonRemoveRegex, '');
-                  // 2. Remplace la section existante par la nouvelle version
-                  if (event.html && event.html.length > 0) {
-                    // IMPORTANT : nettoie le wrapper <div data-section="..."> si le LLM l'a inclus
-                    // Sinon on se retrouve avec un doubling : <div data-section="X"><div data-section="X">...</div></div>
-                    const cleanHtml = event.html.replace(/^<div[^>]*data-section="[^"]*"[^>]*>([\s\S]*)<\/div>$/, '$1').trim();
-                    const newSectionHtml = `<div class="vibe-section-stitched" data-section="${event.name}">${cleanHtml}</div>`;
-                    // Regex FLEXIBLE : matche <div data-section="X"> ET <div class="vibe-section-stitched" data-section="X">
-                    // (le serveur sauve sans la classe, le Studio l'ajoute pour l'animation)
-                    const replaceRegex = new RegExp(`<div[^>]*data-section="${event.name}"[^>]*>[\\s\\S]*?(?=<div[^>]*data-section|<\\/body>|$)`, 'g');
-                    const before = assembledHtml;
-                    assembledHtml = assembledHtml.replace(replaceRegex, newSectionHtml);
-                    // Si rien n'a été remplacé, ajoute à la fin
-                    if (assembledHtml === before) {
-                      assembledHtml += newSectionHtml;
-                    }
-                  }
-                  if (statusEl) {
-                    statusEl.innerHTML = `<span class="text-blue-400">✏️ Section <strong>${event.name}</strong> modifiée</span>`;
-                  }
-                } else if (mode === 'add' && event.after) {
-                  // === MODE ADD : insère une nouvelle section APRÈS une section existante ===
-                  if (event.html && event.html.length > 0) {
-                    // Nettoie aussi le wrapper si présent
-                    const cleanAddHtml = event.html.replace(/^<div[^>]*data-section="[^"]*"[^>]*>([\s\S]*)<\/div>$/, '$1').trim();
-                    const newSectionHtml = `<div class="vibe-section-stitched" data-section="${event.name}">${cleanAddHtml}</div>`;
-                    // Regex flexible pour matcher les deux formats
-                    const afterRegex = new RegExp(`(<div[^>]*data-section="${event.after}"[^>]*>[\\s\\S]*?</div>)(\\s*<div[^>]*data-section)`, 'g');
-                    const before = assembledHtml;
-                    assembledHtml = assembledHtml.replace(afterRegex, `$1\n${newSectionHtml}$2`);
-                    if (assembledHtml === before) {
-                      assembledHtml += newSectionHtml;
-                    }
-                  }
-                  if (statusEl) {
-                    statusEl.innerHTML = `<span class="text-emerald-400">➕ Section <strong>${event.name}</strong> ajoutée après <strong>${event.after}</strong></span>`;
-                  }
-                } else {
-                  // === MODE CREATE (défaut) : ajoute simplement la section ===
-                  if (event.html && event.html.length > 0) {
-                    // Nettoie aussi le wrapper si présent
-                    const cleanCreateHtml = event.html.replace(/^<div[^>]*data-section="[^"]*"[^>]*>([\s\S]*)<\/div>$/, '$1').trim();
-                    // Retire le dernier skeleton ajouté (celui de cette section)
-                    const skeletonRemoveRegex = /<div class="vibe-stitch-container">[\s\S]*?<\/div>\s*<\/div>\s*/g;
-                    assembledHtml = assembledHtml.replace(skeletonRemoveRegex, '');
-                    // Ajoute la vraie section avec l'animation stitchReveal
-                    const sectionHtml = `<div class="vibe-section-stitched" data-section="${event.name}">${cleanCreateHtml}</div>`;
-                    assembledHtml += sectionHtml;
-                  }
-                  if (statusEl) {
-                    statusEl.innerHTML = `<span class="text-emerald-400">✓ Section <strong>${event.name}</strong> assemblée (${sectionCount} section${sectionCount > 1 ? 's' : ''})</span>`;
-                  }
+                // Retire le skeleton
+                assembledHtml = assembledHtml.replace(/<div style="padding:24px;border:1px dashed[^"]*"[^>]*>[\s\S]*?<\/div><\/div>/g, '');
+                // Nettoie le wrapper si présent
+                let cleanHtml = (event.html || '').replace(/^<div[^>]*data-section="[^"]*"[^>]*>([\s\S]*)<\/div>$/, '$1').trim();
+                if (cleanHtml.length > 50) {
+                  assembledHtml += '<div class="vibe-stitched" data-section="' + event.name + '">' + cleanHtml + '</div>\n';
                 }
-
-                // Met à jour l'iframe avec le HTML assemblé en live
                 currentAppHtml = buildHtmlDoc(assembledHtml);
-                renderWorkspaceIframeDebounced(currentAppHtml);
+                renderDebounced(currentAppHtml);
                 updateEditorContent(currentAppHtml);
-
+                if (statusEl) statusEl.innerHTML = '<span style="color:#4ade80;">✓ Section ' + event.name + ' assemblée</span>';
                 if (textEl && event.text) {
-                  // Ajoute la description courte de la section au chat
-                  chatText += (chatText ? '\n\n' : '') + `▸ ${event.text}`;
-                  let displayText = chatText;
-                  displayText = displayText.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-                  displayText = displayText.replace(/^- (.+)$/gm, '<li class="ml-4 list-disc">$1</li>');
-                  displayText = displayText.replace(/▸ (.+)$/gm, '<div class="mt-1 pl-2 border-l-2 border-violet-500/50 text-violet-300">▸ $1</div>');
-                  textEl.innerHTML = displayText;
+                  chatText += (chatText ? '\n' : '') + '▸ ' + event.text;
+                  let d = chatText.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+                  d = d.replace(/^- (.+)$/gm, '<li class="ml-4 list-disc">$1</li>');
+                  d = d.replace(/▸ (.+)$/gm, '<div style="margin-top:4px;padding-left:8px;border-left:2px solid rgba(139,92,246,.5);color:#c4b5fd;">▸ $1</div>');
+                  textEl.innerHTML = d;
                 }
               } else if (event.type === 'done') {
-                // === SYNCHRONISATION FINALE AVEC LE SERVEUR ===
-                // Le serveur envoie event.html qui est la version assemblée finale
-                // (source de vérité). On l'utilise pour resynchroniser assembledHtml
-                // afinas que la prochaine modification parte sur un HTML valide.
                 if (event.html && event.html.length > 100) {
                   assembledHtml = event.html;
                 }
-                // Sauvegarde le HTML final
                 if (assembledHtml.length > 100) {
                   currentAppHtml = buildHtmlDoc(assembledHtml);
-                  renderWorkspaceIframeNow(currentAppHtml);
+                  renderNow(currentAppHtml);
                   updateEditorContent(currentAppHtml);
+                  // Sauvegarde
                   try {
-                    const activeProj = userProjects.find(p => p.id === activeProjectId);
-                    if (activeProj) {
-                      activeProj.code = currentAppHtml;
-                      activeProj.isCustom = true;
+                    const ap = userProjects.find(p => p.id === activeProjectId);
+                    if (ap) {
+                      ap.code = currentAppHtml;
+                      ap.isCustom = true;
                       if (!isModification && cleanTitle && cleanTitle !== "Application Sur-Mesure") {
-                        activeProj.name = cleanTitle;
+                        ap.name = cleanTitle;
                         currentProjectName = cleanTitle;
-                        const wsTitle = document.getElementById('workspaceTitle');
-                        if (wsTitle) wsTitle.innerText = cleanTitle;
                       }
                       saveUserProjects();
                       renderDashboardProjects();
                     }
-                  } catch (e) { console.warn('Erreur sauvegarde:', e); }
-
-                  if (titleEl) {
-                    titleEl.innerHTML = '<i class="fa-solid fa-circle-check text-emerald-400 text-sm"></i><span class="text-emerald-400">Application générée (' + sectionCount + ' sections)</span>';
-                  }
+                  } catch (e) { console.warn('Sauvegarde:', e); }
+                  if (titleEl) titleEl.innerHTML = '<i class="fa-solid fa-circle-check text-sm" style="color:#4ade80;"></i><span style="color:#4ade80;">Application générée</span>';
                   if (statusEl) {
-                    const totalDuration = (Date.now() - startTime) / 1000;
-                    statusEl.innerHTML = `<span class="text-emerald-400">✓ ${sectionCount} sections · ${tokenCount} tokens · ${totalDuration.toFixed(1)}s</span>`;
+                    const dur = ((Date.now() - startTime) / 1000).toFixed(1);
+                    statusEl.innerHTML = '<span style="color:#4ade80;">✓ ' + tokenCount + ' tokens · ' + dur + 's</span>';
                   }
-                } else if (event.error) {
-                  if (titleEl) {
-                    titleEl.innerHTML = '<i class="fa-solid fa-triangle-exclamation text-amber-400 text-sm"></i><span class="text-amber-400">Aucune section générée</span>';
-                  }
-                  if (statusEl) {
-                    statusEl.innerHTML = `<span class="text-amber-400">${event.error}</span>`;
+                  if (textEl && event.thinking) {
+                    let d = event.thinking.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+                    textEl.innerHTML = d;
                   }
                 }
               } else if (event.type === 'error') {
-                if (titleEl) {
-                  titleEl.innerHTML = '<i class="fa-solid fa-triangle-exclamation text-rose-400 text-sm"></i><span class="text-rose-400">Erreur</span>';
-                }
-                if (statusEl) {
-                  statusEl.innerHTML = `<span class="text-rose-400">${event.error}</span>`;
-                }
+                if (statusEl) statusEl.innerHTML = '<span style="color:#f87171;">Erreur: ' + (event.error || '') + '</span>';
               }
-            } catch (e) {
-              // Ligne non-JSON, on ignore
-            }
-          }
-        }
-
-        // Si on n'a pas reçu l'event 'done', finalise quand même
-        if (statusEl && statusEl.textContent === 'en cours...') {
-          const totalDuration = (Date.now() - startTime) / 1000;
-          statusEl.innerHTML = `<span class="text-slate-400">Stream terminé en ${totalDuration.toFixed(1)}s</span>`;
-          if (titleEl) {
-            titleEl.innerHTML = '<i class="fa-solid fa-circle-check text-emerald-400 text-sm"></i><span class="text-emerald-400">Terminé</span>';
+            } catch (e) { /* ignore JSON parse errors */ }
           }
         }
 
       } catch (err) {
         if (loadEl && loadEl.parentElement) loadEl.remove();
-        appendChatMessage('assistant', `<div class="p-3 rounded-xl bg-rose-950/30 border border-rose-500/25 text-rose-200 text-[11px] space-y-1"><div class="font-bold">Le stream conversationnel a échoué.</div><div>${canonicalEscape(err.message || String(err))}</div><div class="text-[10px] text-slate-400">Repli sur le chemin classique...</div></div>`);
-        // Repli sur le chemin legacy
-        try {
-          const serverProjectId = await ensureServerProjectSynced();
-          const sessionId = await ensureConversationSession(serverProjectId);
-          const turnRes = await fetch(`/api/v1/projects/${serverProjectId}/conversation/sessions/${sessionId}/turns`, {
-            method: 'POST',
-            headers: studioApiHeaders(),
-            body: JSON.stringify({ message: text })
-          });
-          const turnData = await turnRes.json();
-          if (turnData.turn && turnData.turn.agentResponse) {
-            appendChatMessage('assistant', `<div class="text-slate-300 text-xs leading-relaxed">${canonicalEscape(turnData.turn.agentResponse.content)}</div>`);
-          }
-        } catch (fallbackErr) {
-          console.error('Fallback échoué:', fallbackErr);
-        }
+        appendChatMessage('assistant', '<div class="p-3 rounded-xl bg-rose-950/30 border border-rose-500/25 text-rose-200 text-[11px]"><div class="font-bold">Erreur: ' + canonicalEscape(err.message || String(err)) + '</div></div>');
       }
     }
 
@@ -5092,6 +4865,18 @@ npx serve .
     function renderWorkspaceIframe(htmlCode) {
       const iframe = document.getElementById('wsLiveIframe');
       if (!iframe) return;
+
+      // === GARDE ANTI-RESET ===
+      // Une fois qu'on a généré une app custom, on empêche tout ce qui tente
+      // de remettre le template par défaut (pulseAiExactTemplate) dans l'iframe.
+      // Ça empêche les resets sauvages qui cassent le preview après création.
+      if (window._vibeHasCustomApp && htmlCode === pulseAiExactTemplate) {
+        console.warn('[GARDE] Reset vers template par défaut bloqué — app custom en cours');
+        return;
+      }
+      if (htmlCode && htmlCode !== pulseAiExactTemplate && htmlCode.length > 500) {
+        window._vibeHasCustomApp = true;
+      }
 
       const logBridgeScript = `<script id="__vibecode_log_bridge">
 (function(){
@@ -6805,8 +6590,8 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'x-tenant-id': 'tenant_default',
-            'x-user-role': 'DEVELOPER'
+            'x-tenant-id': STUDIO_TENANT_ID,
+            'x-user-role': 'ENGINEER'
           },
           body: JSON.stringify({
             files: [{ path: 'index.html', content: html }]
@@ -9252,7 +9037,13 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
         // SCÉNARIO B : Génération ou MODIFICATION via le moteur conversationnel
         // canonique du serveur (compréhension → plan → confirmation → exécution),
         // au lieu d'un appel direct à l'IA depuis cette fonction.
-        const isModification = Boolean(currentAppHtml && currentAppHtml.length > 200);
+
+        // Détection du mode modification : on ne est en mode modification QUE si
+        // le projet actif est marqué isCustom=true ET a du code sauvegardé.
+        // Le template par défaut (pulseAiExactTemplate) ne compte PAS comme une
+        // "application existante à modifier" — c'est juste le placeholder.
+        const activeProjForMode = userProjects.find(p => p.id === activeProjectId);
+        const isModification = Boolean(activeProjForMode?.isCustom && activeProjForMode?.code && activeProjForMode.code.length > 200);
 
         let loadEl = null;
         if (!isModification) {
@@ -10294,8 +10085,8 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'x-tenant-id': 'tenant_default',
-            'x-user-role': 'DEVELOPER'
+            'x-tenant-id': STUDIO_TENANT_ID,
+            'x-user-role': 'ENGINEER'
           },
           body: JSON.stringify({ projectId: projId })
         });
@@ -10524,18 +10315,269 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
       URL.revokeObjectURL(url);
     }
 
-    // Stub guards for AINT-014 & AINT-015 in case functions are missing
-    if (typeof runFeaturesDiscovery !== 'function') {
-      window.runFeaturesDiscovery = function() {};
+    // ==================== AINT-014 : FEATURE INTELLIGENCE (câblé au backend) ====================
+    // Avant ce correctif, ces handlers étaient des no-op (stubs vides) : les
+    // endpoints /features/analyze et /feedback/analyze existaient côté serveur
+    // mais n'étaient jamais appelés, et 5 fonctions référencées par les boutons
+    // n'étaient pas définies (ReferenceError au clic).
+    let lastFeaturesReport = null;
+    let lastFeedbackReport = null;
+    let feedbackActiveFilter = 'ALL';
+
+    function getStudioProjectId() {
+      return (typeof currentProjectId !== 'undefined' && currentProjectId) ? currentProjectId : 'default-project';
     }
-    if (typeof runFeedbackAnalysis !== 'function') {
-      window.runFeedbackAnalysis = function() {};
+
+    async function runFeaturesDiscovery() {
+      const projId = getStudioProjectId();
+      const btn = document.getElementById('btnRescanFeatures');
+      const icon = document.getElementById('iconFeaturesRescan');
+      if (icon) icon.classList.add('fa-spin');
+      if (btn) btn.disabled = true;
+      try {
+        const res = await fetch(`/api/v1/projects/${projId}/features/analyze`, {
+          method: 'POST',
+          headers: studioApiHeaders(),
+          body: JSON.stringify({ projectId: projId })
+        });
+        if (res.ok) {
+          const json = await res.json();
+          lastFeaturesReport = (json && json.report) ? json.report : null;
+        }
+      } catch (_) {
+        // Serveur injoignable : on conserve le dernier rapport connu.
+      }
+      if (icon) icon.classList.remove('fa-spin');
+      if (btn) btn.disabled = false;
+      renderFeaturesReport();
     }
-    if (typeof exportFeedbackReport !== 'function') {
-      window.exportFeedbackReport = function() {};
+
+    function renderFeaturesReport() {
+      const container = document.getElementById('featuresCardsContainer');
+      const badge = document.getElementById('featuresCountBadge');
+      const statTotal = document.getElementById('statFeaturesTotal');
+      const statAvg = document.getElementById('statFeaturesAvgPriority');
+      const statFoundational = document.getElementById('statFeaturesFoundational');
+
+      if (!lastFeaturesReport) {
+        if (container) container.innerHTML = '<div class="p-6 rounded-2xl bg-[#0c1020] border border-[#1a2238] text-slate-400 text-xs text-center">Aucun rapport — cliquez sur «&nbsp;Actualiser&nbsp;» pour lancer la détection d\'opportunités.</div>';
+        if (badge) badge.textContent = 'Opportunités';
+        return;
+      }
+
+      const opps = Array.isArray(lastFeaturesReport.opportunities) ? lastFeaturesReport.opportunities : [];
+      const summary = lastFeaturesReport.summary || {};
+
+      if (statTotal) statTotal.textContent = String(summary.totalDetected != null ? summary.totalDetected : opps.length);
+      if (statAvg) statAvg.textContent = `${Math.round(Number(summary.avgPriorityScore) || 0)} / 100`;
+      if (statFoundational) statFoundational.textContent = String(summary.acceptedCount != null ? summary.acceptedCount : 0);
+      if (badge) badge.textContent = `${opps.length} Opportunité${opps.length === 1 ? '' : 's'}`;
+
+      if (!container) return;
+      if (opps.length === 0) {
+        container.innerHTML = '<div class="p-6 rounded-2xl bg-[#0c1020] border border-[#1a2238] text-slate-400 text-xs text-center">Aucune opportunité détectée avec le niveau de preuve actuel.</div>';
+        return;
+      }
+      container.innerHTML = opps.map((o) => {
+        const score = Math.round(Number(o.scores && o.scores.priorityScore) || 0);
+        const cat = canonicalEscape(String(o.category || 'feature'));
+        const evCount = Array.isArray(o.evidence) ? o.evidence.length : 0;
+        return `
+          <div class="p-4 rounded-2xl bg-[#0c1020] border border-[#1a2238] space-y-2">
+            <div class="flex items-center justify-between gap-2">
+              <div class="flex items-center space-x-2 min-w-0">
+                <i class="fa-solid fa-lightbulb text-yellow-400 text-xs"></i>
+                <span class="text-sm font-bold text-white truncate">${canonicalEscape(o.title || o.id || 'Opportunité')}</span>
+              </div>
+              <span class="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/20 text-[10px] font-bold flex-shrink-0">${score}/100</span>
+            </div>
+            <p class="text-[11px] text-slate-400">${canonicalEscape(o.description || '')}</p>
+            <div class="flex items-center space-x-2 text-[10px] text-slate-500">
+              <span class="px-2 py-0.5 rounded-lg bg-[#12172a] border border-[#1e2642]">${cat}</span>
+              <span><i class="fa-solid fa-chart-simple mr-1"></i>${evCount} preuve${evCount === 1 ? '' : 's'}</span>
+              <span>${canonicalEscape(String(o.status || ''))}</span>
+            </div>
+          </div>`;
+      }).join('');
     }
-    if (typeof openSimulateSignalModal !== 'function') {
-      window.openSimulateSignalModal = function() {};
+
+    function exportFeaturesReport() {
+      if (!lastFeaturesReport) {
+        alert('Lancez d\'abord la détection d\'opportunités (bouton Actualiser).');
+        return;
+      }
+      const blob = new Blob([JSON.stringify(lastFeaturesReport, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'aint-014-features-report.json';
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    // ==================== AINT-015 : USER FEEDBACK & BUG INTELLIGENCE (câblé) ====================
+    async function runFeedbackAnalysis() {
+      const projId = getStudioProjectId();
+      const btn = document.getElementById('btnRescanFeedback');
+      const icon = document.getElementById('iconFeedbackRescan');
+      if (icon) icon.classList.add('fa-spin');
+      if (btn) btn.disabled = true;
+      try {
+        const res = await fetch(`/api/v1/projects/${projId}/feedback/analyze`, {
+          method: 'POST',
+          headers: studioApiHeaders(),
+          body: JSON.stringify({ projectId: projId })
+        });
+        if (res.ok) {
+          const json = await res.json();
+          lastFeedbackReport = (json && json.report) ? json.report : null;
+        }
+      } catch (_) {
+        // Serveur injoignable : on conserve le dernier rapport connu.
+      }
+      if (icon) icon.classList.remove('fa-spin');
+      if (btn) btn.disabled = false;
+      renderFeedbackProblems();
+    }
+
+    function feedbackProblemMatchesFilter(p) {
+      const cat = String(p.category || '').toUpperCase();
+      switch (feedbackActiveFilter) {
+        case 'DEFECT':
+          return cat === 'BUG' || cat === 'UX_PROBLEM' || cat === 'CONFUSION' || cat === 'PERFORMANCE' || cat === 'ACCESSIBILITY';
+        case 'REGRESSION':
+          return ['CONFIRMED', 'PROBABLE', 'SUSPECTED'].includes(String(p.regressionStatus || '').toUpperCase());
+        case 'REQUEST':
+          return cat === 'FEATURE_REQUEST';
+        case 'CONTRADICTION':
+          return cat === 'CONTRADICTION';
+        default:
+          return true;
+      }
+    }
+
+    const FEEDBACK_SEVERITY_STYLES = {
+      CRITICAL: 'bg-red-500/15 text-red-300 border-red-500/30',
+      HIGH: 'bg-orange-500/15 text-orange-300 border-orange-500/30',
+      MEDIUM: 'bg-amber-500/15 text-amber-300 border-amber-500/30',
+      LOW: 'bg-slate-500/15 text-slate-300 border-slate-500/30'
+    };
+
+    function renderFeedbackProblems() {
+      const container = document.getElementById('feedbackProblemsList');
+      const badge = document.getElementById('feedbackCountBadge');
+      const problems = (lastFeedbackReport && Array.isArray(lastFeedbackReport.problems)) ? lastFeedbackReport.problems : [];
+
+      if (badge) badge.textContent = `${problems.length} Problème${problems.length === 1 ? '' : 's'}`;
+      if (!container) return;
+
+      if (!lastFeedbackReport) {
+        container.innerHTML = '<div class="p-6 rounded-2xl bg-[#0c1020] border border-[#1a2238] text-slate-400 text-xs text-center">Aucun rapport — cliquez sur «&nbsp;Actualiser&nbsp;» pour analyser les retours.</div>';
+        return;
+      }
+
+      const searchEl = document.getElementById('feedbackSearchInput');
+      const needle = (searchEl && searchEl.value ? searchEl.value : '').trim().toLowerCase();
+
+      const filtered = problems.filter((p) =>
+        feedbackProblemMatchesFilter(p)
+        && (!needle
+          || String(p.title || '').toLowerCase().includes(needle)
+          || String(p.description || '').toLowerCase().includes(needle))
+      );
+
+      if (filtered.length === 0) {
+        container.innerHTML = '<div class="p-6 rounded-2xl bg-[#0c1020] border border-[#1a2238] text-slate-400 text-xs text-center">Aucun problème ne correspond aux filtres actifs.</div>';
+        return;
+      }
+
+      container.innerHTML = filtered.map((p) => {
+        const score = Math.round(Number(p.scores && p.scores.priorityScore) || 0);
+        const sev = String(p.severity || 'LOW').toUpperCase();
+        const sevStyle = FEEDBACK_SEVERITY_STYLES[sev] || FEEDBACK_SEVERITY_STYLES.LOW;
+        const cat = canonicalEscape(String(p.category || 'feedback'));
+        return `
+          <div class="p-4 rounded-2xl bg-[#0c1020] border border-[#1a2238] space-y-2">
+            <div class="flex items-center justify-between gap-2">
+              <div class="flex items-center space-x-2 min-w-0">
+                <i class="fa-solid fa-bug text-rose-400 text-xs"></i>
+                <span class="text-sm font-bold text-white truncate">${canonicalEscape(p.title || p.id || 'Problème')}</span>
+              </div>
+              <span class="px-2 py-0.5 rounded-full border text-[10px] font-bold flex-shrink-0 ${sevStyle}">${sev} · ${score}/100</span>
+            </div>
+            <p class="text-[11px] text-slate-400">${canonicalEscape(p.description || '')}</p>
+            <div class="flex items-center space-x-2 text-[10px] text-slate-500">
+              <span class="px-2 py-0.5 rounded-lg bg-[#12172a] border border-[#1e2642]">${cat}</span>
+              <span>${canonicalEscape(String(p.urgency || ''))}</span>
+              <span>${canonicalEscape(String(p.regressionStatus || ''))}</span>
+            </div>
+          </div>`;
+      }).join('');
+    }
+
+    function setFeedbackFilter(filter) {
+      feedbackActiveFilter = filter;
+      document.querySelectorAll('[id^="fbFilter-"]').forEach((btn) => {
+        const active = btn.id === `fbFilter-${filter}`;
+        btn.className = `px-3 py-1 rounded-lg text-xs font-semibold transition ${active ? 'bg-rose-500 text-white' : 'text-slate-400 hover:text-white'}`;
+      });
+      renderFeedbackProblems();
+    }
+
+    function filterFeedbackProblems() {
+      renderFeedbackProblems();
+    }
+
+    function exportFeedbackReport() {
+      if (!lastFeedbackReport) {
+        alert('Lancez d\'abord l\'analyse des retours (bouton Actualiser).');
+        return;
+      }
+      const blob = new Blob([JSON.stringify(lastFeedbackReport, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'aint-015-feedback-report.json';
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function openSimulateSignalModal() {
+      const modal = document.getElementById('simulateSignalModal');
+      if (modal) modal.classList.remove('hidden');
+    }
+
+    function closeSimulateSignalModal() {
+      const modal = document.getElementById('simulateSignalModal');
+      if (modal) modal.classList.add('hidden');
+    }
+
+    async function submitSimulatedSignal() {
+      const textEl = document.getElementById('modalSignalText');
+      const text = textEl ? textEl.value.trim() : '';
+      if (!text) {
+        alert('Décrivez le signal avant de l\'ingérer.');
+        return;
+      }
+      const projId = getStudioProjectId();
+      try {
+        const res = await fetch(`/api/v1/projects/${projId}/feedback/analyze`, {
+          method: 'POST',
+          headers: studioApiHeaders(),
+          body: JSON.stringify({ projectId: projId, rawFeedbacks: [text] })
+        });
+        if (res.ok) {
+          const json = await res.json();
+          lastFeedbackReport = (json && json.report) ? json.report : null;
+          if (textEl) textEl.value = '';
+          closeSimulateSignalModal();
+          renderFeedbackProblems();
+        } else {
+          alert(`Échec de l'ingestion du signal (HTTP ${res.status}).`);
+        }
+      } catch (_) {
+        alert('Serveur injoignable — signal non ingéré.');
+      }
     }
 
     // ==================== END AINT-016 ====================

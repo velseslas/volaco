@@ -7,7 +7,10 @@
  * 2. Dépliage et soumission du conteneur de modification interactive du plan
  * 3. Écran d'attente informée "Plan First Gate" pour l'aperçu (createPlanFirstGateScreen)
  * 4. Activation visuelle du Conversation Compass (suppression du display:none)
- * 5. Parité binaire stricte 100% entre les fichiers HTML du Studio
+ *
+ * L'ancien test 5 (« parité binaire » avec volaco_studio.html) a été retiré :
+ * les duplicatas obsolètes du Studio ont été supprimés — apps/studio/index.html
+ * est désormais l'unique source de vérité de l'interface.
  */
 
 import { describe, it } from 'node:test';
@@ -17,8 +20,6 @@ import { join } from 'node:path';
 
 describe('LOT 10 — Carte Interactive Plan First Studio', () => {
   const indexPath = join(process.cwd(), 'apps', 'studio', 'index.html');
-  const appVolacoStudioPath = join(process.cwd(), 'apps', 'studio', 'volaco_studio.html');
-  const rootVolacoStudioPath = join(process.cwd(), 'volaco_studio.html');
 
   const indexContent = readFileSync(indexPath, 'utf8');
 
@@ -51,13 +52,17 @@ describe('LOT 10 — Carte Interactive Plan First Studio', () => {
     assert.ok(!indexContent.includes('<div id="conversationCompassBar" style="display:none !important;"'), 'Ne doit pas masquer conversationCompassBar');
   });
 
-  it('5. Parité binaire stricte (100%) entre apps/studio/index.html, apps/studio/volaco_studio.html et volaco_studio.html', () => {
-    const appVolacoContent = readFileSync(appVolacoStudioPath, 'utf8');
-    const rootVolacoContent = readFileSync(rootVolacoStudioPath, 'utf8');
-
-    assert.equal(indexContent.length, appVolacoContent.length, 'Taille identique avec apps/studio/volaco_studio.html');
-    assert.equal(indexContent.length, rootVolacoContent.length, 'Taille identique avec volaco_studio.html');
-    assert.equal(indexContent, appVolacoContent, 'Contenu strictement identique avec apps/studio/volaco_studio.html');
-    assert.equal(indexContent, rootVolacoContent, 'Contenu strictement identique avec volaco_studio.html');
+  it('5. Handlers Features/Feedback câblés (plus de stubs no-op)', () => {
+    assert.ok(!indexContent.includes('window.runFeaturesDiscovery = function() {}'), 'Le stub no-op runFeaturesDiscovery doit avoir disparu');
+    assert.ok(!indexContent.includes('window.runFeedbackAnalysis = function() {}'), 'Le stub no-op runFeedbackAnalysis doit avoir disparu');
+    assert.ok(indexContent.includes('async function runFeaturesDiscovery()'), 'runFeaturesDiscovery doit être réellement définie');
+    assert.ok(indexContent.includes('async function runFeedbackAnalysis()'), 'runFeedbackAnalysis doit être réellement définie');
+    assert.ok(indexContent.includes('function exportFeaturesReport()'), 'exportFeaturesReport doit être définie');
+    assert.ok(indexContent.includes('function exportFeedbackReport()'), 'exportFeedbackReport doit être définie');
+    assert.ok(indexContent.includes('function setFeedbackFilter('), 'setFeedbackFilter doit être définie');
+    assert.ok(indexContent.includes('function filterFeedbackProblems()'), 'filterFeedbackProblems doit être définie');
+    assert.ok(indexContent.includes('function closeSimulateSignalModal()'), 'closeSimulateSignalModal doit être définie');
+    assert.ok(indexContent.includes('async function submitSimulatedSignal()'), 'submitSimulatedSignal doit être définie');
+    assert.ok(!indexContent.includes("'tenant_default'"), 'Le tenant incohérent tenant_default doit avoir disparu');
   });
 });
