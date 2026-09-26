@@ -1,0 +1,9 @@
+apply_patch03.ps1
+PATCH-03-README.md
+apps/api/src/server.ts
+apps/api/src/middleware/auth.ts
+packages/core/src/config.ts
+dist/apps/api/src/server.js
+dist/apps/api/src/middleware/auth.js
+dist/packages/core/src/config.js
+dist/packages/core/src/security/security-middleware.js

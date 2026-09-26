@@ -1,0 +1,10 @@
+{
+  "t-cluster:proj_cluster_1": {
+    "id": "proj_cluster_1",
+    "tenantId": "t-cluster",
+    "name": "Cluster App",
+    "status": "READY",
+    "createdAt": "2026-09-17T01:53:19.173Z",
+    "updatedAt": "2026-09-17T01:53:19.173Z"
+  }
+}

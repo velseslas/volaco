@@ -1,0 +1,23 @@
+{
+  "name": "volaco-core",
+  "version": "0.1.0",
+  "description": "VibeCode Studio Core - Modular Monolith Platform Engine",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test dist/**/*.test.js",
+    "gate1:verify": "node scripts/run_gate1_tests.mjs",
+    "gate2:verify": "node scripts/run_gate2_tests.mjs",
+    "start": "node dist/apps/api/src/server.js"
+          },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "typescript": "^5.4.5",
+    "vitest": "^1.6.0"
+  },
+  "dependencies": {
+    "playwright-core": "^1.63.0"
+  }
+}

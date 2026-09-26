@@ -1,0 +1,318 @@
+{
+  "t-ci-sec:p-ci-sec": {
+    "metadata": {
+      "id": "app_p-ci-sec",
+      "projectId": "p-ci-sec",
+      "tenantId": "t-ci-sec",
+      "schemaVersion": "1.0",
+      "modelVersion": 1,
+      "createdAt": "2026-09-17T01:53:19.082Z",
+      "updatedAt": "2026-09-17T01:53:19.082Z",
+      "createdBy": "system",
+      "updatedBy": "system"
+    },
+    "identity": {
+      "name": "p-ci-sec",
+      "description": "Application générée par Volaco Core",
+      "category": "Web Application",
+      "targetAudience": "Utilisateurs finaux"
+    },
+    "product": {
+      "valueProposition": "Application interactive et réactive construite avec Volaco",
+      "coreFeatures": [
+        "Interface utilisateur",
+        "Navigation",
+        "Gestion d état"
+      ],
+      "targetPersonas": [
+        "Utilisateur"
+      ]
+    },
+    "stack": {
+      "language": "typescript",
+      "framework": "vanilla-html",
+      "runtime": "node",
+      "styling": "tailwind",
+      "additionalTechnologies": []
+    },
+    "architecture": {
+      "primaryPattern": "SPA",
+      "entryPoints": [
+        {
+          "path": "index.html",
+          "role": "client_entry"
+        }
+      ],
+      "layers": [],
+      "boundaries": []
+    },
+    "structure": {
+      "directories": [
+        "src",
+        "public"
+      ],
+      "modules": [],
+      "fileCount": 1
+    },
+    "pages": [
+      {
+        "id": "page_home",
+        "name": "Home",
+        "routePath": "/"
+      }
+    ],
+    "routes": [
+      {
+        "id": "route_home",
+        "path": "/",
+        "method": "GET",
+        "type": "PAGE",
+        "authRequired": false
+      }
+    ],
+    "components": [
+      {
+        "id": "comp_root",
+        "name": "AppRoot",
+        "filePath": "index.html",
+        "classification": "PAGE",
+        "props": [],
+        "hooksUsed": [],
+        "isCritical": true
+      }
+    ],
+    "dataModel": {
+      "entities": [],
+      "relationships": []
+    },
+    "apis": [],
+    "businessRules": [],
+    "permissions": {
+      "roles": [
+        "OWNER",
+        "ADMIN",
+        "ENGINEER",
+        "VIEWER"
+      ],
+      "resourceAccess": {}
+    },
+    "integrations": [],
+    "designSystem": {
+      "colorTokens": {
+        "primary": "#4f46e5",
+        "background": "#0f172a",
+        "surface": "#1e293b"
+      },
+      "typographyTokens": {
+        "fontFamily": "Inter, sans-serif",
+        "scale": [
+          "12px",
+          "14px",
+          "16px",
+          "20px"
+        ]
+      },
+      "spacingTokens": {
+        "baseStep": 4,
+        "scale": [
+          4,
+          8,
+          16,
+          24,
+          32
+        ]
+      },
+      "shapeTokens": {
+        "borderRadius": "0.375rem"
+      },
+      "elevationTokens": {
+        "shadowLevels": [
+          "sm",
+          "md",
+          "lg"
+        ]
+      }
+    },
+    "runtime": {
+      "targetEnvironment": "browser",
+      "envVarsDeclared": []
+    },
+    "tests": {
+      "suitesCount": 0,
+      "criticalChecklists": []
+    },
+    "dependencies": {
+      "production": {},
+      "development": {}
+    },
+    "constraints": {},
+    "invariants": [],
+    "technicalDebt": [],
+    "dna": {
+      "treeHash": "tree:init",
+      "dnaHash": "dna:init",
+      "nodeCount": 1,
+      "edgeCount": 0,
+      "circularDependenciesCount": 0,
+      "overallHealth": "HEALTHY"
+    }
+  },
+  "t-ci-approved:p-ci-approved": {
+    "metadata": {
+      "id": "app_p-ci-approved",
+      "projectId": "p-ci-approved",
+      "tenantId": "t-ci-approved",
+      "schemaVersion": "1.0",
+      "modelVersion": 1,
+      "createdAt": "2026-09-17T01:53:19.098Z",
+      "updatedAt": "2026-09-17T01:53:19.098Z",
+      "createdBy": "system",
+      "updatedBy": "system"
+    },
+    "identity": {
+      "name": "p-ci-approved",
+      "description": "Application générée par Volaco Core",
+      "category": "Web Application",
+      "targetAudience": "Utilisateurs finaux"
+    },
+    "product": {
+      "valueProposition": "Application interactive et réactive construite avec Volaco",
+      "coreFeatures": [
+        "Interface utilisateur",
+        "Navigation",
+        "Gestion d état"
+      ],
+      "targetPersonas": [
+        "Utilisateur"
+      ]
+    },
+    "stack": {
+      "language": "typescript",
+      "framework": "vanilla-html",
+      "runtime": "node",
+      "styling": "tailwind",
+      "additionalTechnologies": []
+    },
+    "architecture": {
+      "primaryPattern": "SPA",
+      "entryPoints": [
+        {
+          "path": "index.html",
+          "role": "client_entry"
+        }
+      ],
+      "layers": [],
+      "boundaries": []
+    },
+    "structure": {
+      "directories": [
+        "src",
+        "public"
+      ],
+      "modules": [],
+      "fileCount": 1
+    },
+    "pages": [
+      {
+        "id": "page_home",
+        "name": "Home",
+        "routePath": "/"
+      }
+    ],
+    "routes": [
+      {
+        "id": "route_home",
+        "path": "/",
+        "method": "GET",
+        "type": "PAGE",
+        "authRequired": false
+      }
+    ],
+    "components": [
+      {
+        "id": "comp_root",
+        "name": "AppRoot",
+        "filePath": "index.html",
+        "classification": "PAGE",
+        "props": [],
+        "hooksUsed": [],
+        "isCritical": true
+      }
+    ],
+    "dataModel": {
+      "entities": [],
+      "relationships": []
+    },
+    "apis": [],
+    "businessRules": [],
+    "permissions": {
+      "roles": [
+        "OWNER",
+        "ADMIN",
+        "ENGINEER",
+        "VIEWER"
+      ],
+      "resourceAccess": {}
+    },
+    "integrations": [],
+    "designSystem": {
+      "colorTokens": {
+        "primary": "#4f46e5",
+        "background": "#0f172a",
+        "surface": "#1e293b"
+      },
+      "typographyTokens": {
+        "fontFamily": "Inter, sans-serif",
+        "scale": [
+          "12px",
+          "14px",
+          "16px",
+          "20px"
+        ]
+      },
+      "spacingTokens": {
+        "baseStep": 4,
+        "scale": [
+          4,
+          8,
+          16,
+          24,
+          32
+        ]
+      },
+      "shapeTokens": {
+        "borderRadius": "0.375rem"
+      },
+      "elevationTokens": {
+        "shadowLevels": [
+          "sm",
+          "md",
+          "lg"
+        ]
+      }
+    },
+    "runtime": {
+      "targetEnvironment": "browser",
+      "envVarsDeclared": []
+    },
+    "tests": {
+      "suitesCount": 0,
+      "criticalChecklists": []
+    },
+    "dependencies": {
+      "production": {},
+      "development": {}
+    },
+    "constraints": {},
+    "invariants": [],
+    "technicalDebt": [],
+    "dna": {
+      "treeHash": "tree:init",
+      "dnaHash": "dna:init",
+      "nodeCount": 1,
+      "edgeCount": 0,
+      "circularDependenciesCount": 0,
+      "overallHealth": "HEALTHY"
+    }
+  }
+}

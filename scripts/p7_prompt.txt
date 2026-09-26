@@ -1,0 +1,163 @@
+<USER_REQUEST>
+# MISSION CODEX — P7 INDEPENDENT SECURITY ASSESSMENT
+
+## OBJECTIF
+
+Réaliser une **évaluation indépendante de sécurité et de robustesse** de Volaco sur l'environnement de test autorisé du projet.
+
+Les campagnes P3, P4, P5 et P6 sont terminées.
+
+Cette mission doit rechercher de manière indépendante d'éventuels problèmes de sécurité, de contrôle d'accès, d'isolation des données, de logique métier, de robustesse et de résilience.
+
+Cette mission est une phase **AUDIT ONLY**.
+
+---
+
+# RÈGLE ABSOLUE — AUDIT ONLY
+
+Pendant toute la phase d'évaluation :
+
+* ne modifier aucun code applicatif ;
+* ne corriger aucun problème découvert ;
+* ne modifier aucune configuration de production ;
+* ne modifier aucune dépendance ;
+* ne modifier aucun mécanisme de sécurité existant ;
+* ne modifier aucun test existant.
+
+Les problèmes éventuellement découverts seront documentés pour être traités ultérieurement dans des missions de remédiation séparées.
+
+Si un problème est découvert :
+
+```text
+DISCOVER
+→ REPRODUCE SAFELY
+→ DOCUMENT
+→ CLASSIFY
+→ CONTINUE ASSESSMENT
+```
+
+---
+
+# PRINCIPES
+
+## 1. Évaluation indépendante
+
+Ne pas simplement rejouer les findings P6.
+
+Utiliser les campagnes précédentes uniquement pour comprendre les contrôles déjà implémentés.
+
+Rechercher également des problèmes différents ou résultant de l'interaction entre plusieurs composants.
+
+## 2. Evidence-based
+
+Une vulnérabilité ne doit être considérée comme confirmée que si son comportement peut être démontré de manière reproductible dans l'environnement de test.
+
+Utiliser :
+
+```text
+NO EVIDENCE → NO CONFIRMED FINDING
+```
+
+## 3. PASS ≠ SECURE
+
+Les tests existants ne doivent pas être considérés comme une preuve absolue de sécurité.
+
+Vérifier les contrôles importants directement dans le comportement réel de l'application.
+
+## 4. Tests non destructifs
+
+Les tests doivent rester confinés à l'environnement de test e
+<truncated 10620 bytes>
+
+
+Le rapport doit contenir :
+
+1. Executive Summary
+2. Scope
+3. Methodology
+4. Environment
+5. Baseline
+6. Attack Surface
+7. Authentication
+8. Authorization
+9. Tenant Isolation
+10. Business Logic
+11. AI Security
+12. Agent/Tool Security
+13. Network Security
+14. Filesystem Security
+15. Concurrency
+16. Resource Exhaustion
+17. HTTP/Proxy
+18. Browser Security
+19. Configuration
+20. Supply Chain
+21. Composite Scenarios
+22. Confirmed Findings
+23. Suspected Findings
+24. Hardening Recommendations
+25. Regression Baseline
+26. Final Risk Matrix
+27. Final Verdict
+
+---
+
+# PHASE 21 — FINAL VERDICT
+
+Si au moins une vulnérabilité exploitable est démontrée :
+
+```text
+P7 VERDICT: VULNERABILITIES FOUND
+```
+
+Si aucune vulnérabilité exploitable n'est démontrée :
+
+```text
+P7 VERDICT: NO CONFIRMED VULNERABILITY FOUND
+```
+
+Ne jamais conclure :
+
+```text
+100% SECURE
+NO VULNERABILITIES EXIST
+```
+
+Une campagne d'évaluation ne prouve jamais l'absence absolue de vulnérabilités.
+
+---
+
+# CONTRAINTE FINALE
+
+Cette mission est exclusivement une mission d'évaluation.
+
+NE PAS :
+
+* corriger ;
+* refactorer ;
+* améliorer ;
+* modifier les défenses ;
+* modifier les tests existants pour faire passer les tests ;
+* changer l'architecture.
+
+À la fin :
+
+1. présenter les vulnérabilités confirmées ;
+2. présenter les observations suspectes ;
+3. présenter les recommandations de hardening ;
+4. présenter les preuves de reproduction ;
+5. présenter le résultat des tests de baseline ;
+6. fournir le verdict P7.
+
+## OBJECTIF PRINCIPAL
+
+Ne cherche pas à démontrer que Volaco est sécurisé.
+
+Cherche à identifier honnêtement **les comportements qui pourraient encore compromettre sa confidentialité, son intégrité, sa disponibilité ou son isolation multi-tenant**, puis fournis des preuves reproductibles.
+
+Aucune correction pendant cette mission.
+
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-09-13T10:19:40+01:00.
+</ADDITIONAL_METADATA>

@@ -1,0 +1,14 @@
+{
+  "t-cluster-files:proj_cluster_files": {
+    "file1.txt": {
+      "type": "file",
+      "content": "From Instance 1",
+      "updatedAt": "2026-09-17T01:53:19.175Z"
+    },
+    "file2.txt": {
+      "type": "file",
+      "content": "From Instance 2",
+      "updatedAt": "2026-09-17T01:53:19.176Z"
+    }
+  }
+}

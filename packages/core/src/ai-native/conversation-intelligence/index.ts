@@ -1,0 +1,62 @@
+/**
+ * VibeCode Core - AI-Native Engineering Tier (AINT-009)
+ * Conversation Intelligence & Human-AI Engineering Engine Public API
+ */
+
+export type {
+  ConversationState,
+  IntentCategory,
+  AmbiguityLevel,
+  NextActionKind,
+  DecisionStatus,
+  PlanStatus,
+  ClarificationItem,
+  ConversationAssumption,
+  IntentResult,
+  ArchitecturalDecisionRecord,
+  PlanStep,
+  EngineeringPlan,
+  PlanAssessment,
+  ContradictionRecord,
+  ContextDelta,
+  HumanAiMessage,
+  ConversationTrace,
+  ConversationTurn,
+  TurnMemory,
+  ProjectMemory,
+  ApplicationSnapshot,
+  ConversationSession,
+  ReasoningRequest,
+  ReasoningResponse,
+  ReasoningProvider,
+  ConversationIntelligenceConfig,
+  ConversationCacheMetrics
+} from './types.js';
+
+export {
+  computeConversationStateHash,
+  computeEngineeringPlanHash,
+  computeTraceId,
+  compareAssumptions,
+  compareDecisions,
+  comparePlanSteps
+} from './engine/canonical.js';
+
+export { ConversationCompass, VALID_CONVERSATION_TRANSITIONS } from './engine/conversation-compass.js';
+export { ConversationIntentEngine, classifyIntent } from './engine/intent-engine.js';
+export { ClarificationEngine, classifyAmbiguities } from './engine/clarification-engine.js';
+export { ConversationAssumptionEngine, deriveAssumptions } from './engine/assumption-engine.js';
+export { PlanGenerator } from './engine/plan-generator.js';
+export { ContradictionDetector } from './engine/contradiction-detector.js';
+export { MemoryManager } from './engine/memory-manager.js';
+export { UnderstandingBridge } from './engine/understanding-bridge.js';
+export { ImpactBridge, type PlanImpactResult } from './engine/impact-bridge.js';
+export { ExecutionBridge, type ExecutionResult } from './engine/execution-bridge.js';
+export { ConversationEngine } from './engine/conversation-engine.js';
+export { DefaultReasoningProvider, MockReasoningProvider } from './provider/reasoning-provider.js';
+export { ConversationTraceCollector, type TraceSummaryMetrics } from './observability/conversation-trace.js';
+export { ConversationSessionLruCache } from './cache.js';
+export {
+  ConversationIntelligenceService,
+  DEFAULT_CONVERSATION_CONFIG
+} from './service.js';
