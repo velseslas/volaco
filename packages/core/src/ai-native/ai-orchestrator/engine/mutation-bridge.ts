@@ -82,7 +82,10 @@ export class MutationBridge {
         {
           tenantId,
           projectId,
-          baseGraphHash: 'graph:initial',
+          // Le hash réel du graphe doit être résolu par createPlan (fallback
+          // graph?.graphHash) : une constante ici garantissait un rejet
+          // STALE_MUTATION_PLAN à chaque exécution transactionnelle.
+          baseGraphHash: '',
           requestId,
           mutations
         },

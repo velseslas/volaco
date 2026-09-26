@@ -26,6 +26,8 @@ import { handleStrategyRoutes } from './routes/strategy.js';
 import { handleConversationRoutes, configureConversationIntelligenceService } from './routes/conversation.js';
 import { handleRenderRoutes } from './routes/render.js';
 import { handleAiProxyRoutes } from './routes/ai-proxy.js';
+import { handleDecideRoutes, configureDecideRoute } from './routes/decide.js';
+import { handleOrchestrateRoutes, configureOrchestratorService } from './routes/orchestrate.js';
 import { ConversationIntelligenceService } from '../../../packages/core/src/ai-native/conversation-intelligence/service.js';
 import { AgentRuntimeService } from '../../../packages/core/src/ai-native/agent-runtime/service.js';
 import { aiProviderRegistry } from '../../../packages/core/src/ai/providers/registry.js';
@@ -34,6 +36,21 @@ import { MistralProviderAdapter } from '../../../packages/core/src/ai/providers/
 import { AIProviderRegistryLLMAdapter } from '../../../packages/core/src/ai-native/agent-runtime/llm/provider-bridge.js';
 import { DefaultReasoningProvider } from '../../../packages/core/src/ai-native/conversation-intelligence/provider/reasoning-provider.js';
 import { LLMReasoningProvider } from '../../../packages/core/src/ai-native/conversation-intelligence/provider/llm-reasoning-provider.js';
+import { fileStore } from '../../../packages/core/src/file-explorer/store.js';
+import { FileStoreAdapter } from '../../../packages/core/src/ai-native/mutation-orchestrator/filesystem/adapter.js';
+import { CodeIntelligenceService } from '../../../packages/core/src/ai-native/understanding/service.js';
+import { ApplicationDNAService } from '../../../packages/core/src/ai-native/dna/service.js';
+import { ContextAssemblyService } from '../../../packages/core/src/ai-native/context/service.js';
+import { SemanticCodeGraphService } from '../../../packages/core/src/ai-native/semantic-graph/service.js';
+import { ImpactIntelligenceService } from '../../../packages/core/src/ai-native/impact-intelligence/service.js';
+import { MutationOrchestratorService } from '../../../packages/core/src/ai-native/mutation-orchestrator/service.js';
+import { DecisionEngine } from '../../../packages/core/src/ai-native/decision-engine/decision-engine.js';
+import { ConstraintRegistry } from '../../../packages/core/src/ai-native/decision-engine/constraint-registry.js';
+import { DecisionLedger } from '../../../packages/core/src/ai-native/decision-engine/decision-ledger.js';
+import { AlternativeGenerator } from '../../../packages/core/src/ai-native/decision-engine/alternative-generator.js';
+import { AnalystRegistry } from '../../../packages/core/src/ai-native/intelligence-pool/analysts/index.js';
+import { AIOrchestratorService } from '../../../packages/core/src/ai-native/ai-orchestrator/service.js';
+import { ApplicationUnderstandingService } from '../../../packages/core/src/ai-native/application-understanding/service.js';
 
 /**
  * Branche le moteur conversationnel sur un vrai fournisseur IA (Gemini ou Mistral,
@@ -87,13 +104,29 @@ function bootstrapConversationEngine(): void {
     reasoningProvider = new LLMReasoningProvider(callLLM, new DefaultReasoningProvider());
   }
 
+  // LOT 1 — Brancher le cerveau : les services d'intelligence applicative
+  // (Application Model, DNA, Impact, RAG…) existaient, étaient testés, mais
+  // étaient injectés à `undefined` — donc inactifs dans le chemin réel.
+  // Recette identique aux tests agent-runtime : FileStoreAdapter (le vrai
+  // FileStore virtuel) alimente CodeIntelligence, dont découlent DNA, Context,
+  // SemanticGraph, Impact et Mutation.
+  const fileSource = new FileStoreAdapter(fileStore);
+  const codeIntelService = new CodeIntelligenceService(fileSource);
+  const dnaService = new ApplicationDNAService(codeIntelService);
+  const contextService = new ContextAssemblyService(codeIntelService, dnaService, fileSource);
+  const semanticGraphService = new SemanticCodeGraphService(codeIntelService, dnaService, fileSource);
+  const impactService = new ImpactIntelligenceService(semanticGraphService);
+  const mutationService = new MutationOrchestratorService(
+    fileSource, codeIntelService, dnaService, semanticGraphService, impactService
+  );
+
   const agentRuntime = new AgentRuntimeService(
-    undefined, // mutationService
-    undefined, // codeIntelService
-    undefined, // dnaService
-    undefined, // contextService
-    undefined, // semanticGraphService
-    undefined, // impactService
+    mutationService,
+    codeIntelService,
+    dnaService,
+    contextService,
+    semanticGraphService,
+    impactService,
     hasRealProvider
       ? new AIProviderRegistryLLMAdapter(aiProviderRegistry, {
           // Même correctif qu'ailleurs : préférer explicitement le fournisseur
@@ -112,6 +145,24 @@ function bootstrapConversationEngine(): void {
     // DefaultReasoningProvider (canned strings). On passe le LLM câblé au-dessus.
     new ConversationIntelligenceService(undefined, undefined, agentRuntime, undefined, reasoningProvider)
   );
+
+  // LOT 1 — Decision Engine (Phase 9.5) et AI Orchestrator (Phase 9) : les
+  // routes existaient mais n'étaient ni configurées ni montées. Le Decision
+  // Engine devient l'autorité décisionnelle consultable, l'Orchestrator peut
+  // orchestrer un plan avec les mêmes services d'intelligence.
+  const decisionEngine = new DecisionEngine({
+    constraintRegistry: new ConstraintRegistry(),
+    decisionLedger: new DecisionLedger(),
+    alternativeGenerator: new AlternativeGenerator()
+  });
+  configureDecideRoute({ decisionEngine, analystRegistry: new AnalystRegistry(), fileStore });
+
+  const understandingService = new ApplicationUnderstandingService(
+    semanticGraphService, dnaService, impactService, codeIntelService
+  );
+  configureOrchestratorService(new AIOrchestratorService(
+    understandingService, impactService, mutationService, dnaService, semanticGraphService, aiProviderRegistry
+  ));
 
   if (!hasRealProvider) {
     logger.warn(
@@ -358,6 +409,13 @@ export function createApiServer(configOverride: Partial<AppConfig> = {}) {
 
       const handledConversation = await handleConversationRoutes(req, res, pathname, context, requestId);
       if (handledConversation) return;
+
+      // LOT 1 — Decision Engine (Phase 9.5) et AI Orchestrator (Phase 9)
+      const handledDecide = await handleDecideRoutes(req, res, pathname, context, requestId);
+      if (handledDecide) return;
+
+      const handledOrchestrate = await handleOrchestrateRoutes(req, res, pathname, context, requestId);
+      if (handledOrchestrate) return;
 
       const handledRender = await handleRenderRoutes(req, res, pathname, context, requestId);
       if (handledRender) return;
