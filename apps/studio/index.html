@@ -4455,6 +4455,11 @@ ${sections}
               local.code = saved.code;
               local.isCustom = true;
             }
+            // Restaurer aussi les identifiants serveur : sans eux, chaque
+            // rechargement de page recréait un NOUVEAU projet serveur
+            // (d'où les doublons dans le store) au premier message.
+            if (local && saved.serverProjectId) local.serverProjectId = saved.serverProjectId;
+            if (local && saved.serverSessionId) local.serverSessionId = saved.serverSessionId;
           });
         }
         // Si localStorage périmé → on le supprime et on repart proprement
