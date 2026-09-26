@@ -216,4 +216,15 @@ describe('LOT 10 — Câblage réel de l\'interface Studio', () => {
       'La réparation doit conserver le document interne (dernier DOCTYPE)'
     );
   });
+
+  it('13. Auth JWT intégrée côté Studio (Étape 4)', () => {
+    assert.ok(indexContent.includes('function getAuthToken()'), 'getAuthToken doit être définie');
+    assert.ok(indexContent.includes('async function submitAuth('), 'submitAuth (login/signup) doit être définie');
+    assert.ok(indexContent.includes('id="authBanner"'), 'La bannière d\'authentification doit exister');
+    assert.ok(indexContent.includes('vibecode_auth_token'), 'Le token doit être stocké dans localStorage');
+    assert.ok(
+      indexContent.includes('const token = getAuthToken();') && indexContent.includes('headers["Authorization"] = "Bearer " + token;'),
+      'studioApiHeaders doit transmettre le JWT via Authorization'
+    );
+  });
 });

@@ -9,6 +9,7 @@ import { auditStore } from '../../../packages/core/src/observability/audit.js';
 import { getHealthResponse } from './routes/health.js';
 import { extractRequestContext } from './middleware/auth.js';
 import type { RequestContext } from './middleware/auth.js';
+import { handleAuthRoutes } from './routes/auth.js';
 import { handleProjectsRoutes } from './routes/projects.js';
 import { handleDashboardRoutes } from './routes/dashboard.js';
 import { handleFilesRoutes } from './routes/files.js';
@@ -315,6 +316,7 @@ const revisionsWithAudit: RouteHandler = async (req, res, pathname, context, req
 };
 
 const API_ROUTES: readonly RouteEntry[] = [
+  { name: 'auth (JWT)', handler: handleAuthRoutes },
   { name: 'observability (FND-005)', handler: handleObservabilityRoutes },
   { name: 'dashboard (CORE-002)', handler: handleDashboardRoutes },
   { name: 'workspace (CAPP-001)', handler: handleWorkspaceRoutes },

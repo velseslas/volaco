@@ -2887,6 +2887,67 @@
 
     const STUDIO_TENANT_ID = 'studio-local';
 
+    // ==================== ÉTAPE 4 : AUTHENTIFICATION JWT ====================
+    function getAuthToken() {
+      return localStorage.getItem('vibecode_auth_token') || '';
+    }
+
+    function setAuthToken(token) {
+      if (token) localStorage.setItem('vibecode_auth_token', token);
+      else localStorage.removeItem('vibecode_auth_token');
+    }
+
+    function updateAuthBannerUI() {
+      const banner = document.getElementById('authBanner');
+      if (!banner) return;
+      if (getAuthToken()) {
+        banner.classList.add('hidden');
+      } else {
+        banner.classList.remove('hidden');
+      }
+    }
+
+    async function submitAuth(mode) {
+      const emailEl = document.getElementById('authBannerEmail');
+      const passEl = document.getElementById('authBannerPassword');
+      const statusEl = document.getElementById('authBannerStatus');
+      const email = emailEl ? emailEl.value.trim() : '';
+      const password = passEl ? passEl.value : '';
+      if (!email || !password) {
+        if (statusEl) statusEl.textContent = 'Email et mot de passe requis (8 caractères min).';
+        return;
+      }
+      try {
+        const res = await fetch(`/api/v1/auth/${mode === 'login' ? 'login' : 'signup'}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        });
+        const data = await res.json();
+        if (res.ok && data.token) {
+          setAuthToken(data.token);
+          updateAuthBannerUI();
+          if (statusEl) statusEl.textContent = '';
+          if (typeof showCaptureToast === 'function') showCaptureToast(mode === 'login' ? 'Connecté ✓' : 'Compte créé et connecté ✓');
+        } else {
+          if (statusEl) statusEl.textContent = data.message || ('Erreur HTTP ' + res.status);
+        }
+      } catch (e) {
+        if (statusEl) statusEl.textContent = 'Serveur injoignable.';
+      }
+    }
+
+    function logoutAuth() {
+      setAuthToken('');
+      updateAuthBannerUI();
+    }
+    // Init différé : la bannière est en fin de body (après ce script)
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', updateAuthBannerUI);
+    } else {
+      updateAuthBannerUI();
+    }
+
     function canonicalEscape(str) {
       const div = document.createElement('div');
       div.textContent = String(str == null ? '' : str);
@@ -2895,6 +2956,10 @@
 
     function studioApiHeaders() {
       const headers = { "Content-Type": "application/json", "x-tenant-id": STUDIO_TENANT_ID, "x-user-role": "ENGINEER" };
+      // ÉTAPE 4 — token JWT utilisateur (le serveur en déduit tenant + rôle ;
+      // le header X-User-Role n'est plus une autorité pour les requêtes auth).
+      const token = getAuthToken();
+      if (token) headers["Authorization"] = "Bearer " + token;
       // Transmet la clé Mistral personnelle (si configurée dans les Réglages)
       // au moteur conversationnel, pour qu'il utilise la même clé que celle
       // déjà validée par le test de connexion — corrige un décalage réel où
@@ -11695,6 +11760,24 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
         </button>
       </div>
     </div>
+  </div>
+
+  <!-- ÉTAPE 4 : Bannière d'authentification (non bloquante — mode local possible) -->
+  <div id="authBanner" class="hidden fixed bottom-4 right-4 z-50 bg-[#0c1020] border border-indigo-500/40 rounded-2xl p-4 w-80 shadow-2xl space-y-2">
+    <div class="flex items-center justify-between">
+      <div class="flex items-center space-x-2 text-indigo-300 font-bold text-xs">
+        <i class="fa-solid fa-user-shield"></i><span>Compte VibeCode</span>
+      </div>
+      <button onclick="document.getElementById('authBanner').classList.add('hidden')" title="Continuer en mode local" class="text-slate-500 hover:text-white text-xs">✕</button>
+    </div>
+    <input id="authBannerEmail" type="email" placeholder="email@exemple.com" class="w-full bg-[#12172a] border border-[#1e2642] rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500/60" />
+    <input id="authBannerPassword" type="password" placeholder="Mot de passe (8 caractères min)" class="w-full bg-[#12172a] border border-[#1e2642] rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500/60" />
+    <div id="authBannerStatus" class="text-[10px] text-rose-300"></div>
+    <div class="flex items-center justify-end space-x-2">
+      <button onclick="submitAuth('signup')" class="px-3 py-1.5 rounded-lg bg-[#141a2e] hover:bg-[#1c2440] text-slate-300 text-xs font-semibold">Créer un compte</button>
+      <button onclick="submitAuth('login')" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold">Se connecter</button>
+    </div>
+    <div class="text-[10px] text-slate-500">Mode local actif sans compte (fallback dev). Un compte isole vos projets par tenant.</div>
   </div>
 
   <!-- LOT 5 : Modale Comparaison avant / après (§20 V8) -->
