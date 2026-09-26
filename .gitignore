@@ -1,6 +1,12 @@
-﻿node_modules/
+node_modules/
 dist/
 coverage/
 .env
 .DS_Store
 Thumbs.db
+
+# Logs serveur (régénérés par start-vibecode.ps1)
+*.log
+
+# Données runtime du Studio (projets, révisions, mémoire conversationnelle)
+.volaco-data/
