@@ -190,6 +190,23 @@ describe('LOT 10 — Câblage réel de l\'interface Studio', () => {
     assert.ok(indexContent.includes('compareBefore') && indexContent.includes('compareAfter'), 'Les deux rendus A/B doivent exister');
   });
 
+  it('14. Conversation vivante — narration rythmée, focus halo, actions inline', () => {
+    // Rythme humain : narration révélée progressivement (pacer), pas de dump
+    assert.ok(indexContent.includes('function pumpNarration('), 'pumpNarration (révélation progressive) doit être définie');
+    assert.ok(indexContent.includes('function flushNarration('), 'flushNarration doit être définie');
+    assert.ok(indexContent.includes('function formatNarration('), 'formatNarration doit être définie');
+    // Focus manager : postMessage + halo dans le preview
+    assert.ok(indexContent.includes('function focusPreviewSection('), 'focusPreviewSection doit être définie');
+    assert.ok(indexContent.includes("command: 'focus-section'"), 'Le canal postMessage focus-section doit être émis');
+    assert.ok(indexContent.includes('vibe-focus-halo'), 'Le style de halo doit être injecté dans le preview');
+    // Actions inline tangibles (branchées sur de vraies fonctions)
+    assert.ok(indexContent.includes('function appendQuickActions()'), 'appendQuickActions doit être définie');
+    assert.ok(indexContent.includes('autoHarmonizeApp()'), 'Chip Améliorer le design -> vraie fonction');
+    assert.ok(indexContent.includes('autoRepair()'), 'Chip Auto-réparer -> vraie fonction');
+    // Qualité preview : le shell serveur est aligné sur le template client
+    assert.ok(indexContent.includes('Construction de '), 'Le squelette de construction reste présent');
+  });
+
   it('12. Auto-réparation du navigateur usager (sessions mortes + code corrompu)', () => {
     // Sessions serveur en mémoire : la session mémorisée doit être VALIDÉE
     // avant usage (404 après redémarrage = auto-recréation, plus de blocage)

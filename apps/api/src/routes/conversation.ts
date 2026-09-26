@@ -96,7 +96,8 @@ function extractHtmlBlock(text: string): string | null {
  * complet dans fileStore garantit : éditeur lisible, /render/preview fidèle
  * et contexte correct pour les tours de modification suivants.
  */
-export function buildStudioShell(sectionsHtml: string): string {  return `<!DOCTYPE html>
+export function buildStudioShell(sectionsHtml: string): string {
+  return `<!DOCTYPE html>
 <html lang="fr" class="dark scroll-smooth">
 <head>
   <meta charset="UTF-8">
@@ -107,7 +108,9 @@ export function buildStudioShell(sectionsHtml: string): string {  return `<!DOCT
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
   <style>
     body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #070913; color: #f1f5f9; margin: 0; }
-    @keyframes stitchReveal { 0% { opacity: 0; transform: translateY(8px); filter: blur(4px); } 100% { opacity: 1; transform: translateY(0); filter: blur(0); } }
+    @keyframes shimmer { 0% { background-position: -1000px 0; } 100% { background-position: 1000px 0; } }
+    .vibe-skeleton { background: linear-gradient(90deg, rgba(30,41,59,.5) 0%, rgba(51,65,85,.8) 50%, rgba(30,41,59,.5) 100%); background-size: 1000px 100%; animation: shimmer 1.5s infinite linear; border-radius: 8px; }
+    @keyframes stitchReveal { 0% { opacity: 0; transform: translateY(8px); filter: blur(4px); } 50% { opacity: 0.8; filter: blur(2px); } 100% { opacity: 1; transform: translateY(0); filter: blur(0); } }
     .vibe-stitched { animation: stitchReveal 0.6s ease-out forwards; }
   </style>
 </head>
@@ -727,7 +730,7 @@ export async function handleConversationRoutes(
             // Tente par data-section d'abord (notre format stitchReveal)
             const dataAttrRegex = new RegExp(`<div[^>]*data-section="${sec.name}"[^>]*>[\\s\\S]*?(?=<div[^>]*data-section|<\\/body>|$)`, 'g');
             const before = modifiedHtml;
-            modifiedHtml = modifiedHtml.replace(dataAttrRegex, `<div data-section="${sec.name}">${cleanHtml}</div>`);
+            modifiedHtml = modifiedHtml.replace(dataAttrRegex, `<div class="vibe-stitched" data-section="${sec.name}">${cleanHtml}</div>`);
             // Si pas de remplacement, tente par ID de section
             if (modifiedHtml === before) {
               const idRegex = new RegExp(`<section[^>]*id="${sec.name}"[^>]*>[\\s\\S]*?<\\/section>`, 'g');
@@ -745,7 +748,7 @@ export async function handleConversationRoutes(
             const cleanAddHtml = sec.html.replace(/^<div[^>]*data-section="[^"]*"[^>]*>([\s\S]*)<\/div>$/, '$1').trim();
             const afterRegex = new RegExp(`(<div[^>]*data-section="${sec.after}"[^>]*>[\\s\\S]*?</div>)(\\s*<div[^>]*data-section)`, 'g');
             const before = modifiedHtml;
-            modifiedHtml = modifiedHtml.replace(afterRegex, `$1\n<div data-section="${sec.name}">${cleanAddHtml}</div>$2`);
+            modifiedHtml = modifiedHtml.replace(afterRegex, `$1\n<div class="vibe-stitched" data-section="${sec.name}">${cleanAddHtml}</div>$2`);
             if (modifiedHtml === before) {
               // Tente par ID
               const idAfterRegex = new RegExp(`(<section[^>]*id="${sec.after}"[^>]*>[\\s\\S]*?<\\/section>)`, 'g');
@@ -755,7 +758,7 @@ export async function handleConversationRoutes(
             // En mode modification, une section "create" = ajout à la fin
             // Nettoie aussi le wrapper si présent
             const cleanCreateHtml = sec.html.replace(/^<div[^>]*data-section="[^"]*"[^>]*>([\s\S]*)<\/div>$/, '$1').trim();
-            modifiedHtml += `<div data-section="${sec.name}">${cleanCreateHtml}</div>`;
+            modifiedHtml += `<div class="vibe-stitched" data-section="${sec.name}">${cleanCreateHtml}</div>`;
           }
         }
         assembledHtml = modifiedHtml;
@@ -763,7 +766,7 @@ export async function handleConversationRoutes(
         // Mode création : assemble simplement les sections dans l'ordre
         for (const sec of serverSections) {
           if (sec.html) {
-            assembledHtml += `<div data-section="${sec.name}">${sec.html}</div>\n`;
+            assembledHtml += `<div class="vibe-stitched" data-section="${sec.name}">${sec.html}</div>\n`;
           }
         }
       }
