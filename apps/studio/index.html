@@ -1503,6 +1503,9 @@
                     <i class="fa-solid fa-folder-plus text-indigo-400 text-[9px]"></i>
                     <span>+ Dossier</span>
                   </button>
+                  <button onclick="uiTriggerNewFile()" class="p-1 bg-[#12162a] hover:bg-emerald-950/50 text-slate-400 hover:text-emerald-400 rounded border border-[#1d2442] transition" title="Nouveau fichier">
+                    <i class="fa-solid fa-plus text-[9px]"></i>
+                  </button>
                   <button onclick="uiTriggerRenameFile()" class="p-1 bg-[#12162a] hover:bg-slate-800 text-slate-400 hover:text-white rounded border border-[#1d2442] transition" title="Renommer">
                     <i class="fa-solid fa-pen-to-square text-[9px]"></i>
                   </button>
@@ -4612,21 +4615,66 @@ ${sections}
       }
     }
 
-    function uiTriggerRenameFile() {
-      const newName = prompt('Nouveau nom pour le fichier sélectionné :');
-      if (!newName) return;
-      showCaptureToast(`Fichier renommé en : ${newName}`);
-      if (typeof addSystemLogEntry === 'function') {
-        addSystemLogEntry('AUDIT', `[CAPP-003] RENAME_FILE -> ${newName}`, 'info');
+    // ÉTAPE 6 — CRUD fichiers RÉEL via les routes CORE-003 (create/rename/delete)
+    function explorerServerProjectId() {
+      const proj = userProjects.find(p => p.id === activeProjectId);
+      return proj && proj.serverProjectId;
+    }
+
+    async function uiTriggerNewFile() {
+      const pid = explorerServerProjectId();
+      if (!pid) { showCaptureToast('Aucun projet serveur — envoyez un message dans le chat.'); return; }
+      const path = prompt('Chemin du nouveau fichier (ex: pages/contact.html) :');
+      if (!path) return;
+      const res = await fetch(`/api/v1/projects/${pid}/files`, {
+        method: 'POST', headers: studioApiHeaders(),
+        body: JSON.stringify({ path, type: 'file', content: '' })
+      });
+      if (res.status === 201) {
+        showCaptureToast(`Fichier créé : ${path}`);
+        await loadFileTree();
+        selectCodeFile(path);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        showCaptureToast(`Échec : ${data.message || 'HTTP ' + res.status}`);
       }
     }
 
-    function uiTriggerDeleteFile() {
-      if (confirm('Voulez-vous vraiment supprimer cet élément ?')) {
-        showCaptureToast('Élément supprimé');
-        if (typeof addSystemLogEntry === 'function') {
-          addSystemLogEntry('AUDIT', '[CAPP-003] DELETE_FILE effectué', 'warning');
-        }
+    async function uiTriggerRenameFile() {
+      const pid = explorerServerProjectId();
+      const oldPath = currentSelectedFilePath;
+      if (!pid || !oldPath) { showCaptureToast("Sélectionnez d'abord un fichier."); return; }
+      const newPath = prompt(`Nouveau chemin pour : ${oldPath}`);
+      if (!newPath || newPath === oldPath) return;
+      const res = await fetch(`/api/v1/projects/${pid}/files/rename`, {
+        method: 'POST', headers: studioApiHeaders(),
+        body: JSON.stringify({ oldPath, newPath })
+      });
+      if (res.ok) {
+        showCaptureToast(`Renommé : ${oldPath} → ${newPath}`);
+        currentSelectedFilePath = newPath;
+        await loadFileTree();
+      } else {
+        const data = await res.json().catch(() => ({}));
+        showCaptureToast(`Échec : ${data.message || 'HTTP ' + res.status}`);
+      }
+    }
+
+    async function uiTriggerDeleteFile() {
+      const pid = explorerServerProjectId();
+      const oldPath = currentSelectedFilePath;
+      if (!pid || !oldPath) { showCaptureToast("Sélectionnez d'abord un fichier."); return; }
+      if (!confirm(`Supprimer définitivement "${oldPath}" ?`)) return;
+      const res = await fetch(`/api/v1/projects/${pid}/files?path=${encodeURIComponent(oldPath)}`, {
+        method: 'DELETE', headers: studioApiHeaders()
+      });
+      if (res.ok) {
+        showCaptureToast(`Supprimé : ${oldPath}`);
+        currentSelectedFilePath = '';
+        await loadFileTree();
+      } else {
+        const data = await res.json().catch(() => ({}));
+        showCaptureToast(`Échec : ${data.message || 'HTTP ' + res.status}`);
       }
     }
 

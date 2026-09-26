@@ -14,6 +14,7 @@ import { assertPermission } from '../../../../packages/core/src/identity/permiss
 import { NotFoundError, ValidationError } from '../../../../packages/core/src/errors.js';
 import { projectStore } from '../../../../packages/core/src/identity/project.js';
 import { fileStore } from '../../../../packages/core/src/file-explorer/store.js';
+import { revisionStore } from '../../../../packages/core/src/model/revision-store.js';
 import { aiProviderRegistry } from '../../../../packages/core/src/ai/providers/registry.js';
 import { logger } from '../../../../packages/core/src/logger.js';
 import type { EngineeringPlan, IntentResult } from '../../../../packages/core/src/ai-native/conversation-intelligence/types.js';
@@ -784,6 +785,22 @@ export async function handleConversationRoutes(
       if (assembledHtml.trim().length > 100) {
         try {
           fileStore.saveFile(context.tenantId, projectId, 'index.html', assembledHtml);
+          // ÉTAPE 6 — révision automatique (§32 CDC Evolution Engine) : chaque
+          // génération produit une révision réversible (rollback déjà branché).
+          try {
+            revisionStore.createRevision(context.tenantId, projectId, {
+              message: `Génération IA — ${(body.message || '').slice(0, 80)}`,
+              author: 'Agent IA',
+              files: { 'index.html': assembledHtml },
+              provenance: { source: 'AI_AGENT', triggerRequestId: requestId }
+            });
+          } catch (revErr) {
+            logger.warn('Création de révision automatique impossible', {
+              component: 'conversation-route-stream',
+              projectId,
+              error: revErr instanceof Error ? revErr.message : String(revErr)
+            });
+          }
           // LOT 3 — Compass : cycle terminé
           sendSSE({ type: 'compass', state: 'COMPLETED' });
           logger.info('HTML final sauvegardé dans fileStore après stream', {

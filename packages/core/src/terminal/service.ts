@@ -3,6 +3,8 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import type { Role } from '../identity/permissions.js';
 import { assertPermission } from '../identity/permissions.js';
 import { NotFoundError, ValidationError } from '../errors.js';
@@ -26,6 +28,16 @@ export class TerminalService {
     private projectStore: ProjectStore,
     private auditStore?: AuditStore
   ) {}
+
+  /**
+   * ÉTAPE 6 — répertoire disque où les fichiers du projet sont matérialisés
+   * (même convention que file-explorer/store.ts materializeFile).
+   */
+  private resolveWorkspaceDir(tenantId: string, projectId: string): string | null {
+    const base = process.env.VOLACO_DATA_DIR || join(process.cwd(), '.volaco-data');
+    const segment = (s: string) => s.replace(/[^a-zA-Z0-9_-]/g, '_');
+    return join(base, 'workspace', segment(tenantId), segment(projectId));
+  }
 
   public executeCommand(
     tenantId: string,
@@ -97,14 +109,30 @@ export class TerminalService {
         });
       }
     } else {
-      // 4b. Commande liée au contenu d'un projet (ex: "git status", "npm test").
-      // Les fichiers d'un projet Volaco vivent aujourd'hui uniquement dans le
-      // stockage virtuel en mémoire (FileStore), pas dans un vrai dossier sur disque.
-      // On ne peut donc pas encore y lancer une vraie commande — et on ne prétend
-      // plus faussement que ça a réussi comme avant : on le dit clairement.
-      stdout = '';
-      stderr = `[${parsed.binary} ${parsed.subcommand ?? ''}] non exécuté : les fichiers de ce projet ne sont pas encore matérialisés sur disque (stockage virtuel en mémoire). Cette commande nécessite une intégration disque réelle, pas encore implémentée.`;
-      exitCode = 1;
+      // 4b. Commande liée au contenu d'un projet — ÉTAPE 6 : si les fichiers
+      // du projet sont matérialisés sur disque (workspace/<projectId>/), la
+      // commande est exécutée RÉELLEMENT dans ce dossier (sans shell). Sinon,
+      // message honnête (comportement conservé).
+      const workspacePath = this.resolveWorkspaceDir(tenantId, projectId);
+      if (workspacePath && existsSync(workspacePath)) {
+        try {
+          stdout = execFileSync(parsed.binary, parsed.args, {
+            cwd: workspacePath,
+            timeout: input.timeoutMs ?? 10_000,
+            encoding: 'utf8',
+            windowsHide: true
+          });
+        } catch (err) {
+          const e = err as { status?: number; stdout?: string; stderr?: string; message: string };
+          exitCode = typeof e.status === 'number' ? e.status : 1;
+          stdout = e.stdout ?? '';
+          stderr = e.stderr || e.message;
+        }
+      } else {
+        stdout = '';
+        stderr = `[${parsed.binary} ${parsed.subcommand ?? ''}] non exécuté : les fichiers de ce projet ne sont pas matérialisés sur disque (stockage virtuel). Générez ou modifiez l'application pour créer workspace/${projectId}.`;
+        exitCode = 1;
+      }
     }
 
     const durationMs = Math.round(performance.now() - startTime);

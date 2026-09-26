@@ -2,12 +2,55 @@
  * VibeCode Studio - Virtual File Store (CORE-003)
  */
 
+import { existsSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { join, dirname } from 'node:path';
 import { ValidationError } from '../errors.js';
 import { computeSha256 } from '../model/revision.js';
 import { dataFilePath, readJsonFile, writeJsonFileSync } from '../persistence/json-disk-cache.js';
 
 export const computeFileHash = computeSha256;
 import type { FileContent, FileNode, FileNodeType } from './types.js';
+
+/**
+ * ÉTAPE 6 — Matérialisation disque : chaque écriture dans le store virtuel
+ * est répliquée dans workspace/<projectId>/<chemin>. Le terminal (CORE-005)
+ * peut alors exécuter de vraies commandes dans ce dossier. Désactivable avec
+ * VOLACO_MATERIALIZE=0.
+ */
+function materializeEnabled(): boolean {
+  return process.env.VOLACO_MATERIALIZE !== '0';
+}
+
+function workspaceDir(tenantId: string, projectId: string): string {
+  const base = process.env.VOLACO_DATA_DIR || join(process.cwd(), '.volaco-data');
+  return join(base, 'workspace', sanitizeSegment(tenantId), sanitizeSegment(projectId));
+}
+
+function sanitizeSegment(segment: string): string {
+  return segment.replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+function materializeFile(tenantId: string, projectId: string, path: string, content: string): void {
+  if (!materializeEnabled()) return;
+  try {
+    const target = join(workspaceDir(tenantId, projectId), path);
+    if (!existsSync(dirname(target))) mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, content, 'utf8');
+  } catch (error) {
+    // La matérialisation est un enrichissement : jamais bloquante
+    console.warn(`[VOLACO:MATERIALIZE] écriture disque impossible pour ${projectId}/${path}: ${error instanceof Error ? error.message : error}`);
+  }
+}
+
+function dematerializeFile(tenantId: string, projectId: string, path: string): void {
+  if (!materializeEnabled()) return;
+  try {
+    const target = join(workspaceDir(tenantId, projectId), path);
+    if (existsSync(target)) rmSync(target);
+  } catch {
+    // best effort
+  }
+}
 
 interface StoredEntry {
   type: FileNodeType;
@@ -227,6 +270,7 @@ export class FileStore {
 
     const name = path.split('/').pop() ?? path;
     this.persist();
+    materializeFile(tenantId, projectId, path, content);
     return {
       path,
       name,
@@ -253,9 +297,11 @@ export class FileStore {
     for (const key of Array.from(map.keys())) {
       if (key.startsWith(prefix)) {
         map.delete(key);
+        dematerializeFile(tenantId, projectId, key);
       }
     }
 
+    dematerializeFile(tenantId, projectId, path);
     this.persist();
     return true;
   }
