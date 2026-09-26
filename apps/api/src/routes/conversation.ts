@@ -490,6 +490,8 @@ export async function handleConversationRoutes(
 
     // Signale au Studio que le stream commence
     sendSSE({ type: 'start', isModification });
+    // LOT 3 — Compass complet (§11 CDC) : les 9 états sont émis au fil du flux
+    sendSSE({ type: 'compass', state: 'UNDERSTANDING' });
 
     let fullText = '';
     let inSection = false;
@@ -545,6 +547,7 @@ export async function handleConversationRoutes(
           currentSectionHtml = '';
           currentSectionText = '';
           sectionIndex++;
+          sendSSE({ type: 'compass', state: 'EXECUTING' });
           sendSSE({
             type: 'section_start',
             name: currentSectionName,
@@ -717,10 +720,15 @@ export async function handleConversationRoutes(
         assembledHtml = buildStudioShell(assembledHtml);
       }
 
+      // LOT 3 — Compass : phase de validation avant la sauvegarde finale
+      sendSSE({ type: 'compass', state: 'VALIDATING' });
+
       // Sauvegarde dans fileStore pour que la prochaine demande trouve le HTML
       if (assembledHtml.trim().length > 100) {
         try {
           fileStore.saveFile(context.tenantId, projectId, 'index.html', assembledHtml);
+          // LOT 3 — Compass : cycle terminé
+          sendSSE({ type: 'compass', state: 'COMPLETED' });
           logger.info('HTML final sauvegardé dans fileStore après stream', {
             component: 'conversation-route-stream',
             tenantId: context.tenantId,

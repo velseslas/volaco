@@ -152,4 +152,17 @@ describe('LOT 10 — Câblage réel de l\'interface Studio', () => {
     assert.ok(!indexContent.includes('String(eval(expr))'), 'L\'eval arbitraire côté client doit avoir disparu');
     assert.ok(indexContent.includes('le backend n\'a pas répondu'), 'Le fallback terminal doit être honnête');
   });
+
+  it('9. Rendu réel branché + Compass 9 états (§11 CDC)', () => {
+    // Rendu réel Chromium branché au preview
+    assert.ok(indexContent.includes('async function runRealRender()'), 'runRealRender doit être définie');
+    assert.ok(indexContent.includes('/render/preview`'), 'Doit appeler POST /render/preview (réel Chromium)');
+    assert.ok(indexContent.includes('id="realRenderModal"'), 'La modale de rendu réel doit exister');
+    assert.ok(indexContent.includes('screenshotBase64'), 'La capture doit être affichée');
+    // Compass : les 9 états du CDC gérés côté client
+    for (const state of ['EXPLORING', 'UNDERSTANDING', 'CLARIFYING', 'WAITING_CONFIRMATION', 'PLANNING', 'EXECUTING', 'REPAIRING', 'VALIDATING', 'COMPLETED']) {
+      assert.ok(indexContent.includes(`${state}:`), `L'état Compass ${state} doit être géré côté client`);
+    }
+    assert.ok(indexContent.includes("event.type === 'compass'"), 'Les événements compass du stream doivent être traités');
+  });
 });

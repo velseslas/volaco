@@ -1042,14 +1042,25 @@
           </button>
 
           <!-- À droite : Bouton Ouvrir dans un nouvel onglet -->
-          <button 
-            id="btnTopPreviewPopout" 
-            type="button" 
-            onclick="popoutPreview()" 
-            class="w-7 h-7 rounded-full text-slate-400 hover:text-white hover:bg-white/10 flex items-center justify-center text-xs transition duration-150 active:scale-95" 
+          <button
+            id="btnTopPreviewPopout"
+            type="button"
+            onclick="popoutPreview()"
+            class="w-7 h-7 rounded-full text-slate-400 hover:text-white hover:bg-white/10 flex items-center justify-center text-xs transition duration-150 active:scale-95"
             title="Ouvrir dans un nouvel onglet"
           >
             <i class="fa-solid fa-arrow-up-right-from-square text-xs"></i>
+          </button>
+
+          <!-- LOT 3 : Rendu réel Chromium (real-renderer + capture) -->
+          <button
+            id="btnTopPreviewRealRender"
+            type="button"
+            onclick="runRealRender()"
+            class="w-7 h-7 rounded-full text-slate-400 hover:text-emerald-300 hover:bg-emerald-500/10 flex items-center justify-center text-xs transition duration-150 active:scale-95"
+            title="Rendu réel (Chromium) : capture + erreurs runtime"
+          >
+            <i class="fa-solid fa-camera-retro text-xs"></i>
           </button>
 
         </div>
@@ -3177,6 +3188,21 @@ ${sections}
                     textEl.innerHTML = d;
                   }
                 }
+              } else if (event.type === 'compass' && event.state) {
+                // LOT 3 — les 9 états du Conversation Compass (§11 CDC)
+                const COMPASS_INFO = {
+                  EXPLORING:            ['EXPLORING',     'bg-sky-400',     'Exploration'],
+                  UNDERSTANDING:        ['UNDERSTANDING', 'bg-indigo-400',  'Compréhension du besoin…'],
+                  CLARIFYING:           ['CLARIFYING',    'bg-cyan-400',    'Clarification…'],
+                  WAITING_CONFIRMATION: ['WAITING_CONFIRMATION', 'bg-amber-400', 'En attente de confirmation'],
+                  PLANNING:             ['PLANNING',      'bg-violet-400',  'Planification…'],
+                  EXECUTING:            ['EXECUTING',     'bg-amber-400',   'Construction…'],
+                  REPAIRING:            ['REPAIRING',     'bg-orange-400',  'Réparation…'],
+                  VALIDATING:           ['VALIDATING',    'bg-cyan-400',    'Validation…'],
+                  COMPLETED:            ['COMPLETED',     'bg-emerald-400', 'Terminé ✓']
+                };
+                const info = COMPASS_INFO[event.state];
+                if (info) setCompassState(event.state, info[0], info[1], info[2]);
               } else if (event.type === 'error') {
                 if (statusEl) statusEl.innerHTML = '<span style="color:#f87171;">Erreur: ' + (event.error || '') + '</span>';
               }
@@ -5101,6 +5127,62 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
           <span class="truncate">${canonicalEscape(node.name)}</span>
         </div>`;
       }).join('');
+    }
+
+    // ==================== LOT 3 : RENDU RÉEL (Chromium) ====================
+    /**
+     * Lance un rendu réel headless du projet via POST /render/preview
+     * (capture d'écran + messages console + erreurs runtime). Le HTML courant
+     * du preview est d'abord synchronisé vers le serveur pour que la capture
+     * reflète exactement ce que l'utilisateur voit.
+     */
+    async function runRealRender() {
+      const proj = userProjects.find(p => p.id === activeProjectId);
+      const pid = proj && proj.serverProjectId;
+      if (!pid) {
+        alert("Aucun projet serveur — envoyez un message dans le chat pour initialiser le projet.");
+        return;
+      }
+      const modal = document.getElementById('realRenderModal');
+      if (modal) modal.classList.remove('hidden');
+      const statusEl = document.getElementById('realRenderStatus');
+      const imgEl = document.getElementById('realRenderScreenshot');
+      const logEl = document.getElementById('realRenderLogs');
+      if (statusEl) statusEl.textContent = 'Synchronisation du code puis rendu Chromium en cours…';
+      if (imgEl) imgEl.classList.add('hidden');
+      if (logEl) logEl.innerHTML = '';
+      try {
+        // Synchronise le HTML courant (même logique que ensureServerProjectSynced)
+        await fetch(`/api/v1/projects/${pid}/files/content`, {
+          method: 'PUT',
+          headers: studioApiHeaders(),
+          body: JSON.stringify({ path: 'index.html', content: currentAppHtml || '' })
+        });
+        const res = await fetch(`/api/v1/projects/${pid}/render/preview`, { method: 'POST', headers: studioApiHeaders() });
+        const data = await res.json();
+        if (res.ok && data.screenshotBase64) {
+          if (statusEl) statusEl.textContent = `Rendu réel terminé en ${data.durationMs} ms — point d'entrée : ${data.entryFile}`;
+          if (imgEl) { imgEl.src = 'data:image/png;base64,' + data.screenshotBase64; imgEl.classList.remove('hidden'); }
+          if (logEl) {
+            const logs = (data.consoleMessages || []).map((m) =>
+              `<div class="text-[10px] font-mono text-slate-400">[${canonicalEscape(m.type || 'log')}] ${canonicalEscape(m.text || '')}</div>`
+            ).join('');
+            const errs = (data.pageErrors || []).map((e) =>
+              `<div class="text-[10px] font-mono text-rose-400">[RUNTIME ERROR] ${canonicalEscape(String(e))}</div>`
+            ).join('');
+            logEl.innerHTML = (errs + logs) || '<div class="text-[10px] text-slate-500 italic">Aucun message console — rendu propre.</div>';
+          }
+        } else {
+          if (statusEl) statusEl.textContent = 'Rendu indisponible : ' + (data.message || data.error || ('HTTP ' + res.status));
+        }
+      } catch (e) {
+        if (statusEl) statusEl.textContent = 'Serveur injoignable : ' + (e && e.message ? e.message : e);
+      }
+    }
+
+    function closeRealRenderModal() {
+      const m = document.getElementById('realRenderModal');
+      if (m) m.classList.add('hidden');
     }
 
     function updateLineNumbers() {
@@ -11351,7 +11433,27 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
     </div>
   </div>
 
-  
+  <!-- LOT 3 : Modale Rendu Réel (Chromium + capture + erreurs runtime) -->
+  <div id="realRenderModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="bg-[#0c1020] border border-emerald-500/40 rounded-2xl max-w-3xl w-full p-6 space-y-4 shadow-2xl text-slate-100 max-h-[90vh] overflow-y-auto">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center space-x-2.5 text-emerald-400 font-bold text-sm">
+          <i class="fa-solid fa-camera-retro text-base"></i>
+          <span>Rendu réel — Chromium headless (AINT-012)</span>
+        </div>
+        <button onclick="closeRealRenderModal()" class="text-slate-400 hover:text-white"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div id="realRenderStatus" class="text-xs text-slate-300">Prêt.</div>
+      <div class="rounded-xl overflow-hidden border border-[#1e2642] bg-[#070913] flex items-center justify-center min-h-[200px]">
+        <img id="realRenderScreenshot" class="max-w-full hidden" alt="Capture d'écran du rendu réel" />
+      </div>
+      <div>
+        <div class="text-[11px] font-bold text-slate-300 mb-1"><i class="fa-solid fa-terminal mr-1"></i>Console du rendu réel</div>
+        <div id="realRenderLogs" class="space-y-1 max-h-40 overflow-y-auto bg-[#0a0e1c] rounded-xl border border-[#161c2e] p-3"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- Modale Ingestion Nouveau Signal Utilisateur (AINT-015) -->
   <div id="simulateSignalModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
     <div class="bg-[#0c1020] border border-rose-500/40 rounded-2xl max-w-lg w-full p-6 space-y-4 shadow-2xl text-slate-100">

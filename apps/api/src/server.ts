@@ -28,6 +28,7 @@ import { handleRenderRoutes } from './routes/render.js';
 import { handleAiProxyRoutes } from './routes/ai-proxy.js';
 import { handleDecideRoutes, configureDecideRoute } from './routes/decide.js';
 import { handleOrchestrateRoutes, configureOrchestratorService } from './routes/orchestrate.js';
+import { handleDnaRoutes, configureDnaRoute } from './routes/dna.js';
 import { ConversationIntelligenceService } from '../../../packages/core/src/ai-native/conversation-intelligence/service.js';
 import { AgentRuntimeService } from '../../../packages/core/src/ai-native/agent-runtime/service.js';
 import { aiProviderRegistry } from '../../../packages/core/src/ai/providers/registry.js';
@@ -163,6 +164,10 @@ function bootstrapConversationEngine(): void {
   configureOrchestratorService(new AIOrchestratorService(
     understandingService, impactService, mutationService, dnaService, semanticGraphService, aiProviderRegistry
   ));
+
+  // LOT 3 — la DNA réelle devient consultable (GET /dna) au lieu du
+  // manifeste fictif affiché par le Studio.
+  configureDnaRoute(dnaService);
 
   if (!hasRealProvider) {
     logger.warn(
@@ -419,6 +424,10 @@ export function createApiServer(configOverride: Partial<AppConfig> = {}) {
 
       const handledRender = await handleRenderRoutes(req, res, pathname, context, requestId);
       if (handledRender) return;
+
+      // LOT 3 — Application DNA réelle
+      const handledDna = await handleDnaRoutes(req, res, pathname, context, requestId);
+      if (handledDna) return;
 
       const handledAiProxy = await handleAiProxyRoutes(req, res, pathname, context, requestId);
       if (handledAiProxy) return;
