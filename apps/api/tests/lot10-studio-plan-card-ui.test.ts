@@ -189,4 +189,31 @@ describe('LOT 10 — Câblage réel de l\'interface Studio', () => {
     assert.ok(indexContent.includes('id="compareModal"'), 'La modale de comparaison doit exister');
     assert.ok(indexContent.includes('compareBefore') && indexContent.includes('compareAfter'), 'Les deux rendus A/B doivent exister');
   });
+
+  it('12. Auto-réparation du navigateur usager (sessions mortes + code corrompu)', () => {
+    // Sessions serveur en mémoire : la session mémorisée doit être VALIDÉE
+    // avant usage (404 après redémarrage = auto-recréation, plus de blocage)
+    assert.ok(
+      indexContent.includes('conversation/sessions/${encodeURIComponent(proj.serverSessionId)}'),
+      'ensureConversationSession doit valider la session mémorisée (GET) avant de la réutiliser'
+    );
+    assert.ok(
+      indexContent.includes('proj.serverSessionId = null'),
+      'Une session invalide doit être invalidée puis recréée'
+    );
+    // Projet serveur disparu : recréation au lieu d'une erreur fatale
+    assert.ok(
+      indexContent.includes('createServerProject'),
+      'ensureServerProjectSynced doit recréer un projet serveur introuvable'
+    );
+    // Code corrompu (ancien bug de double-emballage) réparé au chargement
+    assert.ok(
+      indexContent.includes('repairCorruptedProjectCode'),
+      'Le réparateur de documents imbriqués doit exister au chargement'
+    );
+    assert.ok(
+      indexContent.includes("lastIndexOf('<!doctype')"),
+      'La réparation doit conserver le document interne (dernier DOCTYPE)'
+    );
+  });
 });

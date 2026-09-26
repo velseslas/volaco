@@ -2915,7 +2915,23 @@
       const proj = userProjects.find(p => p.id === activeProjectId);
       if (!proj) throw new Error("Aucun projet actif dans le Studio.");
 
-      if (!proj.serverProjectId) {
+      // AUTO-RÉPARATION — les projets serveur persistent, mais peuvent avoir
+      // disparu (store réinitialisé, redémarrage avec données nettoyées) : si
+      // la synchronisation échoue, on recrée le projet proprement au lieu de
+      // laisser le Studio bloqué pour toujours.
+      const syncInto = async (pid) => {
+        const res = await fetch(`/api/v1/projects/${pid}/files/content`, {
+          method: 'PUT',
+          headers: studioApiHeaders(),
+          body: JSON.stringify({ path: 'index.html', content: (proj.isCustom && proj.code) ? proj.code : '<html><body></body></html>' })
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.message || "Impossible de synchroniser le fichier avec le serveur.");
+        }
+      };
+
+      const createServerProject = async () => {
         const res = await fetch('/api/v1/projects', {
           method: 'POST',
           headers: studioApiHeaders(),
@@ -2924,29 +2940,51 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data.message || "Impossible de créer le projet côté serveur.");
         proj.serverProjectId = data.project.id;
+        proj.serverSessionId = null; // l'ancienne session appartenait à l'ancien projet
         saveUserProjects();
+        return proj.serverProjectId;
+      };
+
+      if (!proj.serverProjectId) {
+        await createServerProject();
+      } else {
+        try {
+          await syncInto(proj.serverProjectId);
+        } catch (syncErr) {
+          // Projet serveur introuvable (404) → recréation + nouvelle sync
+          await createServerProject();
+          await syncInto(proj.serverProjectId);
+        }
+        return proj.serverProjectId;
       }
 
-      const syncRes = await fetch(`/api/v1/projects/${proj.serverProjectId}/files/content`, {
-        method: 'PUT',
-        headers: studioApiHeaders(),
-        body: JSON.stringify({ path: 'index.html', content: (proj.isCustom && proj.code) ? proj.code : '<html><body></body></html>' })
-      });
-      if (!syncRes.ok) {
-        const data = await syncRes.json().catch(() => ({}));
-        throw new Error(data.message || "Impossible de synchroniser le fichier avec le serveur.");
-      }
-
+      await syncInto(proj.serverProjectId);
       return proj.serverProjectId;
     }
 
     /**
      * Crée (une seule fois par projet local) une session de conversation
      * côté serveur, réutilisée pour tous les messages suivants du même projet.
+     * AUTO-RÉPARATION : les sessions vivent en mémoire serveur — elles
+     * disparaissent à chaque redémarrage. Une session mémorisée dans le
+     * localStorage est donc VALIDÉE avant usage ; si elle est morte (404),
+     * elle est invalidée et une nouvelle est créée (avant : 404 garanti sur
+     * chaque message après un redémarrage du serveur).
      */
     async function ensureConversationSession(serverProjectId) {
       const proj = userProjects.find(p => p.id === activeProjectId);
-      if (proj.serverSessionId) return proj.serverSessionId;
+      if (!proj) throw new Error("Aucun projet actif dans le Studio.");
+
+      if (proj.serverSessionId) {
+        try {
+          const check = await fetch(`/api/v1/projects/${serverProjectId}/conversation/sessions/${encodeURIComponent(proj.serverSessionId)}`, {
+            headers: studioApiHeaders()
+          });
+          if (check.ok) return proj.serverSessionId;
+        } catch (_) { /* serveur injoignable : l'appel stream échouera avec un message clair */ }
+        proj.serverSessionId = null;
+        saveUserProjects();
+      }
 
       const res = await fetch(`/api/v1/projects/${serverProjectId}/conversation/sessions`, {
         method: 'POST',
@@ -4425,6 +4463,35 @@ ${sections}
         }
       }
     } catch(e) { localStorage.removeItem('vibecode_saved_projects'); }
+
+    // ==================== AUTO-RÉPARATION DU LOCALSTORAGE ====================
+    // Les anciennes versions du Studio pouvaient sauvegarder un document
+    // imbriqué (DOCTYPE à l'intérieur d'un <body>) à cause du bug de
+    // double-emballage du preview — corrigé côté génération. Ce réparateur
+    // nettoie au chargement les codes corrompus restants, sans perte : on
+    // conserve le document INTERNE (dernier DOCTYPE -> dernier </html>), qui
+    // est l'application elle-même. Indispensable dans le navigateur de
+    // l'usager, dont le localStorage conserve l'état d'avant correctif.
+    (function repairCorruptedProjectCode() {
+      let repaired = 0;
+      userProjects.forEach((p) => {
+        if (typeof p.code !== 'string' || p.code.length < 100) return;
+        const doctypeCount = (p.code.match(/<!DOCTYPE/gi) || []).length;
+        if (doctypeCount > 1) {
+          const lower = p.code.toLowerCase();
+          const start = lower.lastIndexOf('<!doctype');
+          const end = lower.lastIndexOf('</html>');
+          if (start !== -1 && end !== -1 && end > start) {
+            p.code = p.code.slice(start, end + '</html>'.length);
+            repaired++;
+          }
+        }
+      });
+      if (repaired > 0) {
+        try { saveUserProjects(); } catch (_) {}
+        console.warn('[VibeCode] Auto-réparation : ' + repaired + ' projet(s) contenant un document imbriqué (ancien bug de preview) ont été nettoyés.');
+      }
+    })();
 
 
     let activeProjectId = userProjects[0].id;
