@@ -212,6 +212,31 @@ export class ConversationIntelligenceService {
     return undefined;
   }
 
+  /**
+   * ÉTAPE 5 — Mémoire projet réelle (§14 CDC) : ProjectMemory de la session
+   * la plus récente du projet (décisions, préférences, contraintes, plans
+   * acceptés/rejetés). Exposé au panneau Mémoire du Studio.
+   */
+  public getLatestProjectMemory(
+    tenantId: string,
+    projectId: string,
+    userRole: Role = 'OWNER',
+    requestId?: string | undefined
+  ): ConversationSession['projectMemory'] | null {
+    assertPermission(userRole, 'PROJECT_READ', requestId);
+    this.loadDurableSessions();
+    const prefix = `${tenantId.trim()}:${projectId.trim()}:`;
+    let latest: ConversationSession | null = null;
+    for (const [key, session] of Object.entries(this.durableSessions)) {
+      if (!key.startsWith(prefix)) continue;
+      if (!latest || session.sessionId > latest.sessionId) latest = session;
+    }
+    if (!latest) {
+      return null;
+    }
+    return latest.projectMemory ?? null;
+  }
+
   public async processTurn(
     params: {
       tenantId: string;

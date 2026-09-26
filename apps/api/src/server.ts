@@ -31,6 +31,7 @@ import { handleAiProxyRoutes } from './routes/ai-proxy.js';
 import { handleDecideRoutes, configureDecideRoute } from './routes/decide.js';
 import { handleOrchestrateRoutes, configureOrchestratorService } from './routes/orchestrate.js';
 import { handleDnaRoutes, configureDnaRoute } from './routes/dna.js';
+import { handleDecisionsRoutes, configureDecisionsRoute } from './routes/decisions.js';
 import { handleVisualRoutes } from './routes/visual.js';
 import { ConversationIntelligenceService } from '../../../packages/core/src/ai-native/conversation-intelligence/service.js';
 import { AgentRuntimeService } from '../../../packages/core/src/ai-native/agent-runtime/service.js';
@@ -154,12 +155,16 @@ function bootstrapConversationEngine(): void {
   // routes existaient mais n'étaient ni configurées ni montées. Le Decision
   // Engine devient l'autorité décisionnelle consultable, l'Orchestrator peut
   // orchestrer un plan avec les mêmes services d'intelligence.
+  const decisionLedger = new DecisionLedger();
   const decisionEngine = new DecisionEngine({
     constraintRegistry: new ConstraintRegistry(),
-    decisionLedger: new DecisionLedger(),
+    decisionLedger,
     alternativeGenerator: new AlternativeGenerator()
   });
   configureDecideRoute({ decisionEngine, analystRegistry: new AnalystRegistry(), fileStore });
+
+  // ÉTAPE 5 — ADR réels exposés (GET /decisions) pour le panneau Décisions.
+  configureDecisionsRoute(decisionLedger);
 
   const understandingService = new ApplicationUnderstandingService(
     semanticGraphService, dnaService, impactService, codeIntelService
@@ -332,6 +337,7 @@ const API_ROUTES: readonly RouteEntry[] = [
   { name: 'orchestrate (Phase 9)', handler: handleOrchestrateRoutes },
   { name: 'render (headless)', handler: handleRenderRoutes },
   { name: 'dna (AINT-002)', handler: handleDnaRoutes },
+  { name: 'decisions (ADR)', handler: handleDecisionsRoutes },
   { name: 'visual-critic (AINT-012)', handler: handleVisualRoutes },
   { name: 'ai-proxy', handler: handleAiProxyRoutes },
   { name: 'files (CORE-003/004)', handler: handleFilesRoutes },

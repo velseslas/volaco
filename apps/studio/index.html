@@ -1735,72 +1735,12 @@
                   <h4 class="text-xs font-bold text-white">Registre Officiel des ADR (Architecture Decision Records)</h4>
                   <p class="text-[11px] text-slate-400">Toute décision d'ingénierie majeure est formalisée, traçable et réversible (Section 15 & Annexe L du CDC).</p>
                 </div>
-                <span class="px-2.5 py-1 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-lg text-xs font-bold font-mono">4 ADR Actifs</span>
+                <span id="adrCountBadge" class="px-2.5 py-1 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-lg text-xs font-bold font-mono">ADR</span>
               </div>
 
-              <!-- ADR List -->
-              <div class="space-y-3 text-xs">
-                
-                <!-- ADR-001 -->
-                <div class="p-4 rounded-2xl bg-[#0d1222] border border-[#1c243e] space-y-2">
-                  <div class="flex items-center justify-between">
-                    <div class="flex items-center space-x-2">
-                      <span class="px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 font-mono font-bold text-[10px]">ADR-001</span>
-                      <span class="font-bold text-white text-xs">Architecture Single-Page Autonome (Client-First)</span>
-                    </div>
-                    <span class="text-[10px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold">STATUT : ACTIVE</span>
-                  </div>
-                  <p class="text-slate-300 text-[11px] leading-relaxed">
-                    <strong>Raison :</strong> Permettre l'exécution immédiate dans l'iframe, le rechargement instantané en millisecondes et l'export ZIP autonome 100% sans configuration serveur préalable.
-                  </p>
-                  <div class="text-[10px] text-slate-400 font-mono">Date : Septembre 2026 • Impact : Rendu & Portabilité universelle</div>
-                </div>
-
-                <!-- ADR-002 -->
-                <div class="p-4 rounded-2xl bg-[#0d1222] border border-[#1c243e] space-y-2">
-                  <div class="flex items-center justify-between">
-                    <div class="flex items-center space-x-2">
-                      <span class="px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 font-mono font-bold text-[10px]">ADR-002</span>
-                      <span class="font-bold text-white text-xs">Isolation Stricte du Preview vs Thème du Studio</span>
-                    </div>
-                    <span class="text-[10px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold">STATUT : ACTIVE</span>
-                  </div>
-                  <p class="text-slate-300 text-[11px] leading-relaxed">
-                    <strong>Raison :</strong> Le produit conçu par l'utilisateur possède son propre design system. L'activation du mode clair dans le Studio ne doit en aucun cas altérer les couleurs du canvas produit.
-                  </p>
-                  <div class="text-[10px] text-slate-400 font-mono">Date : Septembre 2026 • Impact : Intégrité graphique du produit</div>
-                </div>
-
-                <!-- ADR-003 -->
-                <div class="p-4 rounded-2xl bg-[#0d1222] border border-[#1c243e] space-y-2">
-                  <div class="flex items-center justify-between">
-                    <div class="flex items-center space-x-2">
-                      <span class="px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 font-mono font-bold text-[10px]">ADR-003</span>
-                      <span class="font-bold text-white text-xs">Protocole de Confirmation de Sauvegarde & Quitter</span>
-                    </div>
-                    <span class="text-[10px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold">STATUT : ACTIVE</span>
-                  </div>
-                  <p class="text-slate-300 text-[11px] leading-relaxed">
-                    <strong>Raison :</strong> Conformément au principe <em>Everything Important is Reversible</em>, l'utilisateur a le contrôle explicite. Aucune sauvegarde n'est appliquée sans confirmation et aucune navigation n'efface un code non enregistré.
-                  </p>
-                  <div class="text-[10px] text-slate-400 font-mono">Date : Septembre 2026 • Impact : Sécurité des données utilisateur</div>
-                </div>
-
-                <!-- ADR-004 -->
-                <div class="p-4 rounded-2xl bg-[#0d1222] border border-[#1c243e] space-y-2">
-                  <div class="flex items-center justify-between">
-                    <div class="flex items-center space-x-2">
-                      <span class="px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 font-mono font-bold text-[10px]">ADR-004</span>
-                      <span class="font-bold text-white text-xs">Plan Before Complex Execution (Intent & Plan Engines)</span>
-                    </div>
-                    <span class="text-[10px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold">STATUT : ACTIVE</span>
-                  </div>
-                  <p class="text-slate-300 text-[11px] leading-relaxed">
-                    <strong>Raison :</strong> Éviter les modifications aveugles par IA. Chaque demande génère une analyse d'intention et un plan d'impact approuvé avant exécution.
-                  </p>
-                  <div class="text-[10px] text-slate-400 font-mono">Date : Septembre 2026 • Impact : Fiabilité d'ingénierie logicielle</div>
-                </div>
-
+              <!-- ADR List — ÉTAPE 5 : ADR réels depuis GET /decisions (Decision Ledger) -->
+              <div id="adrListContainer" class="space-y-3 text-xs">
+                <div class="p-4 rounded-2xl bg-[#0d1222] border border-[#1c243e] text-slate-400 text-[11px] italic">Chargement des décisions…</div>
               </div>
             </div>
 
@@ -6870,14 +6810,48 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
       }
     }
 
-    function renderDnaView() {
+    async function renderDnaView() {
       const nameEl = document.getElementById('dnaProjectName');
       if (nameEl) nameEl.innerText = currentProjectName || "Projet";
 
       const rawBlock = document.getElementById('dnaRawJsonBlock');
-      if (rawBlock) {
+      if (!rawBlock) return;
+
+      // ÉTAPE 5 — DNA RÉELLE extraite du projet (GET /dna, AINT-002) au lieu
+      // du manifeste en dur. Fallback : manifeste local déterministe.
+      const proj = userProjects.find(p => p.id === activeProjectId);
+      const pid = proj && proj.serverProjectId;
+      let dna = null;
+      let memory = null;
+      let decisions = null;
+      if (pid) {
+        try {
+          const res = await fetch(`/api/v1/projects/${pid}/dna`, { headers: studioApiHeaders() });
+          if (res.ok) dna = (await res.json()).dna || null;
+        } catch (_) {}
+        try {
+          const res = await fetch(`/api/v1/projects/${pid}/conversation/memory`, { headers: studioApiHeaders() });
+          if (res.ok) memory = (await res.json()).memory || null;
+        } catch (_) {}
+        try {
+          const res = await fetch(`/api/v1/projects/${pid}/decisions`, { headers: studioApiHeaders() });
+          if (res.ok) decisions = (await res.json()).decisions || null;
+        } catch (_) {}
+      }
+
+      if (dna) {
+        rawBlock.innerText = JSON.stringify({
+          schemaVersion: "7.0.0 (extraite)",
+          source: "AINT-002 Application DNA — extraction réelle",
+          projectName: currentProjectName || "VibeCode Application",
+          timestamp: new Date().toISOString(),
+          dna,
+          projectMemory: memory,
+          decisionRecords: decisions
+        }, null, 2);
+      } else {
         const manifest = {
-          schemaVersion: "7.0.0",
+          schemaVersion: "7.0.0 (locale)",
           specReference: "Cahier des Charges Final V7.0 (AI-Native Platform)",
           projectName: currentProjectName || "VibeCode Application",
           timestamp: new Date().toISOString(),
@@ -6902,19 +6876,57 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
               surface: "#0c1020",
               fontFamily: "Plus Jakarta Sans, sans-serif",
               borderRadius: "16px / 24px"
-            },
-            decisionRecords: [
-              { id: "ADR-001", status: "ACTIVE", title: "Architecture Single-Page Autonome" },
-              { id: "ADR-002", status: "ACTIVE", title: "Isolation Stricte du Preview vs Thème Studio" },
-              { id: "ADR-003", status: "ACTIVE", title: "Protocole de Confirmation de Sauvegarde & Quitter" },
-              { id: "ADR-004", status: "ACTIVE", title: "Plan Before Complex Execution Protocol" }
-            ]
+            }
           }
         };
         rawBlock.innerText = JSON.stringify(manifest, null, 2);
       }
 
       renderApplicationModelTree();
+      renderAdrList();
+    }
+
+    /**
+     * ÉTAPE 5 — ADR RÉELS depuis le Decision Ledger (GET /decisions) au lieu
+     * des 4 cartes statiques. Fallback : message honnête si serveur absent.
+     */
+    async function renderAdrList() {
+      const container = document.getElementById('adrListContainer');
+      if (!container) return;
+      const proj = userProjects.find(p => p.id === activeProjectId);
+      const pid = proj && proj.serverProjectId;
+      if (!pid) {
+        container.innerHTML = '<div class="p-4 rounded-2xl bg-[#0d1222] border border-[#1c243e] text-slate-400 text-[11px] italic">Aucun projet serveur — les ADR apparaîtront après la première décision d\'ingénierie.</div>';
+        return;
+      }
+      try {
+        const res = await fetch(`/api/v1/projects/${pid}/decisions`, { headers: studioApiHeaders() });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        const decisions = Array.isArray(data.decisions) ? data.decisions : [];
+        if (decisions.length === 0) {
+          container.innerHTML = '<div class="p-4 rounded-2xl bg-[#0d1222] border border-[#1c243e] text-slate-400 text-[11px] italic">Aucune décision enregistrée — les décisions du Decision Engine (pourquoi, alternatives, verdict) apparaîtront ici.</div>';
+          const badge = document.getElementById('adrCountBadge');
+          if (badge) badge.textContent = '0 ADR';
+          return;
+        }
+        const badge2 = document.getElementById('adrCountBadge');
+        if (badge2) badge2.textContent = `${decisions.length} ADR Actifs`;
+        container.innerHTML = decisions.map((d) => `
+          <div class="p-4 rounded-2xl bg-[#0d1222] border border-[#1c243e] space-y-2">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center space-x-2">
+                <span class="px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 font-mono font-bold text-[10px]">${canonicalEscape(String(d.decisionId || d.id || 'ADR'))}</span>
+                <span class="text-xs font-bold text-white">${canonicalEscape(String((d.chosenAlternative && d.chosenAlternative.label) || d.rationale || 'Décision'))}</span>
+              </div>
+              <span class="text-[10px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold">${canonicalEscape(String(d.verdict || ''))}</span>
+            </div>
+            <p class="text-slate-300 text-[11px] leading-relaxed"><strong>Raison :</strong> ${canonicalEscape(String((d.chosenAlternative && d.chosenAlternative.reason) || d.rationale || ''))}</p>
+          </div>
+        `).join('');
+      } catch (_) {
+        container.innerHTML = '<div class="p-4 rounded-2xl bg-[#0d1222] border border-[#1c243e] text-slate-400 text-[11px] italic">Décisions indisponibles (serveur injoignable).</div>';
+      }
     }
 
     function renderApplicationModelTree() {
@@ -7018,7 +7030,10 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
       setTimeout(() => {
         if (loading) loading.classList.add('hidden');
         if (ready) ready.classList.remove('hidden');
-        showCaptureToast("Déploiement en ligne réussi !");
+        // ÉTAPE 5 — honnêteté : le déploiement réel n'est PAS encore branché
+        // (Phase 4/5 du CDC). Plus de faux « Déploiement en ligne réussi ! ».
+        if (stepText) stepText.innerText = "Simulation terminée — le déploiement réel (Dokploy/Vercel/…) sera branché dans une phase ultérieure du CDC.";
+        showCaptureToast("Simulation de déploiement — aucun déploiement réel effectué.");
       }, 1400);
     }
 

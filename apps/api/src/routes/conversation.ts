@@ -238,6 +238,18 @@ export async function handleConversationRoutes(
     return true;
   }
 
+  // GET /api/v1/projects/:projectId/conversation/memory -> mémoire projet réelle (ÉTAPE 5)
+  if (sessionId === 'memory' && !action && req.method === 'GET') {
+    assertPermission(context.role, 'PROJECT_READ', requestId);
+    const memory = conversationIntelligenceService.getLatestProjectMemory(context.tenantId, projectId, context.role, requestId);
+    if (!memory) {
+      sendJson(res, 404, { message: 'Aucune mémoire de conversation pour ce projet (aucune session enregistrée).', requestId });
+      return true;
+    }
+    sendJson(res, 200, { memory, requestId });
+    return true;
+  }
+
   // GET /api/v1/projects/:projectId/conversation/sessions/:sessionId -> lire une session
   if (sessionId && !action && req.method === 'GET') {
     assertPermission(context.role, 'PROJECT_READ', requestId);
