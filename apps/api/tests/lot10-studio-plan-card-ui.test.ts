@@ -203,6 +203,13 @@ describe('LOT 10 — Câblage réel de l\'interface Studio', () => {
     assert.ok(indexContent.includes('function appendQuickActions()'), 'appendQuickActions doit être définie');
     assert.ok(indexContent.includes('autoHarmonizeApp()'), 'Chip Améliorer le design -> vraie fonction');
     assert.ok(indexContent.includes('autoRepair()'), 'Chip Auto-réparer -> vraie fonction');
+    // Indicateur de frappe vivant + plus d'interception instantanée du chat
+    assert.ok(indexContent.includes('animate-pulse text-violet-300 tracking-widest'), 'L\'indicateur de frappe vivant doit exister');
+    assert.ok(!indexContent.includes('const isInstant = hasInstantTemplate(text)'), 'Le chat ne doit plus être court-circuité par les templates instantanés');
+    assert.ok(
+      indexContent.includes("runConversationEngineFlow(text, isModification, loadEl, cleanTitle);\r\n    }") || indexContent.includes('runConversationEngineFlow(text, isModification, loadEl, cleanTitle);'),
+      'Toutes les demandes passent par le moteur conversationnel'
+    );
     // Qualité preview : le shell serveur est aligné sur le template client
     assert.ok(indexContent.includes('Construction de '), 'Le squelette de construction reste présent');
   });

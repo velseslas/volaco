@@ -419,6 +419,13 @@ export async function handleConversationRoutes(
     // En mode planFirst, le flux s'arrête ici et attend la confirmation (§3.9).
     const plan = planGenerator.generatePlan({ intent: buildStreamFallbackIntent(body.message || '') });
     sendSSE({ type: 'plan', plan });
+    // Conversation vivante — narration aux transitions réelles (§14 CDC) :
+    // l'IA raconte ce qu'elle fait au moment où elle le fait.
+    if (isModification) {
+      sendSSE({ type: 'chat', text: `Je modifie ta page en gardant le reste intact : ${plan.steps.length} étape(s). Je m'y mets tout de suite !` });
+    } else {
+      sendSSE({ type: 'chat', text: `Voici mon plan : ${plan.steps.length} étapes. Je construis ça sous tes yeux, section par section !` });
+    }
     if (body.planFirst && !body.confirmedPlan) {
       sendSSE({ type: 'compass', state: 'WAITING_CONFIRMATION' });
       sendSSE({ type: 'done', awaitingConfirmation: true });
@@ -783,6 +790,7 @@ export async function handleConversationRoutes(
 
       // LOT 3 — Compass : phase de validation avant la sauvegarde finale
       sendSSE({ type: 'compass', state: 'VALIDATING' });
+      sendSSE({ type: 'chat', text: 'Je vérifie le rendu réel…' });
 
       // Sauvegarde dans fileStore pour que la prochaine demande trouve le HTML
       if (assembledHtml.trim().length > 100) {

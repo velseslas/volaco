@@ -3285,6 +3285,9 @@ ${sections}
 
               if (event.type === 'start') {
                 if (statusEl) statusEl.textContent = 'Connexion au LLM...';
+                // Conversation vivante — indicateur de frappe vivant pendant la
+                // réflexion (remplacé par la narration dès qu'elle arrive)
+                if (textEl) textEl.innerHTML = '<span class="animate-pulse text-violet-300 tracking-widest">● ● ●</span>';
               } else if (event.type === 'chat' && event.text) {
                 chatText += event.text;
                 tokenCount++;
@@ -9650,76 +9653,11 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
         return;
       }
 
-      const isInstant = hasInstantTemplate(text);
+      // Conversation vivante : TOUTES les demandes du chat passent par le
+      // moteur conversationnel en streaming — les anciens templates
+      // instantanés court-circuitaient l IA réelle (plus d interception).
 
-      if (isInstant) {
-        // SCÉNARIO A : Demande initiale correspondant à un template pré-compilé
-        const targetCode = generateInstantApp(text);
-        currentAppHtml = targetCode;
-        renderWorkspaceIframe(targetCode);
-        updateEditorContent(targetCode);
 
-        // Persistance automatique dans le projet actif
-        try {
-          const activeProj = userProjects.find(p => p.id === activeProjectId);
-          if (activeProj) {
-            activeProj.code = targetCode;
-            activeProj.isCustom = true;
-            saveUserProjects();
-            renderDashboardProjects();
-          }
-        } catch (e) {}
-
-        let appTitle = "Application Web";
-        const p = text.toLowerCase();
-        if (/bonbon|bonbons|confiserie|friandise|sucrerie|candy|sweets|bonbonni[eè]re/i.test(p)) {
-          appTitle = "Confiserie & Magasin de Bonbons";
-        } else if (/pulselove|rencontre|dating|match|amour/i.test(p)) {
-          appTitle = "PulseLove — Rencontres & Matching IA";
-        } else if (/gmail|e-?mail|messagerie|courriel|webmail|inbox|boite.*reception/i.test(p)) {
-          appTitle = "Gmail Webmail Clone";
-        } else if (/facebook|m[ée]ta|r[ée]seau|social|insta|feed/i.test(p)) {
-          appTitle = "Facebook Clone Pro";
-        } else if (/b[eé]ton|chantier|btp|dosage|ciment|fondation|ouvrage/i.test(p)) {
-          appTitle = "Calculateur Béton BTP";
-        } else if (/boutique|shop|store|e-commerce|panier|magasin/i.test(p)) {
-          appTitle = "Boutique Tech E-Commerce";
-        } else if (/crm|finance|crypto|banque|bourse|kpi/i.test(p)) {
-          appTitle = "Tableau de Bord CRM & Finance";
-        }
-
-        currentProjectName = appTitle;
-        const wsTitle = document.getElementById('workspaceTitle');
-        if (wsTitle) wsTitle.innerText = appTitle;
-
-        try {
-          const activeProj = userProjects.find(p => p.id === activeProjectId);
-          if (activeProj) {
-            activeProj.name = appTitle;
-            activeProj.code = targetCode;
-            activeProj.isCustom = true;
-            saveUserProjects();
-            renderDashboardProjects();
-            renderProjectDropdown();
-          }
-        } catch (e) {}
-
-        appendChatMessage('assistant', `
-          <div class="space-y-2.5">
-            <div class="flex items-center justify-between border-b border-[#182036] pb-2">
-              <div class="flex items-center space-x-2 text-emerald-400 font-bold">
-                <i class="fa-solid fa-circle-check text-sm"></i>
-                <span>${appTitle} prête !</span>
-              </div>
-              <span class="text-[10px] bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full font-mono">En direct</span>
-            </div>
-            <p class="text-slate-300 leading-relaxed text-xs">
-              Votre application a été générée et est active dans l'<strong>Aperçu</strong> à droite. Vous pouvez cliquer et interagir directement avec elle.
-            </p>
-          </div>
-        `);
-
-      } else {
         // SCÉNARIO B : Génération ou MODIFICATION via le moteur conversationnel
         // canonique du serveur (compréhension → plan → confirmation → exécution),
         // au lieu d'un appel direct à l'IA depuis cette fonction.
@@ -9765,10 +9703,7 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
         // Le moteur conversationnel du serveur (compréhension d'intention, plan
         // d'ingénierie, confirmation puis exécution réelle) prend le relais ici.
         runConversationEngineFlow(text, isModification, loadEl, cleanTitle);
-
-      }
     }
-
     window.handleWorkspacePromptSubmit = handleWorkspacePromptSubmit;
     window.quickSelectPrompt = quickSelectPrompt;
     window.appendChatMessage = appendChatMessage;

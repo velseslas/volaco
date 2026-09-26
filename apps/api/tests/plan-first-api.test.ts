@@ -16,6 +16,7 @@ const H = { 'Content-Type': 'application/json', 'x-tenant-id': 'studio-local', '
 
 interface SSEEvent {
   type: string;
+  text?: string;
   plan?: { planId: string; steps: unknown[]; summary?: string };
   awaitingConfirmation?: boolean;
   state?: string;
@@ -81,6 +82,12 @@ describe('Lot 4 : Plan First — plan émis et confirmation humaine', () => {
 
     const doneEvent = events.find((e) => e.type === 'done');
     assert.ok(doneEvent && doneEvent.awaitingConfirmation === true, 'Le done doit porter awaitingConfirmation=true');
+
+    // Conversation vivante : la narration du plan est émise avant l'attente
+    assert.ok(
+      events.some((e) => e.type === 'chat' && (e.text || '').includes('Voici mon plan')),
+      'Une narration humaine du plan doit être émise (Conversation Engine vivant)'
+    );
 
     assert.ok(
       events.some((e) => e.type === 'compass' && e.state === 'WAITING_CONFIRMATION'),
