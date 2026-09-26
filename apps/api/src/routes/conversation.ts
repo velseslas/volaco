@@ -16,7 +16,8 @@ import { projectStore } from '../../../../packages/core/src/identity/project.js'
 import { fileStore } from '../../../../packages/core/src/file-explorer/store.js';
 import { aiProviderRegistry } from '../../../../packages/core/src/ai/providers/registry.js';
 import { logger } from '../../../../packages/core/src/logger.js';
-import type { EngineeringPlan } from '../../../../packages/core/src/ai-native/conversation-intelligence/types.js';
+import type { EngineeringPlan, IntentResult } from '../../../../packages/core/src/ai-native/conversation-intelligence/types.js';
+import { PlanGenerator } from '../../../../packages/core/src/ai-native/conversation-intelligence/engine/plan-generator.js';
 import type { RequestContext } from '../middleware/auth.js';
 
 import { readBody } from '../middleware/body.js';
@@ -33,6 +34,35 @@ export let conversationIntelligenceService = new ConversationIntelligenceService
  */
 export function configureConversationIntelligenceService(service: ConversationIntelligenceService): void {
   conversationIntelligenceService = service;
+}
+
+// LOT 4 — Plan First (§17 CDC) : génération déterministe d'un plan d'ingénierie
+// affiché dans le chat, sans appel LLM supplémentaire.
+const planGenerator = new PlanGenerator();
+
+/**
+ * Classification d'intention déterministe (mêmes heuristiques que la route
+ * /decide) — utilisée quand aucun intent classifié n'est fourni au flux.
+ */
+function buildStreamFallbackIntent(message: string): IntentResult {
+  const lower = (message || '').toLowerCase();
+  let category: IntentResult['category'] = 'UNKNOWN';
+  if (/\b(crée|ajoute|génère|créer|générer|add|create)\b/.test(lower)) category = 'CREATE';
+  else if (/\b(modifie|change|édite|update|modify)\b/.test(lower)) category = 'MODIFY';
+  else if (/\b(supprime|efface|delete|remove)\b/.test(lower)) category = 'DELETE';
+  else if (/\b(refactor|nettoy|clean)\b/.test(lower)) category = 'REFACTOR';
+  else if (/\b(debug|corrig|fix)\b/.test(lower)) category = 'DEBUG';
+  else if (/\b(analy|audit)\b/.test(lower)) category = 'ANALYZE';
+  return {
+    category,
+    goal: (message || '').slice(0, 200),
+    requestedAction: message || '',
+    entities: [],
+    constraints: [],
+    urgency: 'NORMAL',
+    confidence: 0.5,
+    ambiguities: []
+  };
 }
 
 function sendJson(res: ServerResponse, statusCode: number, payload: unknown): void {
@@ -65,8 +95,7 @@ function extractHtmlBlock(text: string): string | null {
  * complet dans fileStore garantit : éditeur lisible, /render/preview fidèle
  * et contexte correct pour les tours de modification suivants.
  */
-export function buildStudioShell(sectionsHtml: string): string {
-  return `<!DOCTYPE html>
+export function buildStudioShell(sectionsHtml: string): string {  return `<!DOCTYPE html>
 <html lang="fr" class="dark scroll-smooth">
 <head>
   <meta charset="UTF-8">
@@ -335,7 +364,7 @@ export async function handleConversationRoutes(
   // =====================================================================
   if (sessionId && action === 'stream' && req.method === 'POST') {
     assertPermission(context.role, 'PROJECT_READ', requestId);
-    const body = await parseJsonBody<{ message?: string; isModification?: boolean }>(req, requestId);
+    const body = await parseJsonBody<{ message?: string; isModification?: boolean; planFirst?: boolean; confirmedPlan?: boolean }>(req, requestId);
     if (!body.message) {
       throw new ValidationError('Le champ "message" est obligatoire', undefined, requestId);
     }
@@ -363,6 +392,23 @@ export async function handleConversationRoutes(
     const existing = fileStore.getFile(context.tenantId, projectId, 'index.html');
     const currentHtml = existing?.content || '';
     const isModification = body.isModification ?? (currentHtml.trim().length > 200);
+
+    sendSSE({ type: 'start', isModification });
+    // LOT 3 — Compass complet (§11 CDC) : les 9 états sont émis au fil du flux
+    sendSSE({ type: 'compass', state: 'UNDERSTANDING' });
+
+    // LOT 4 — Plan First (§17 CDC) : un plan déterministe est TOUJOURS émis
+    // (traçabilité Understand Before Acting), AVANT la sélection du fournisseur
+    // — le plan et la confirmation humaine ne dépendent d'aucune clé LLM.
+    // En mode planFirst, le flux s'arrête ici et attend la confirmation (§3.9).
+    const plan = planGenerator.generatePlan({ intent: buildStreamFallbackIntent(body.message || '') });
+    sendSSE({ type: 'plan', plan });
+    if (body.planFirst && !body.confirmedPlan) {
+      sendSSE({ type: 'compass', state: 'WAITING_CONFIRMATION' });
+      sendSSE({ type: 'done', awaitingConfirmation: true });
+      res.end();
+      return true;
+    }
 
     // Sélectionne l'adaptateur Mistral (préfère le fournisseur dont la clé est env)
     const preferredProviderId = process.env.MISTRAL_API_KEY ? 'mistral' : process.env.GEMINI_API_KEY ? 'gemini' : undefined;
@@ -490,7 +536,6 @@ export async function handleConversationRoutes(
 
     // Signale au Studio que le stream commence
     sendSSE({ type: 'start', isModification });
-    // LOT 3 — Compass complet (§11 CDC) : les 9 états sont émis au fil du flux
     sendSSE({ type: 'compass', state: 'UNDERSTANDING' });
 
     let fullText = '';

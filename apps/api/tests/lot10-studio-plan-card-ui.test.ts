@@ -165,4 +165,16 @@ describe('LOT 10 — Câblage réel de l\'interface Studio', () => {
     }
     assert.ok(indexContent.includes("event.type === 'compass'"), 'Les événements compass du stream doivent être traités');
   });
+
+  it('10. Plan First : carte de plan réelle + toggle confirmation humaine (§17/§3.9 CDC)', () => {
+    assert.ok(indexContent.includes('function planFirstEnabled()'), 'planFirstEnabled doit être définie');
+    assert.ok(indexContent.includes('function togglePlanFirstMode()'), 'togglePlanFirstMode doit être définie');
+    assert.ok(indexContent.includes('function renderPlanFirstCard('), 'renderPlanFirstCard doit être définie');
+    assert.ok(indexContent.includes('function approvePlanFirstCard('), 'approvePlanFirstCard doit être définie');
+    assert.ok(indexContent.includes('function rejectPlanFirstCard('), 'rejectPlanFirstCard doit être définie');
+    assert.ok(indexContent.includes('id="btnPlanFirstToggle"'), 'Le toggle Plan First doit exister dans la barre de chat');
+    assert.ok(indexContent.includes('planFirst: planFirstEnabled()'), 'Le flag planFirst doit être envoyé au serveur');
+    assert.ok(indexContent.includes('event.awaitingConfirmation'), 'Le done d\'attente de confirmation doit être traité');
+    assert.ok(indexContent.includes('Approuver et générer'), 'Le bouton d\'approbation doit exister');
+  });
 });

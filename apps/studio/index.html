@@ -1363,6 +1363,7 @@
                   <span id="chatAttachmentBadge" class="hidden absolute -top-1 -right-1 w-3.5 h-3.5 bg-amber-500 text-slate-950 font-bold text-[8px] rounded-full flex items-center justify-center">0</span>
                 </button>
                 <button type="button" onclick="toggleVisualInspector()" id="btnInspectorWand" title="Activer l'inspecteur visuel (Cliquer sur un élément à modifier)" class="hover:text-amber-300 p-1.5 rounded-lg transition"><i class="fa-solid fa-wand-magic-sparkles text-amber-400 text-xs"></i></button>
+                <button type="button" onclick="togglePlanFirstMode()" id="btnPlanFirstToggle" title="Plan First (§17 CDC) : afficher le plan d'ingénierie et exiger votre confirmation avant toute génération" class="p-1.5 rounded-lg transition"><i class="fa-solid fa-list-check text-xs"></i></button>
                 <button type="button" class="hover:text-slate-300 p-1"><i class="fa-solid fa-sparkles"></i></button>
                 <button type="button" class="hover:text-slate-300 p-1"><i class="fa-solid fa-microphone"></i></button>
 
@@ -2947,6 +2948,83 @@
       return proj.serverSessionId;
     }
 
+    // ==================== LOT 4 : PLAN FIRST (§17 CDC) ====================
+    // Le plan d'ingénierie est toujours affiché (traçabilité) ; en mode
+    // Plan First, la génération ne démarre qu'après confirmation humaine
+    // (§3.9 Human Control / §21 V8 : No Silent Changes).
+    function planFirstEnabled() {
+      return localStorage.getItem('vibecode_plan_first') === '1';
+    }
+
+    function togglePlanFirstMode() {
+      const next = planFirstEnabled() ? '0' : '1';
+      localStorage.setItem('vibecode_plan_first', next);
+      updatePlanFirstToggleUI();
+      showToastSafe(next === '1'
+        ? 'Plan First activé : chaque génération attend votre confirmation.'
+        : 'Plan First désactivé : génération immédiate (plan affiché à titre informatif).');
+    }
+
+    function updatePlanFirstToggleUI() {
+      const btn = document.getElementById('btnPlanFirstToggle');
+      if (!btn) return;
+      if (planFirstEnabled()) {
+        btn.classList.add('bg-violet-600/30', 'text-violet-300');
+        btn.classList.remove('text-slate-500');
+      } else {
+        btn.classList.remove('bg-violet-600/30', 'text-violet-300');
+        btn.classList.add('text-slate-500');
+      }
+    }
+
+    function showToastSafe(msg) {
+      if (typeof showCaptureToast === 'function') {
+        showCaptureToast(msg);
+      } else {
+        console.log('[Plan First]', msg);
+      }
+    }
+
+    function renderPlanFirstCard(plan, message, isModification, cleanTitle) {
+      const cardId = 'planfirst-' + Date.now();
+      window._planFirstContexts = window._planFirstContexts || {};
+      window._planFirstContexts[cardId] = { message, isModification, cleanTitle };
+      const steps = (plan.steps || []).map((s, i) =>
+        `<li class="ml-4 list-disc text-slate-300 text-[11px]"><strong>${canonicalEscape(s.title || ('Étape ' + (i + 1)))}</strong>${s.description ? ' — ' + canonicalEscape(s.description) : ''}</li>`
+      ).join('');
+      const gate = planFirstEnabled();
+      appendChatMessage('assistant', `
+        <div class="p-3 rounded-xl bg-[#0d1226] border border-violet-500/30 space-y-2" id="${cardId}">
+          <div class="flex items-center justify-between border-b border-[#182036] pb-2">
+            <div class="flex items-center space-x-2 text-violet-300 font-bold text-xs"><i class="fa-solid fa-list-check"></i><span>Plan d'ingénierie${gate ? ' — confirmation requise' : ''}</span></div>
+            <span class="text-[10px] text-slate-500">${(plan.steps || []).length} étape(s) · ${canonicalEscape(plan.status || '')}</span>
+          </div>
+          <div class="text-[11px] text-slate-400">${canonicalEscape(plan.summary || '')}</div>
+          <ul class="space-y-1">${steps}</ul>
+          ${gate ? `
+          <div class="flex items-center justify-end space-x-2 pt-2 border-t border-[#161c32]">
+            <button onclick="rejectPlanFirstCard('${cardId}')" class="px-3 py-1.5 rounded-lg bg-[#141a2e] hover:bg-[#1c2440] text-slate-300 text-xs font-semibold">Rejeter</button>
+            <button onclick="approvePlanFirstCard('${cardId}')" class="px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold transition active:scale-95">Approuver et générer</button>
+          </div>` : ''}
+        </div>
+      `);
+    }
+
+    function approvePlanFirstCard(cardId) {
+      const ctx = (window._planFirstContexts || {})[cardId];
+      const card = document.getElementById(cardId);
+      if (card) card.innerHTML = '<div class="text-emerald-300 text-[11px]"><i class="fa-solid fa-check mr-1"></i>Plan approuvé — génération en cours…</div>';
+      if (ctx) runConversationEngineFlow(ctx.message, ctx.isModification, null, ctx.cleanTitle, { confirmed: true });
+    }
+
+    function rejectPlanFirstCard(cardId) {
+      const card = document.getElementById(cardId);
+      if (card) card.innerHTML = '<div class="text-slate-400 text-[11px] italic">Plan rejeté — aucune modification appliquée (No Silent Changes).</div>';
+    }
+
+    // État initial du toggle (le DOM de la barre de chat précède ce script)
+    updatePlanFirstToggleUI();
+
     /**
      * NOUVELLE VERSION STREAMING — Variante live de runConversationEngineFlow.
      * Au lieu de POST /turns synchrone (5-13s de silence), on ouvre une
@@ -2958,7 +3036,8 @@
      * machine à écrire), et on extrait le bloc ```html``` à la fin pour
      * mettre à jour l'iframe.
      */
-    async function runConversationEngineFlow(text, isModification, loadEl, cleanTitle) {
+    async function runConversationEngineFlow(text, isModification, loadEl, cleanTitle, planState) {
+      planState = planState || { confirmed: false };
       try {
         const serverProjectId = await ensureServerProjectSynced();
         const sessionId = await ensureConversationSession(serverProjectId);
@@ -2988,7 +3067,9 @@
         const response = await fetch(`/api/v1/projects/${serverProjectId}/conversation/sessions/${sessionId}/stream`, {
           method: 'POST',
           headers: { ...studioApiHeaders(), 'Accept': 'text/event-stream' },
-          body: JSON.stringify({ message: text, isModification: isModification })
+          // LOT 4 — planFirst : le serveur s'arrête après le plan et attend
+          // la confirmation humaine ; confirmedPlan : reprise après approbation.
+          body: JSON.stringify({ message: text, isModification: isModification, planFirst: planFirstEnabled(), confirmedPlan: !!planState.confirmed })
         });
 
         if (!response.ok || !response.body) {
@@ -3149,6 +3230,12 @@ ${sections}
                   textEl.innerHTML = d;
                 }
               } else if (event.type === 'done') {
+                if (event.awaitingConfirmation) {
+                  // LOT 4 — mode Plan First : le serveur attend la décision humaine
+                  if (statusEl) statusEl.innerHTML = '<span style="color:#fbbf24;">⏸ En attente de confirmation du plan ci-dessus</span>';
+                  if (titleEl) titleEl.innerHTML = '<i class="fa-solid fa-pause text-sm" style="color:#fbbf24;"></i><span style="color:#fbbf24;">Plan First — décision requise</span>';
+                  return;
+                }
                 if (event.html && event.html.length > 100) {
                   assembledHtml = event.html;
                 }
@@ -3188,6 +3275,9 @@ ${sections}
                     textEl.innerHTML = d;
                   }
                 }
+              } else if (event.type === 'plan' && event.plan) {
+                // LOT 4 — carte de plan réelle (Plan Engine, §17 CDC)
+                renderPlanFirstCard(event.plan, text, isModification, cleanTitle);
               } else if (event.type === 'compass' && event.state) {
                 // LOT 3 — les 9 états du Conversation Compass (§11 CDC)
                 const COMPASS_INFO = {
