@@ -166,16 +166,17 @@ describe('LOT 10 — Câblage réel de l\'interface Studio', () => {
     assert.ok(indexContent.includes("event.type === 'compass'"), 'Les événements compass du stream doivent être traités');
   });
 
-  it('10. Plan First : carte de plan réelle + toggle confirmation humaine (§17/§3.9 CDC)', () => {
+  it('10. Plan First : toggle confirmation humaine + boutons de décision en chat (§17/§3.9 CDC)', () => {
     assert.ok(indexContent.includes('function planFirstEnabled()'), 'planFirstEnabled doit être définie');
     assert.ok(indexContent.includes('function togglePlanFirstMode()'), 'togglePlanFirstMode doit être définie');
-    assert.ok(indexContent.includes('function renderPlanFirstCard('), 'renderPlanFirstCard doit être définie');
-    assert.ok(indexContent.includes('function approvePlanFirstCard('), 'approvePlanFirstCard doit être définie');
-    assert.ok(indexContent.includes('function rejectPlanFirstCard('), 'rejectPlanFirstCard doit être définie');
     assert.ok(indexContent.includes('id="btnPlanFirstToggle"'), 'Le toggle Plan First doit exister dans la barre de chat');
     assert.ok(indexContent.includes('planFirst: planFirstEnabled()'), 'Le flag planFirst doit être envoyé au serveur');
     assert.ok(indexContent.includes('event.awaitingConfirmation'), 'Le done d\'attente de confirmation doit être traité');
-    assert.ok(indexContent.includes('Approuver et générer'), 'Le bouton d\'approbation doit exister');
+    // Les boutons de décision sont générés DYNAMIQUEMENT dans la branche
+    // awaitingConfirmation (plus de carte statique) :
+    assert.ok(indexContent.includes("'✓ Approuver et générer'"), 'Le bouton d\'approbation doit exister');
+    assert.ok(indexContent.includes("runConversationEngineFlow(text, isModification, null, cleanTitle, { confirmed: true })"), 'L\'approbation doit relancer la génération confirmée');
+    assert.ok(indexContent.includes("'✗ Rejeter'"), 'Le bouton de rejet doit exister');
   });
 
   it('11. Quality Gate + Comparaison avant/après (§19-20 V8)', () => {
@@ -200,9 +201,9 @@ describe('LOT 10 — Câblage réel de l\'interface Studio', () => {
     assert.ok(indexContent.includes("command: 'focus-section'"), 'Le canal postMessage focus-section doit être émis');
     assert.ok(indexContent.includes('vibe-focus-halo'), 'Le style de halo doit être injecté dans le preview');
     // Actions inline tangibles (branchées sur de vraies fonctions)
-    assert.ok(indexContent.includes('function appendQuickActions()'), 'appendQuickActions doit être définie');
-    assert.ok(indexContent.includes('autoHarmonizeApp()'), 'Chip Améliorer le design -> vraie fonction');
-    assert.ok(indexContent.includes('autoRepair()'), 'Chip Auto-réparer -> vraie fonction');
+    assert.ok(indexContent.includes('function appendQuickActions()') === false, 'Les chips de fin doivent avoir disparu');
+    assert.ok(indexContent.includes('autoHarmonizeApp()'), 'L\'amélioration design reste branchée');
+    assert.ok(indexContent.includes('autoRepair()'), 'L\'auto-réparation reste branchée');
     // Indicateur de frappe vivant + plus d'interception instantanée du chat
     assert.ok(indexContent.includes('animate-pulse text-violet-300 tracking-widest'), 'L\'indicateur de frappe vivant doit exister');
     assert.ok(!indexContent.includes('const isInstant = hasInstantTemplate(text)'), 'Le chat ne doit plus être court-circuité par les templates instantanés');
@@ -217,8 +218,6 @@ describe('LOT 10 — Câblage réel de l\'interface Studio', () => {
     assert.ok(!indexContent.includes('class="vibe-skeleton" style="height:120px"'), 'Le squelette pulsé de 120px doit avoir disparu');
     assert.ok(indexContent.includes('badge: badge === true'), 'Le focus peut porter le badge modifié');
     assert.ok(indexContent.includes('vibe-modified-badge'), 'Le badge visuel de section modifiée doit exister');
-    assert.ok(indexContent.includes('function appendConfirmationBar('), 'La barre de confirmation en contexte doit exister');
-    assert.ok(indexContent.includes("'Corrige la section « ' + (names) + ' » : '"), 'La correction sur place pré-remplit le chat avec le contexte de la section');
     assert.ok(indexContent.includes('lastModifiedSections'), 'Les sections modifiées doivent être tracées pour la confirmation');
   });
 

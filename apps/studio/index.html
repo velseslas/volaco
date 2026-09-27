@@ -3042,36 +3042,6 @@
       }
     }
 
-    function renderPlanFirstCard(plan, message, isModification, cleanTitle) {
-      const cardId = 'planfirst-' + Date.now();
-      window._planFirstContexts = window._planFirstContexts || {};
-      window._planFirstContexts[cardId] = { message, isModification, cleanTitle };
-      const gate = planFirstEnabled();
-      const stepCount = (plan.steps || []).length;
-      const steps = (plan.steps || []).map((s, i) =>
-        `<li class="ml-1 flex items-center space-x-2 py-1" data-vibe-step="${i}" data-done="0">` +
-          `<i class="vibe-step-icon fa-regular fa-circle text-slate-500 text-xs"></i>` +
-          `<span class="vibe-step-label text-slate-300 text-[11px]">${canonicalEscape(s.title || ("Étape " + (i + 1)))}</span>` +
-        `</li>`
-      ).join("");
-      appendChatMessage("assistant", `
-        <div class="p-3 rounded-xl bg-[#0d1226] border border-violet-500/30 space-y-2" id="${cardId}">
-          <div class="flex items-center justify-between border-b border-[#182036] pb-2">
-            <div class="flex items-center space-x-2 text-violet-300 font-bold text-xs"><i class="fa-solid fa-list-check"></i><span>${gate ? "Mon plan — valide et je démarre" : "Ce que je vais faire"}</span></div>
-            <span class="text-[10px] text-slate-500"><span id="vibePlanDone">0</span>/${stepCount}</span>
-          </div>
-          <div class="text-[11px] text-slate-400">${canonicalEscape(plan.summary || "")}</div>
-          <ul id="vibePlanChecklist" class="space-y-1">${steps}</ul>
-          <div class="h-1 rounded-full bg-[#161c2e] overflow-hidden"><div id="vibePlanProgress" class="h-full bg-gradient-to-r from-violet-500 to-fuchsia-500 rounded-full transition-all duration-500" style="width:0%"></div></div>
-          ${gate ? `
-          <div class="flex items-center justify-end space-x-2 pt-2 border-t border-[#161c32]">
-            <button onclick="rejectPlanFirstCard('${cardId}')" class="px-3 py-1.5 rounded-lg bg-[#141a2e] hover:bg-[#1c2440] text-slate-300 text-xs font-semibold">Rejeter</button>
-            <button onclick="approvePlanFirstCard('${cardId}')" class="px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold transition active:scale-95">Approuver et générer</button>
-          </div>` : ""}
-        </div>
-      `);
-    }
-
     // Checklist vivant : chaque section construite coche une étape du plan
     function vibeBuildingStep() {
       const list = document.getElementById("vibePlanChecklist");
@@ -3101,18 +3071,6 @@
       if (doneEl) doneEl.textContent = String(done);
       const bar = document.getElementById("vibePlanProgress");
       if (bar) bar.style.width = Math.round(done / items.length * 100) + "%";
-    }
-
-    function approvePlanFirstCard(cardId) {
-      const ctx = (window._planFirstContexts || {})[cardId];
-      const card = document.getElementById(cardId);
-      if (card) card.innerHTML = '<div class="text-emerald-300 text-[11px]"><i class="fa-solid fa-check mr-1"></i>Plan approuvé — génération en cours…</div>';
-      if (ctx) runConversationEngineFlow(ctx.message, ctx.isModification, null, ctx.cleanTitle, { confirmed: true });
-    }
-
-    function rejectPlanFirstCard(cardId) {
-      const card = document.getElementById(cardId);
-      if (card) card.innerHTML = '<div class="text-slate-400 text-[11px] italic">Plan rejeté — aucune modification appliquée (No Silent Changes).</div>';
     }
 
     // État initial du toggle (le DOM de la barre de chat précède ce script)
@@ -3146,7 +3104,6 @@
                 <i class="fa-solid fa-circle-notch fa-spin text-sm"></i>
                 <span>Lead Engineer IA</span>
               </div>
-              <span class="text-[10px] bg-violet-500/15 text-violet-300 border border-violet-500/30 px-2 py-0.5 rounded-full font-mono">Streaming Live</span>
             </div>
             <div id="${msgId}-trace" class="space-y-2"></div>
             <div class="text-[10px] text-slate-500" id="${msgId}-status">en cours...</div>
@@ -3610,6 +3567,20 @@ ${sections}
                   // LOT 4 — mode Plan First : le serveur attend la décision humaine
                   if (statusEl) statusEl.innerHTML = '<span style="color:#fbbf24;">⏸ En attente de confirmation du plan ci-dessus</span>';
                   if (titleEl) titleEl.innerHTML = '<i class="fa-solid fa-pause text-sm" style="color:#fbbf24;"></i><span style="color:#fbbf24;">Plan First — décision requise</span>';
+                  const decisionRow = document.createElement('div');
+                  decisionRow.className = 'flex items-center space-x-2 mt-2';
+                  const approveBtn = document.createElement('button');
+                  approveBtn.textContent = '✓ Approuver et générer';
+                  approveBtn.className = 'px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-[11px] font-bold transition active:scale-95';
+                  approveBtn.onclick = () => { decisionRow.remove(); runConversationEngineFlow(text, isModification, null, cleanTitle, { confirmed: true }); };
+                  const rejectBtn = document.createElement('button');
+                  rejectBtn.textContent = '✗ Rejeter';
+                  rejectBtn.className = 'px-3 py-1.5 rounded-lg bg-[#141a2e] hover:bg-[#1c2440] text-slate-300 text-[11px] font-semibold transition';
+                  rejectBtn.onclick = () => { decisionRow.remove(); if (statusEl) statusEl.innerHTML = 'Plan rejeté — dites-moi ce que vous préférez.'; };
+                  decisionRow.appendChild(approveBtn);
+                  decisionRow.appendChild(rejectBtn);
+                  const msgEl = document.getElementById(msgId);
+                  if (msgEl) msgEl.appendChild(decisionRow);
                   return;
                 }
                 if (event.html && event.html.length > 100) {
@@ -3659,8 +3630,6 @@ ${sections}
                     const th = thoughtCard.querySelector('span');
                     if (th) th.textContent = 'Thought · ' + durThought + 's';
                   }
-                  // Conversation vivante — actions tangibles directement dans le flux
-                  appendQuickActions();
                   // LOT 3 — diff-guard : des sections ont disparu sans demande
                   // de suppression -> rollback au HTML d'avant modification.
                   const postSectionCount = (currentAppHtml.match(/data-section="/g) || []).length;
@@ -3673,9 +3642,6 @@ ${sections}
                     if (statusEl) statusEl.innerHTML = '<span style="color:#fbbf24;">⚠ Modification rejetée : des sections ont disparu sans demande.</span>';
                   }
                   setTimeout(() => sendCanvasState('ready'), 350);
-                  if (isModification && lastModifiedSections.length > 0) {
-                    appendConfirmationBar(lastModifiedSections);
-                  }
                   agentStepClose('Rendu validé par le Quality Gate');
                   // Cartes Write + Terminal — le fichier écrit et la vérification,
                   // visibles dans la conversation comme des tool calls.
@@ -3702,7 +3668,6 @@ ${sections}
               } else if (event.type === 'plan' && event.plan) {
                 // LOT 4 — carte de plan réelle (Plan Engine, §17 CDC)
                 agentStepClose("Plan validé — " + (event.plan.steps || []).length + " étapes");
-                renderPlanFirstCard(event.plan, text, isModification, cleanTitle);
               } else if (event.type === 'compass' && event.state) {
                 // LOT 3 — les 9 états du Conversation Compass (§11 CDC)
                 const COMPASS_INFO = {
@@ -9833,81 +9798,9 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
     // ÉTAPE (brief UX §3) : après chaque génération, des actions TANGIBLES sont
     // proposées directement dans le flux de discussion — cliquables, branchées
     // sur de vraies fonctions (pas de décoratif).
-    function appendQuickActions() {
-      const history = document.getElementById('wsChatHistory');
-      if (!history) return;
-      const old = document.getElementById('vibeQuickActions');
-      if (old) old.remove();
-
-      const row = document.createElement('div');
-      row.id = 'vibeQuickActions';
-      row.className = 'flex flex-wrap gap-2 ml-6 p-1';
-      const chips = [
-        { icon: 'fa-solid fa-wand-magic-sparkles', label: 'Améliorer le design', fn: 'autoHarmonizeApp()' },
-        { icon: 'fa-solid fa-shield-halved', label: 'Auto-réparer', fn: 'autoRepair()' },
-        { icon: 'fa-solid fa-magnifying-glass-chart', label: 'Auditer', fn: "requestWorkspaceSubTab('audit')" },
-        { icon: 'fa-solid fa-code', label: 'Voir le code', fn: "requestWorkspaceSubTab('code')" },
-        { icon: 'fa-solid fa-clock-rotate-left', label: 'Historique', fn: "requestWorkspaceSubTab('history')" }
-      ];
-      row.innerHTML = chips.map((c) =>
-        `<button onclick="${c.fn}" class="px-3 py-1.5 rounded-full bg-[#0d1226] hover:bg-violet-950/50 border border-[#1e2642] hover:border-violet-500/60 text-slate-300 hover:text-violet-200 text-[11px] font-semibold transition active:scale-95 flex items-center space-x-1.5">
-          <i class="${c.icon} text-violet-400 text-[10px]"></i><span>${c.label}</span>
-        </button>`
-      ).join('');
-      history.appendChild(row);
-      history.scrollTop = history.scrollHeight;
-    }
-
     // ==================== CONVERSATION VIVANTE v2 - CONFIRMATION EN CONTEXTE ====
     // Apres une modification, l'utilisateur valide ou corrige sur place
     // (S21 V8 Human Control : Accept / Reject - en un clic).
-    function appendConfirmationBar(sectionNames) {
-      const history = document.getElementById('wsChatHistory');
-      if (!history) return;
-      const old = document.getElementById('vibeConfirmBar');
-      if (old) old.remove();
-      const names = (sectionNames || []).join(', ') || 'la page';
-      const row = document.createElement('div');
-      row.id = 'vibeConfirmBar';
-      row.dataset.sections = names;
-      row.className = 'flex flex-wrap items-center gap-2 ml-6 p-2 rounded-2xl bg-[#0d1226] border border-emerald-500/30';
-
-      const label = document.createElement('span');
-      label.className = 'text-[11px] text-slate-300 font-semibold';
-      label.textContent = "C'était bien ça ?";
-
-      const okBtn = document.createElement('button');
-      okBtn.textContent = "OK, c'est ça";
-      okBtn.className = 'px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold transition';
-      okBtn.onclick = function () {
-        row.remove();
-        if (typeof showCaptureToast === 'function') showCaptureToast('Parfait — modification validée.');
-      };
-
-      const fixBtn = document.createElement('button');
-      fixBtn.textContent = 'Corriger sur place';
-      fixBtn.className = 'px-3 py-1.5 rounded-lg bg-[#141a2e] hover:bg-[#1c2440] text-slate-300 text-[11px] font-semibold transition';
-      fixBtn.onclick = function () {
-        const input = document.getElementById('wsPromptInput');
-        if (input) {
-          input.value = 'Corrige la section « ' + (names) + ' » : ';
-          input.focus();
-        }
-        row.remove();
-      };
-
-      const info = document.createElement('span');
-      info.className = 'text-[10px] text-slate-500';
-      info.textContent = 'Sections : ' + names;
-
-      row.appendChild(label);
-      row.appendChild(okBtn);
-      row.appendChild(fixBtn);
-      row.appendChild(info);
-      history.appendChild(row);
-      history.scrollTop = history.scrollHeight;
-    }
-
     function appendChatMessage(role, content) {
 
       const history = document.getElementById('wsChatHistory');
