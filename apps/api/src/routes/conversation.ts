@@ -96,6 +96,29 @@ function extractHtmlBlock(text: string): string | null {
  * complet dans fileStore garantit : éditeur lisible, /render/preview fidèle
  * et contexte correct pour les tours de modification suivants.
  */
+/**
+ * ÉTAPE narration ancrée (effet waw — §14 CDC) : un résumé COMPACT du contenu
+ * RÉEL de la page (titre, sections, titres visibles, boutons, couleurs) injecté
+ * dans le prompt. L'IA ne parle plus de « la page » en général : elle commente
+ * les VRAIS titres et les VRAIES couleurs de l'utilisateur. Déterministe.
+ */
+export function buildPageContext(currentHtml: string): string {
+  if (!currentHtml || currentHtml.length < 100) return '';
+  const parts: string[] = [];
+  const title = (currentHtml.match(/<title>([^<]{1,80})<\/title>/i) || [])[1];
+  if (title) parts.push('- Titre de la page : ' + title.trim());
+  const sections = [...currentHtml.matchAll(/data-section="([^"]{1,40})"/g)].map((m) => m[1]);
+  if (sections.length) parts.push('- Sections existantes : ' + [...new Set(sections)].slice(0, 12).join(', '));
+  const headings = [...currentHtml.matchAll(/<h[12][^>]*>([^<]{2,60})<\/h[12]>/gi)].map((m) => (m[1] as string).trim()).slice(0, 6);
+  if (headings.length) parts.push('- Titres visibles : ' + headings.join(' | '));
+  const buttons = [...currentHtml.matchAll(/<button[^>]*>\s*([^<]{1,40})\s*<\/button>/gi)].map((m) => (m[1] as string).trim()).slice(0, 8);
+  if (buttons.length) parts.push('- Boutons : ' + buttons.join(' | '));
+  const colors = [...new Set((currentHtml.match(/#[0-9a-fA-F]{6}\b/g) || []).map((c) => c.toLowerCase()))].slice(0, 8);
+  if (colors.length) parts.push('- Couleurs utilisées : ' + colors.join(', '));
+  if (parts.length === 0) return '';
+  return '\n\nCONTEXTE RÉEL DE LA PAGE ACTUELLE (parle de ces éléments avec tes mots, tutoiement) :\n' + parts.join('\n');
+}
+
 export function buildStudioShell(sectionsHtml: string): string {
   return `<!DOCTYPE html>
 <html lang="fr" class="dark scroll-smooth">
@@ -556,9 +579,9 @@ export async function handleConversationRoutes(
 
     // Pour le mode modification, on inclut TOUJOURS le HTML actuel comme contexte
     const userPrompt = isModificationMode
-      ? `Voici le code HTML ACTUEL de l'application :\n\`\`\`html\n${currentHtml}\n\`\`\`\n\nDemande de modification de l'utilisateur : ${body.message}\n\nApplique les modifications nécessaires en respectant le format <SECTION name="..." mode="modify">.`
+      ? `Voici le code HTML ACTUEL de l'application :\n\`\`\`html\n${currentHtml}\n\`\`\`\n\nDemande de modification de l'utilisateur : ${body.message}\n\nApplique les modifications nécessaires en respectant le format <SECTION name="..." mode="modify">.${buildPageContext(currentHtml)}`
       : (isModification
-        ? `Voici le code HTML actuel de l'application :\n\`\`\`html\n${currentHtml}\n\`\`\`\n\nDemande de l'utilisateur : ${body.message}`
+        ? `Voici le code HTML actuel de l'application :\n\`\`\`html\n${currentHtml}\n\`\`\`\n\nDemande de l'utilisateur : ${body.message}${buildPageContext(currentHtml)}`
         : `Demande de l'utilisateur : ${body.message}`);
 
     // Signale au Studio que le stream commence
