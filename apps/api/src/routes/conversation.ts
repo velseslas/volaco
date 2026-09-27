@@ -19,6 +19,8 @@ import { aiProviderRegistry } from '../../../../packages/core/src/ai/providers/r
 import { logger } from '../../../../packages/core/src/logger.js';
 import type { EngineeringPlan, IntentResult } from '../../../../packages/core/src/ai-native/conversation-intelligence/types.js';
 import { PlanGenerator } from '../../../../packages/core/src/ai-native/conversation-intelligence/engine/plan-generator.js';
+import { executionStore } from '../../../../packages/core/src/ai-native/execution/store.js';
+import { ExecutionRecorder, type RecordableEvent } from '../../../../packages/core/src/ai-native/execution/recorder.js';
 import type { RequestContext } from '../middleware/auth.js';
 
 import { readBody } from '../middleware/body.js';
@@ -40,6 +42,14 @@ export function configureConversationIntelligenceService(service: ConversationIn
 // LOT 4 — Plan First (§17 CDC) : génération déterministe d'un plan d'ingénierie
 // affiché dans le chat, sans appel LLM supplémentaire.
 const planGenerator = new PlanGenerator();
+
+/**
+ * EXECUTION TRANSPARENCY (CDC Transparency Engine) : chaque génération produit
+ * des événements typés persistés (executionId = requestId). Feature flag :
+ * `VOLACO_EXECUTION_TIMELINE=off` restaure le comportement d'avant (frames nues,
+ * aucune persistance) en cas de besoin de rollback instantané.
+ */
+const executionTimelineEnabled = process.env.VOLACO_EXECUTION_TIMELINE !== 'off';
 
 /**
  * Classification d'intention déterministe (mêmes heuristiques que la route
@@ -432,35 +442,99 @@ export async function handleConversationRoutes(
     const currentHtml = existing?.content || '';
     const isModification = body.isModification ?? (currentHtml.trim().length > 200);
 
-    sendSSE({ type: 'start', isModification });
+    // EXECUTION TRANSPARENCY : une exécution = un requestId. Toutes les frames
+    // « milestone » passent par `emit` (enrichies executionId/seq/phase/status)
+    // et les événements correspondants sont persistés dans executionStore.
+    const executionId = requestId;
+    let recorder: ExecutionRecorder | null = null;
+    if (executionTimelineEnabled) {
+      executionStore.startExecution({
+        executionId,
+        tenantId: context.tenantId,
+        projectId,
+        mode: isModification ? 'modify' : 'create',
+        prompt: body.message || ''
+      });
+      recorder = new ExecutionRecorder(executionStore, executionId, sendSSE);
+    }
+    /** Frame SSE enrichie ; enregistre l'événement quand il est fourni. */
+    const emit = (data: Record<string, unknown>, event?: RecordableEvent): void => {
+      if (recorder) recorder.frame(data, event);
+      else sendSSE(data);
+    };
+    /** Événement persisté sans frame SSE dédiée (l'UI le découvrira au replay). */
+    const recordOnly = (event: RecordableEvent): void => {
+      if (recorder) executionStore.appendEvent(executionId, event);
+    };
+
+    emit({ type: 'start', isModification }, {
+      type: 'EXECUTION_STARTED',
+      phase: 'UNDERSTAND',
+      status: 'RUNNING',
+      title: isModification ? 'Modification de ta page lancée' : 'Génération lancée',
+      detail: { mode: isModification ? 'modify' : 'create' }
+    });
+    // INSPECT : la lecture réelle du fichier existant est traçable (CDC §9-§10)
+    if (currentHtml.trim().length > 0) {
+      recordOnly({
+        type: 'FILE_READ',
+        phase: 'INSPECT',
+        status: 'COMPLETED',
+        title: 'Lecture de index.html',
+        detail: { path: 'index.html', chars: currentHtml.length }
+      });
+    }
     // LOT 3 — Compass complet (§11 CDC) : les 9 états sont émis au fil du flux
-    sendSSE({ type: 'compass', state: 'UNDERSTANDING' });
+    emit({ type: 'compass', state: 'UNDERSTANDING' });
 
     // LOT 4 — Plan First (§17 CDC) : un plan déterministe est TOUJOURS émis
     // (traçabilité Understand Before Acting), AVANT la sélection du fournisseur
     // — le plan et la confirmation humaine ne dépendent d'aucune clé LLM.
     // En mode planFirst, le flux s'arrête ici et attend la confirmation (§3.9).
     const plan = planGenerator.generatePlan({ intent: buildStreamFallbackIntent(body.message || '') });
-    sendSSE({ type: 'plan', plan });
+    emit({ type: 'plan', plan }, {
+      type: 'PLAN_CREATED',
+      phase: 'PLAN',
+      status: 'COMPLETED',
+      title: `Plan créé — ${plan.steps.length} étape(s)`,
+      detail: { planId: plan.planId, steps: plan.steps.length }
+    });
     // Conversation vivante — narration aux transitions réelles (§14 CDC) :
     // l'IA raconte ce qu'elle fait au moment où elle le fait.
     if (isModification) {
-      sendSSE({ type: 'chat', text: `Je modifie ta page en gardant le reste intact : ${plan.steps.length} étape(s). Je m'y mets tout de suite !` });
+      emit({ type: 'chat', text: `Je modifie ta page en gardant le reste intact : ${plan.steps.length} étape(s). Je m'y mets tout de suite !` });
     } else {
-      sendSSE({ type: 'chat', text: `Voici mon plan : ${plan.steps.length} étapes. Je construis ça sous tes yeux, section par section !` });
+      emit({ type: 'chat', text: `Voici mon plan : ${plan.steps.length} étapes. Je construis ça sous tes yeux, section par section !` });
     }
     if (body.planFirst && !body.confirmedPlan) {
-      sendSSE({ type: 'compass', state: 'WAITING_CONFIRMATION' });
-      sendSSE({ type: 'done', awaitingConfirmation: true });
+      emit({ type: 'compass', state: 'WAITING_CONFIRMATION' }, {
+        type: 'PHASE_CHANGED',
+        phase: 'PLAN',
+        status: 'WAITING_USER',
+        title: 'En attente de ta validation du plan',
+        detail: { state: 'WAITING_CONFIRMATION' }
+      });
+      if (recorder) executionStore.setStatus(executionId, 'WAITING_USER');
+      emit({ type: 'done', awaitingConfirmation: true });
       res.end();
       return true;
+    }
+    if (body.confirmedPlan) {
+      recordOnly({
+        type: 'PLAN_APPROVED',
+        phase: 'PLAN',
+        status: 'COMPLETED',
+        title: 'Plan approuvé — je lance la génération'
+      });
     }
 
     // Sélectionne l'adaptateur Mistral (préfère le fournisseur dont la clé est env)
     const preferredProviderId = process.env.MISTRAL_API_KEY ? 'mistral' : process.env.GEMINI_API_KEY ? 'gemini' : undefined;
     const adapter = aiProviderRegistry.resolve(preferredProviderId ? { preferredProviderId } : {});
     if (!adapter || !('generateStream' in adapter)) {
-      sendSSE({ type: 'error', error: "Aucun fournisseur IA streaming disponible (Mistral requis)." });
+      const providerError = "Aucun fournisseur IA streaming disponible (Mistral requis).";
+      emit({ type: 'error', error: providerError });
+      if (recorder) executionStore.failExecution(executionId, providerError);
       res.end();
       return true;
     }
@@ -584,10 +658,6 @@ export async function handleConversationRoutes(
         ? `Voici le code HTML actuel de l'application :\n\`\`\`html\n${currentHtml}\n\`\`\`\n\nDemande de l'utilisateur : ${body.message}${buildPageContext(currentHtml)}`
         : `Demande de l'utilisateur : ${body.message}`);
 
-    // Signale au Studio que le stream commence
-    sendSSE({ type: 'start', isModification });
-    sendSSE({ type: 'compass', state: 'UNDERSTANDING' });
-
     let fullText = '';
     let inSection = false;
     let currentSectionName = '';
@@ -642,13 +712,24 @@ export async function handleConversationRoutes(
           currentSectionHtml = '';
           currentSectionText = '';
           sectionIndex++;
-          sendSSE({ type: 'compass', state: 'EXECUTING' });
-          sendSSE({
+          if (recorder) executionStore.transitionPhase(executionId, 'IMPLEMENT');
+          emit({ type: 'compass', state: 'EXECUTING' });
+          emit({
             type: 'section_start',
             name: currentSectionName,
             mode: currentSectionMode,
             after: currentSectionAfter,
             index: sectionIndex
+          }, {
+            type: currentSectionMode === 'delete' ? 'FILE_DELETED' : currentSectionMode === 'modify' ? 'FILE_MODIFIED' : 'FILE_CREATED',
+            phase: 'IMPLEMENT',
+            status: 'RUNNING',
+            title: (currentSectionMode === 'delete'
+              ? 'Suppression de la section '
+              : currentSectionMode === 'modify'
+                ? 'Modification de la section '
+                : 'Construction de la section ') + currentSectionName,
+            detail: { section: currentSectionName, mode: currentSectionMode, index: sectionIndex }
           });
 
           // Continue à accumuler le contenu de la section après le marqueur
@@ -673,7 +754,7 @@ export async function handleConversationRoutes(
               currentSectionText = sectionContent.trim();
               currentSectionHtml = '';
             }
-            sendSSE({
+            emit({
               type: 'section_end',
               name: currentSectionName,
               mode: currentSectionMode,
@@ -681,6 +762,12 @@ export async function handleConversationRoutes(
               index: sectionIndex,
               text: currentSectionText,
               html: currentSectionHtml
+            }, {
+              type: currentSectionMode === 'delete' ? 'FILE_DELETED' : currentSectionMode === 'modify' ? 'FILE_MODIFIED' : 'FILE_CREATED',
+              phase: 'IMPLEMENT',
+              status: 'COMPLETED',
+              title: 'Section ' + currentSectionName + ' générée',
+              detail: { section: currentSectionName, mode: currentSectionMode, chars: currentSectionHtml.length }
             });
 
             // === ACCUMULE LA SECTION CÔTÉ SERVEUR pour sauvegarde finale ===
@@ -720,6 +807,8 @@ export async function handleConversationRoutes(
           projectId,
           charsReceived: fullText.length
         });
+        // Annulation honnête (⏹ pas ❌) : l'exécution reste consultable au replay.
+        if (recorder) executionStore.cancelExecution(executionId, 'client_gone');
         return true;
       }
 
@@ -816,22 +905,25 @@ export async function handleConversationRoutes(
       }
 
       // LOT 3 — Compass : phase de validation avant la sauvegarde finale
-      sendSSE({ type: 'compass', state: 'VALIDATING' });
-      sendSSE({ type: 'chat', text: 'Je vérifie le rendu réel…' });
+      if (recorder) executionStore.transitionPhase(executionId, 'VALIDATE');
+      emit({ type: 'compass', state: 'VALIDATING' });
+      emit({ type: 'chat', text: 'Je vérifie le rendu réel…' });
 
       // Sauvegarde dans fileStore pour que la prochaine demande trouve le HTML
+      let savedRevisionId: string | undefined;
       if (assembledHtml.trim().length > 100) {
         try {
           fileStore.saveFile(context.tenantId, projectId, 'index.html', assembledHtml);
           // ÉTAPE 6 — révision automatique (§32 CDC Evolution Engine) : chaque
           // génération produit une révision réversible (rollback déjà branché).
           try {
-            revisionStore.createRevision(context.tenantId, projectId, {
+            const autoRevision = revisionStore.createRevision(context.tenantId, projectId, {
               message: `Génération IA — ${(body.message || '').slice(0, 80)}`,
               author: 'Agent IA',
               files: { 'index.html': assembledHtml },
               provenance: { source: 'AI_AGENT', triggerRequestId: requestId }
             });
+            savedRevisionId = autoRevision.id;
           } catch (revErr) {
             logger.warn('Création de révision automatique impossible', {
               component: 'conversation-route-stream',
@@ -840,7 +932,7 @@ export async function handleConversationRoutes(
             });
           }
           // LOT 3 — Compass : cycle terminé
-          sendSSE({ type: 'compass', state: 'COMPLETED' });
+          emit({ type: 'compass', state: 'COMPLETED' });
           logger.info('HTML final sauvegardé dans fileStore après stream', {
             component: 'conversation-route-stream',
             tenantId: context.tenantId,
@@ -856,7 +948,21 @@ export async function handleConversationRoutes(
         }
       }
 
-      sendSSE({
+      // EXECUTION TRANSPARENCY : bilan réel (ce qui a été fait, pas ce qu'on
+      // espérait) enregistré avant le done — la synthèse du CDC §24-§25 en T7
+      // s'appuiera sur ces compteurs.
+      if (recorder) {
+        executionStore.completeExecution(executionId, {
+          sectionsCreated: serverSections.filter((s) => s.mode === 'create' || s.mode === 'add').length,
+          sectionsModified: serverSections.filter((s) => s.mode === 'modify').length,
+          sectionsDeleted: serverSections.filter((s) => s.mode === 'delete').length,
+          filesTouched: ['index.html'],
+          htmlChars: assembledHtml.length,
+          ...(savedRevisionId ? { revisionId: savedRevisionId } : {})
+        });
+      }
+
+      emit({
         type: 'done',
         updated: true,
         html: assembledHtml,
@@ -870,7 +976,8 @@ export async function handleConversationRoutes(
         projectId,
         error: message
       });
-      sendSSE({ type: 'error', error: message });
+      if (recorder) executionStore.failExecution(executionId, message);
+      emit({ type: 'error', error: message });
     } finally {
       res.end();
     }
