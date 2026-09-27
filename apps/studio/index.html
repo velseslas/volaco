@@ -3140,12 +3140,38 @@
           throw new Error('HTTP ' + response.status);
         }
 
+        // ==================== CONSTRUCTION EN DIRECT (effet Stitch) ====================
+        // Pendant chaque section, le preview est re-rendu avec la section EN
+        // CROISSANCE : chaque balise complétée apparaît à l'écran (le bouton
+        // "pousse" sous tes yeux). Troncature propre à la dernière balise
+        // fermée + throttle 280ms pour ne pas re-render à chaque fragment.
+        let currentGrowing = null;
+        let growingRenderTimer = null;
+
+        function renderGrowing() {
+          if (growingRenderTimer) return;
+          growingRenderTimer = setTimeout(() => {
+            growingRenderTimer = null;
+            if (!currentGrowing) return;
+            let html = currentGrowing.html;
+            const tagStart = html.indexOf('<');
+            if (tagStart === -1) return; // encore de la narration, aucun tag
+            html = html.slice(tagStart);
+            const lastGt = html.lastIndexOf('>');
+            if (lastGt === -1) return;
+            const partial = html.slice(0, lastGt + 1);
+            const wrapper = '<div class="vibe-stitched" data-section="' + currentGrowing.name + '">' + partial + '</div>';
+            renderDebounced(buildHtmlDoc(assembledHtml + wrapper));
+          }, 280);
+        }
+
         // Variables pour l'assemblage
         let assembledHtml = '';
         let chatText = '';
         let tokenCount = 0;
         const startTime = Date.now();
         const S_END_LOCAL = '<' + '/script>';
+
 
         // ==================== CONVERSATION VIVANTE ====================
         // Rythme humain : le texte de narration est révélé progressivement
@@ -3296,6 +3322,11 @@ ${sections}
                 pumpNarration(textEl);
               } else if (event.type === 'token' && event.token) {
                 tokenCount++;
+                // Construction en direct : chaque fragment alimente la section en croissance
+                if (currentGrowing) {
+                  currentGrowing.html += event.token;
+                  renderGrowing();
+                }
               } else if (event.type === 'section_start') {
                 tokenCount++;
                 if (statusEl) statusEl.innerHTML = `Construction de <strong>${event.name}</strong>...`;
@@ -3303,15 +3334,18 @@ ${sections}
                 // Conversation vivante — focus : le preview défile sur la section
                 // en construction et l'entoure d'un halo.
                 focusPreviewSection(event.name);
-                // Skeleton placeholder
-                let sk = '<div style="padding:24px;border:1px dashed rgba(139,92,246,.3);border-radius:16px;background:rgba(15,23,42,.4);margin-bottom:16px;">';
-                sk += '<div style="padding:12px 16px;background:linear-gradient(135deg,rgba(99,102,241,.1),rgba(139,92,246,.1));border-left:3px solid #8b5cf6;border-radius:4px;color:#c4b5fd;font-size:13px;margin-bottom:12px;">Construction de ' + event.name + '...</div>';
-                sk += '<div class="vibe-skeleton" style="height:200px;"></div></div>';
-                assembledHtml += sk;
-                renderDebounced(buildHtmlDoc(assembledHtml));
+                if (modWorkingDoc) {
+                  // Mode modification : le document existant reste affiché,
+                  // le halo marque la section qui va être remplacée.
+                } else {
+                  // Mode création — section EN CROISSANCE : un squelette pulsé
+                  // qui sera remplacé par les éléments apparaissant un à un.
+                  currentGrowing = { name: event.name, html: '' };
+                  renderDebounced(buildHtmlDoc(assembledHtml + '<div class="vibe-stitched" data-section="' + event.name + '"><div class="vibe-skeleton" style="height:120px"></div></div>'));
+                }
               } else if (event.type === 'section_end') {
-                // Retire le skeleton
-                assembledHtml = assembledHtml.replace(/<div style="padding:24px;border:1px dashed[^"]*"[^>]*>[\s\S]*?<\/div><\/div>/g, '');
+                // La section complète arrive du serveur : la croissance s'arrête
+                currentGrowing = null;
                 // Nettoie le wrapper si présent
                 let cleanHtml = (event.html || '').replace(/^<div[^>]*data-section="[^"]*"[^>]*>([\s\S]*)<\/div>$/, '$1').trim();
                 if (modWorkingDoc) {
@@ -3336,6 +3370,7 @@ ${sections}
                   pumpNarration(textEl);
                 }
               } else if (event.type === 'done') {
+                currentGrowing = null; // sécurité : plus de croissance en cours
                 if (event.awaitingConfirmation) {
                   // LOT 4 — mode Plan First : le serveur attend la décision humaine
                   if (statusEl) statusEl.innerHTML = '<span style="color:#fbbf24;">⏸ En attente de confirmation du plan ci-dessus</span>';
