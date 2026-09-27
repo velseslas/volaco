@@ -3150,6 +3150,7 @@
             </div>
             <div class="text-slate-300 text-xs leading-relaxed whitespace-pre-wrap" id="${msgId}-text"></div>
             <div class="text-[10px] text-slate-500" id="${msgId}-status">en cours...</div>
+            <div id="agentSteps-${msgId}" class="mt-2 space-y-1 border border-[#1a2238] rounded-xl p-2 bg-[#0a0e1c] hidden"><div class="text-[9px] font-bold text-slate-500 uppercase tracking-wide mb-1">Étapes de l'agent</div></div>
           </div>
         `);
         const textEl = document.getElementById(msgId + '-text');
@@ -3365,6 +3366,35 @@
           if (el) el.innerHTML = formatNarration(chatText);
         }
 
+        // ==================== ÉTAPES DE L'AGENT VISIBLES (style vibecoding) ====
+        // Comme un vrai agent : chaque action réelle apparaît comme une étape
+        // (réflexion, plan, construction par section, vérification, sauvegarde),
+        // avec spinner -> check vert. L'utilisateur voit le travail, pas juste
+        // le résultat.
+        const agentStepsBox = () => document.getElementById('agentSteps-' + msgId);
+        let agentRunningRow = null;
+
+        function agentStepClose(okLabel) {
+          if (!agentRunningRow) return;
+          const icon = agentRunningRow.querySelector('i');
+          if (icon) icon.className = 'fa-solid fa-check text-emerald-400 text-[10px] w-3.5';
+          if (okLabel) { const s = agentRunningRow.querySelector('span'); if (s) s.textContent = okLabel; }
+          agentRunningRow = null;
+        }
+
+        function agentStepAdd(icon, label) {
+          const box = agentStepsBox();
+          if (!box) return;
+          box.classList.remove('hidden');
+          agentStepClose();
+          const row = document.createElement('div');
+          row.className = 'flex items-center space-x-2 text-[11px] text-slate-400';
+          row.innerHTML = '<i class="' + icon + ' text-violet-400 text-[10px] w-3.5"></i><span>' + canonicalEscape(label) + '</span>';
+          box.appendChild(row);
+          agentRunningRow = row;
+          return row;
+        }
+
         // ÉTAPE 6bis — Focus manager (§4 du brief UX) : quand l'IA annonce une
         // section, le preview défile dessus et l'entoure d'un halo lumineux.
         function focusPreviewSection(name, badge) {
@@ -3471,6 +3501,7 @@ ${sections}
 
               if (event.type === 'start') {
                 if (statusEl) statusEl.textContent = 'Connexion au LLM...';
+                agentStepAdd('fa-solid fa-brain', 'Réflexion sur ta demande…');
                 // Conversation vivante — indicateur de frappe vivant pendant la
                 // réflexion (remplacé par la narration dès qu'elle arrive)
                 if (textEl) textEl.innerHTML = '<span class="animate-pulse text-violet-300 tracking-widest">● ● ●</span>';
@@ -3488,6 +3519,7 @@ ${sections}
                 // Conversation vivante — focus : le preview défile sur la section
                 // en construction et l'entoure d'un halo.
                 focusPreviewSection(event.name);
+                agentStepAdd('fa-solid fa-pen-ruler', 'Construction de ' + event.name + '…');
                 vibeBuildingStep();
                 if (modWorkingDoc) {
                   // Mode modification : le document existant reste affiché,
@@ -3525,6 +3557,7 @@ ${sections}
                     if (!lastModifiedSections.includes(event.name)) lastModifiedSections.push(event.name);
                 vibeTickStep();
                     setTimeout(() => focusPreviewSection(event.name, true), 400);
+                agentStepClose('✓ Section ' + event.name + ' posée');
                   }
                   // Conversation vivante v2 — le badge « modifié » marque la
                   // section remplacée, après le re-rendu (400ms).
@@ -3607,9 +3640,16 @@ ${sections}
                   if (isModification && lastModifiedSections.length > 0) {
                     appendConfirmationBar(lastModifiedSections);
                   }
+                  agentStepClose('Rendu validé par le Quality Gate');
+                  const fileRow = agentStepAdd('fa-regular fa-file-code', 'index.html sauvegardé — voir le code');
+                  if (fileRow) {
+                    fileRow.classList.add('cursor-pointer', 'hover:text-violet-300');
+                    fileRow.onclick = () => { requestWorkspaceSubTab('code'); selectCodeFile('index.html'); };
+                  }
                 }
               } else if (event.type === 'plan' && event.plan) {
                 // LOT 4 — carte de plan réelle (Plan Engine, §17 CDC)
+                agentStepClose("Plan validé — " + (event.plan.steps || []).length + " étapes");
                 renderPlanFirstCard(event.plan, text, isModification, cleanTitle);
               } else if (event.type === 'compass' && event.state) {
                 // LOT 3 — les 9 états du Conversation Compass (§11 CDC)
@@ -3628,6 +3668,7 @@ ${sections}
                 if (info) setCompassState(event.state, info[0], info[1], info[2]);
                 const canvasStateMap = { UNDERSTANDING: 'thinking', PLANNING: 'thinking', EXECUTING: 'writing', REPAIRING: 'writing', VALIDATING: 'validating', COMPLETED: 'ready' };
                 if (canvasStateMap[event.state]) sendCanvasState(canvasStateMap[event.state]);
+                if (event.state === 'VALIDATING') agentStepAdd('fa-solid fa-magnifying-glass-chart', 'Vérification du rendu réel…');
               } else if (event.type === 'error') {
                 if (statusEl) statusEl.innerHTML = '<span style="color:#f87171;">Erreur: ' + (event.error || '') + '</span>';
               }
