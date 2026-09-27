@@ -3123,6 +3123,8 @@
         const titleEl = document.getElementById(msgId)?.querySelector('.text-violet-400');
 
         // Ouvre la connexion SSE
+        let serverDeletes = 0;
+        let preSectionCount = 0;
         // LOT 5 — capture la version AVANT pour la comparaison A/B
         if (typeof currentAppHtml === 'string' && currentAppHtml.length > 100) {
           window._preGenerationHtml = currentAppHtml;
@@ -3148,8 +3150,6 @@
         // : application chirurgicale animée section par section + confirmation
         // en contexte. La création garde une apparition douce par section.
         const lastModifiedSections = [];
-        let serverDeletes = 0;
-        let preSectionCount = 0;
 
         // Variables pour l'assemblage
         let assembledHtml = '';
