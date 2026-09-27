@@ -3126,6 +3126,7 @@
         // LOT 5 — capture la version AVANT pour la comparaison A/B
         if (typeof currentAppHtml === 'string' && currentAppHtml.length > 100) {
           window._preGenerationHtml = currentAppHtml;
+          preSectionCount = (currentAppHtml.match(/data-section="/g) || []).length;
         }
 
         const response = await fetch(`/api/v1/projects/${serverProjectId}/conversation/sessions/${sessionId}/stream`, {
@@ -3147,6 +3148,8 @@
         // : application chirurgicale animée section par section + confirmation
         // en contexte. La création garde une apparition douce par section.
         const lastModifiedSections = [];
+        let serverDeletes = 0;
+        let preSectionCount = 0;
 
         // Variables pour l'assemblage
         let assembledHtml = '';
@@ -3455,6 +3458,7 @@ ${sections}
                   openLiveCanvas();
                 }
               } else if (event.type === 'section_end') {
+                if (event.mode === 'delete') serverDeletes++;
                 closeLiveCanvas(); // resync autoritaire via le render ci-dessous
                 // La section complète arrive du serveur : la croissance s'arrête
                 // Nettoie le wrapper si présent
@@ -3464,10 +3468,23 @@ ${sections}
                   // document EXISTANT — le preview garde toute l'application,
                   // seule la section concernée change en direct (au lieu de
                   // n'afficher que des fragments isolés perdus).
-                  modWorkingDoc = applySectionToDoc(modWorkingDoc, event.name, event.mode, event.after, cleanHtml);
-                  currentAppHtml = modWorkingDoc;
-                  renderDebounced(currentAppHtml);
-                  updateEditorContent(currentAppHtml);
+                  // LOT 3 - diff-guard par section : si la nouvelle version perd
+                  // la quasi-totalite de son contenu sans demande de suppression,
+                  // on refuse le remplacement (le LLM a zappe des morceaux).
+                  const oldSecMatch = modWorkingDoc.match(new RegExp('<div[^>]*data-section="' + event.name + '"[^>]*>[\\s\\S]*?(?=<div[^>]*data-section|</body>|$)', 'i'));
+                  const oldSecLen = oldSecMatch ? oldSecMatch[0].length : 0;
+                  const rejectedByGuard = oldSecLen > 400 && cleanHtml.length < oldSecLen * 0.15 && event.mode !== "delete";
+                  if (rejectedByGuard) {
+                    showCaptureToast("Modification refusee : la section " + event.name + " perdait son contenu.");
+                    if (typeof addTerminalLogEntry === "function") addTerminalLogEntry({ source: "AUDIT", level: "warn", category: "DIFF-GUARD", message: "Section " + event.name + " rejetee : " + cleanHtml.length + " vs " + oldSecLen + " caracteres." });
+                  } else {
+                    modWorkingDoc = applySectionToDoc(modWorkingDoc, event.name, event.mode, event.after, cleanHtml);
+                    currentAppHtml = modWorkingDoc;
+                    renderDebounced(currentAppHtml);
+                    updateEditorContent(currentAppHtml);
+                    if (!lastModifiedSections.includes(event.name)) lastModifiedSections.push(event.name);
+                    setTimeout(() => focusPreviewSection(event.name, true), 400);
+                  }
                   // Conversation vivante v2 — le badge « modifié » marque la
                   // section remplacée, après le re-rendu (400ms).
                   if (!lastModifiedSections.includes(event.name)) lastModifiedSections.push(event.name);
@@ -3534,6 +3551,17 @@ ${sections}
                   }
                   // Conversation vivante — actions tangibles directement dans le flux
                   appendQuickActions();
+                  // LOT 3 — diff-guard : des sections ont disparu sans demande
+                  // de suppression -> rollback au HTML d'avant modification.
+                  const postSectionCount = (currentAppHtml.match(/data-section="/g) || []).length;
+                  if (isModification && preSectionCount > 0 && postSectionCount < preSectionCount - serverDeletes && window._preGenerationHtml) {
+                    currentAppHtml = window._preGenerationHtml;
+                    renderNow(currentAppHtml);
+                    updateEditorContent(currentAppHtml);
+                    const ap2 = userProjects.find(p => p.id === activeProjectId);
+                    if (ap2) { ap2.code = currentAppHtml; saveUserProjects(); }
+                    if (statusEl) statusEl.innerHTML = '<span style="color:#fbbf24;">⚠ Modification rejetée : des sections ont disparu sans demande.</span>';
+                  }
                   setTimeout(() => sendCanvasState('ready'), 350);
                   if (isModification && lastModifiedSections.length > 0) {
                     appendConfirmationBar(lastModifiedSections);
@@ -8849,6 +8877,10 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
     // ==================== VISUAL INSPECTOR ENGINE (POINT & CLICK) ====================
     let isInspectorActive = false;
     let selectedInspectorSnippet = "";
+    // LOT 1 (ciblage chirurgical) — identité stable de l'élément inspecté
+    let selectedInspectorId = "";
+    let selectedInspectorSection = "";
+    let selectedInspectorFullHtml = "";
 
     function toggleVisualInspector() {
       isInspectorActive = !isInspectorActive;
@@ -8925,10 +8957,26 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
       e.stopPropagation();
 
       const el = e.target;
-      const tag = el.tagName.toLowerCase();
-      const text = el.innerText ? el.innerText.trim().slice(0, 50) : '';
-      const classes = el.className ? el.className.toString().slice(0, 60) : '';
-      selectedInspectorSnippet = `<${tag} class="${classes}">${text ? text + '...' : ''}</${tag}>`;
+      // LOT 1 (ciblage chirurgical) — identifiant STABLE : data-vabe-id
+      // injecté à la volée s'il manque (incrément déterministe par tagName),
+      // plus le code EXACT de l'élément (outerHTML borné) au lieu d'un snippet
+      // approximatif — l'IA reçoit précisément la cible, sans interpréter.
+      if (!el.getAttribute('data-vabe-id')) {
+        const base = el.tagName.toLowerCase() + '-' + (el.innerText || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 12).toLowerCase();
+        el.setAttribute('data-vabe-id', base || 'el-' + Date.now());
+      }
+      selectedInspectorId = el.getAttribute('data-vabe-id');
+      selectedInspectorSection = (function findSection(node) {
+        let cur = node;
+        while (cur && cur !== cur.ownerDocument.body) {
+          if (cur.getAttribute && cur.getAttribute('data-section')) return cur.getAttribute('data-section');
+          cur = cur.parentElement;
+        }
+        return null;
+      })(el);
+      const outer = el.outerHTML || '';
+      selectedInspectorSnippet = outer.length > 1200 ? outer.slice(0, 1200) + '…' : outer;
+      selectedInspectorFullHtml = outer; // pour le function-calling visuel (lot 2)
 
       openInspectorEditModal(selectedInspectorSnippet);
     }
@@ -8958,6 +9006,64 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
       }
     }
 
+    // ==================== LOT 1+2 — MODIFICATION CHIRURGICALE ====================
+    // Fonction calling visuel : les demandes purement visuelles (couleur,
+    // fond) sont appliquées DÉTERMINISTEMENT côté client — l'IA ne réécrit
+    // jamais le HTML pour un changement de couleur, donc elle ne peut rien
+    // casser d'autre. Les demandes complexes partent en LLM avec le code
+    // EXACT de l'élément ciblé (data-vabe-id) et sa section.
+    const VIBE_COLORS = {
+      rouge: '#ef4444', bleu: '#3b82f6', vert: '#22c55e', orange: '#f97316',
+      violet: '#8b5cf6', rose: '#ec4899', noir: '#111827', blanc: '#f8fafc',
+      jaune: '#eab308', gris: '#64748b', turquoise: '#14b8a6', bordeaux: '#7f1d1d',
+      dore: '#d4af37', doree: '#d4af37'
+    };
+
+    function parseVisualInstruction(instruction) {
+      const t = instruction.toLowerCase();
+      const colorKey = Object.keys(VIBE_COLORS).find((c) => t.includes(c));
+      if (!colorKey) return null;
+      const targetText = /(texte|titre|écrit|ecrit|lettres|caractère)/.test(t);
+      const targetBg = /(fond|background|bouton|btn|carte|card|barre|bannière)/.test(t);
+      if (!targetBg && !targetText) return null;
+      return { property: targetText ? 'color' : 'backgroundColor', value: VIBE_COLORS[colorKey], colorKey };
+    }
+
+    function applyVisualOpToLiveElement(op) {
+      const frame = document.getElementById('wsLiveIframe');
+      if (!frame || !frame.contentDocument) return false;
+      const doc = frame.contentDocument;
+      const el = doc.querySelector('[data-vabe-id="' + selectedInspectorId + '"]');
+      if (!el) return false;
+      el.style[op.property] = op.value;
+      // halo de confirmation sur l'élément modifié
+      el.classList.add('vibe-focus-halo');
+      setTimeout(() => el.classList.remove('vibe-focus-halo'), 1800);
+      return true;
+    }
+
+    function resyncAppFromLiveDoc() {
+      const frame = document.getElementById('wsLiveIframe');
+      if (!frame || !frame.contentDocument || !frame.contentDocument.documentElement) return false;
+      currentAppHtml = '<!DOCTYPE html>\n' + frame.contentDocument.documentElement.outerHTML;
+      updateEditorContent(currentAppHtml);
+      const ap = userProjects.find(p => p.id === activeProjectId);
+      if (ap) { ap.code = currentAppHtml; ap.isCustom = true; saveUserProjects(); }
+      return true;
+    }
+
+    async function syncAppToServer() {
+      const pid = await resolveServerProjectId();
+      if (!pid) return;
+      try {
+        await fetch(`/api/v1/projects/${pid}/files/content`, {
+          method: 'PUT',
+          headers: studioApiHeaders(),
+          body: JSON.stringify({ path: 'index.html', content: currentAppHtml })
+        });
+      } catch (_) { /* sync serveur best-effort */ }
+    }
+
     function submitInspectorEdit() {
       const input = document.getElementById('inspectorPromptInput');
       const instruction = input.value.trim();
@@ -8966,8 +9072,22 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
       closeInspectorEditModal();
       toggleVisualInspector();
 
-      const finalPrompt = `[Inspecteur Visuel] Sur l'élément ciblé "${selectedInspectorSnippet}", applique la modification suivante : "${instruction}". Conserve tout le reste de l'application intact.`;
-      
+      // LOT 2 — function calling visuel : application déterministe, zéro LLM
+      const op = parseVisualInstruction(instruction);
+      if (op && selectedInspectorId) {
+        const applied = applyVisualOpToLiveElement(op);
+        if (applied && resyncAppFromLiveDoc()) {
+          syncAppToServer();
+          appendChatMessage('assistant', `<div class="p-3 rounded-xl bg-[#0d1226] border border-emerald-500/30 text-[11px] text-emerald-300"><i class="fa-solid fa-bolt mr-1"></i>Application déterministe : ${op.property} → ${op.value} (${op.colorKey}) sur <strong>${canonicalEscape(selectedInspectorId)}</strong>. Aucun autre élément touché.</div>`);
+          return;
+        }
+      }
+
+      // LOT 1 — ciblage chirurgical LLM : code EXACT de l'élément + ID stable
+      // + section — l'IA n'a pas besoin d'interpréter « le bouton là ».
+      const sectionCtx = selectedInspectorSection ? ` — section « ${selectedInspectorSection} »` : '';
+      const finalPrompt = `[Modification ciblée — ID: ${selectedInspectorId}${sectionCtx}]\nCode EXACT de l'élément ciblé :\n${selectedInspectorFullHtml}\nDemande : "${instruction}".\nRenvoie UNIQUEMENT ce même élément modifié (même balise racine, même data-vabe-id="${selectedInspectorId}"), sans rien ajouter ni supprimer d'autre de la page.`;
+
       const wsInput = document.getElementById('wsPromptInput');
       if (wsInput) {
         wsInput.value = finalPrompt;
