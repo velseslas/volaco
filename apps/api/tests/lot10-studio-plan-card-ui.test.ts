@@ -212,6 +212,14 @@ describe('LOT 10 — Câblage réel de l\'interface Studio', () => {
     );
     // Qualité preview : le shell serveur est aligné sur le template client
     assert.ok(indexContent.includes('Construction de '), 'Le squelette de construction reste présent');
+    // v2 — plus de pulse en boucle, confirmation en contexte, badge modifié
+    assert.ok(!indexContent.includes('function renderGrowing('), 'La croissance janky (re-rendu par fragment) doit avoir disparu');
+    assert.ok(!indexContent.includes('class="vibe-skeleton" style="height:120px"'), 'Le squelette pulsé de 120px doit avoir disparu');
+    assert.ok(indexContent.includes('badge: badge === true'), 'Le focus peut porter le badge modifié');
+    assert.ok(indexContent.includes('vibe-modified-badge'), 'Le badge visuel de section modifiée doit exister');
+    assert.ok(indexContent.includes('function appendConfirmationBar('), 'La barre de confirmation en contexte doit exister');
+    assert.ok(indexContent.includes("'Corrige la section « ' + (names) + ' » : '"), 'La correction sur place pré-remplit le chat avec le contexte de la section');
+    assert.ok(indexContent.includes('lastModifiedSections'), 'Les sections modifiées doivent être tracées pour la confirmation');
   });
 
   it('12. Auto-réparation du navigateur usager (sessions mortes + code corrompu)', () => {

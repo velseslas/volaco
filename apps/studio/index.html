@@ -3140,30 +3140,13 @@
           throw new Error('HTTP ' + response.status);
         }
 
-        // ==================== CONSTRUCTION EN DIRECT (effet Stitch) ====================
-        // Pendant chaque section, le preview est re-rendu avec la section EN
-        // CROISSANCE : chaque balise complétée apparaît à l'écran (le bouton
-        // "pousse" sous tes yeux). Troncature propre à la dernière balise
-        // fermée + throttle 280ms pour ne pas re-render à chaque fragment.
-        let currentGrowing = null;
-        let growingRenderTimer = null;
-
-        function renderGrowing() {
-          if (growingRenderTimer) return;
-          growingRenderTimer = setTimeout(() => {
-            growingRenderTimer = null;
-            if (!currentGrowing) return;
-            let html = currentGrowing.html;
-            const tagStart = html.indexOf('<');
-            if (tagStart === -1) return; // encore de la narration, aucun tag
-            html = html.slice(tagStart);
-            const lastGt = html.lastIndexOf('>');
-            if (lastGt === -1) return;
-            const partial = html.slice(0, lastGt + 1);
-            const wrapper = '<div class="vibe-stitched" data-section="' + currentGrowing.name + '">' + partial + '</div>';
-            renderDebounced(buildHtmlDoc(assembledHtml + wrapper));
-          }, 280);
-        }
+        // ==================== CONVERSATION VIVANTE v2 — retour d'expérience ====
+        // Le pulse du squelette fatiguait, et la croissance par re-rendu
+        // complet produisait du jank (styles tardifs, scroll reset) sans
+        // montrer réellement les éléments. La valeur est dans la MODIFICATION
+        // : application chirurgicale animée section par section + confirmation
+        // en contexte. La création garde une apparition douce par section.
+        const lastModifiedSections = [];
 
         // Variables pour l'assemblage
         let assembledHtml = '';
@@ -3209,10 +3192,10 @@
 
         // ÉTAPE 6bis — Focus manager (§4 du brief UX) : quand l'IA annonce une
         // section, le preview défile dessus et l'entoure d'un halo lumineux.
-        function focusPreviewSection(name) {
+        function focusPreviewSection(name, badge) {
           const frame = document.getElementById('wsLiveIframe');
           if (frame && frame.contentWindow) {
-            frame.contentWindow.postMessage({ source: 'vibecode-studio', command: 'focus-section', name: String(name || '') }, '*');
+            frame.contentWindow.postMessage({ source: 'vibecode-studio', command: 'focus-section', name: String(name || ''), badge: badge === true }, '*');
           }
         }
 
@@ -3322,11 +3305,6 @@ ${sections}
                 pumpNarration(textEl);
               } else if (event.type === 'token' && event.token) {
                 tokenCount++;
-                // Construction en direct : chaque fragment alimente la section en croissance
-                if (currentGrowing) {
-                  currentGrowing.html += event.token;
-                  renderGrowing();
-                }
               } else if (event.type === 'section_start') {
                 tokenCount++;
                 if (statusEl) statusEl.innerHTML = `Construction de <strong>${event.name}</strong>...`;
@@ -3338,14 +3316,12 @@ ${sections}
                   // Mode modification : le document existant reste affiché,
                   // le halo marque la section qui va être remplacée.
                 } else {
-                  // Mode création — section EN CROISSANCE : un squelette pulsé
-                  // qui sera remplacé par les éléments apparaissant un à un.
-                  currentGrowing = { name: event.name, html: '' };
-                  renderDebounced(buildHtmlDoc(assembledHtml + '<div class="vibe-stitched" data-section="' + event.name + '"><div class="vibe-skeleton" style="height:120px"></div></div>'));
+                  // Création : marqueur discret SANS animation en boucle
+                  // (le shimmer en boucle fatiguait l'œil — retour utilisateur)
+                  renderDebounced(buildHtmlDoc(assembledHtml + '<div class="vibe-stitched" data-section="' + event.name + '"><div style="height:3px;width:120px;background:rgba(139,92,246,.45);border-radius:2px;"></div></div>'));
                 }
               } else if (event.type === 'section_end') {
                 // La section complète arrive du serveur : la croissance s'arrête
-                currentGrowing = null;
                 // Nettoie le wrapper si présent
                 let cleanHtml = (event.html || '').replace(/^<div[^>]*data-section="[^"]*"[^>]*>([\s\S]*)<\/div>$/, '$1').trim();
                 if (modWorkingDoc) {
@@ -3357,6 +3333,10 @@ ${sections}
                   currentAppHtml = modWorkingDoc;
                   renderDebounced(currentAppHtml);
                   updateEditorContent(currentAppHtml);
+                  // Conversation vivante v2 — le badge « modifié » marque la
+                  // section remplacée, après le re-rendu (400ms).
+                  if (!lastModifiedSections.includes(event.name)) lastModifiedSections.push(event.name);
+                  setTimeout(() => focusPreviewSection(event.name, true), 400);
                 } else if (cleanHtml.length > 50) {
                   // MODE CRÉATION : assemblage progressif des fragments
                   assembledHtml += '<div class="vibe-stitched" data-section="' + event.name + '">' + cleanHtml + '</div>\n';
@@ -3369,8 +3349,7 @@ ${sections}
                   chatText += (chatText ? '\n' : '') + '▸ ' + event.text;
                   pumpNarration(textEl);
                 }
-              } else if (event.type === 'done') {
-                currentGrowing = null; // sécurité : plus de croissance en cours
+              } else if (event.type === 'done') { // sécurité : plus de croissance en cours
                 if (event.awaitingConfirmation) {
                   // LOT 4 — mode Plan First : le serveur attend la décision humaine
                   if (statusEl) statusEl.innerHTML = '<span style="color:#fbbf24;">⏸ En attente de confirmation du plan ci-dessus</span>';
@@ -3420,6 +3399,9 @@ ${sections}
                   }
                   // Conversation vivante — actions tangibles directement dans le flux
                   appendQuickActions();
+                  if (isModification && lastModifiedSections.length > 0) {
+                    appendConfirmationBar(lastModifiedSections);
+                  }
                 }
               } else if (event.type === 'plan' && event.plan) {
                 // LOT 4 — carte de plan réelle (Plan Engine, §17 CDC)
@@ -5213,6 +5195,18 @@ npx serve .
     if (!el) return;
     try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch(e) {}
     el.classList.add('vibe-focus-halo');
+    if (d.badge) {
+      var oldBadge = document.querySelector('.vibe-modified-badge');
+      if (oldBadge) oldBadge.remove();
+      var chip = document.createElement('div');
+      chip.className = 'vibe-modified-badge';
+      chip.textContent = '✓ modifié';
+      chip.style.cssText = 'position:absolute;top:8px;right:8px;z-index:9999;background:rgba(16,185,129,.92);color:#04140d;font-weight:800;font-size:11px;padding:4px 10px;border-radius:999px;box-shadow:0 4px 14px rgba(0,0,0,.4);opacity:0;transition:opacity .25s;';
+      if (getComputedStyle(el).position === 'static') el.style.position = 'relative';
+      el.appendChild(chip);
+      requestAnimationFrame(function(){ chip.style.opacity = '1'; });
+      setTimeout(function(){ chip.style.opacity = '0'; setTimeout(function(){ chip.remove(); }, 300); }, 2600);
+    }
     setTimeout(function(){ el.classList.remove('vibe-focus-halo'); }, 2400);
   });
   var haloStyle = document.createElement('style');
@@ -9435,7 +9429,58 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
       history.scrollTop = history.scrollHeight;
     }
 
+    // ==================== CONVERSATION VIVANTE v2 - CONFIRMATION EN CONTEXTE ====
+    // Apres une modification, l'utilisateur valide ou corrige sur place
+    // (S21 V8 Human Control : Accept / Reject - en un clic).
+    function appendConfirmationBar(sectionNames) {
+      const history = document.getElementById('wsChatHistory');
+      if (!history) return;
+      const old = document.getElementById('vibeConfirmBar');
+      if (old) old.remove();
+      const names = (sectionNames || []).join(', ') || 'la page';
+      const row = document.createElement('div');
+      row.id = 'vibeConfirmBar';
+      row.dataset.sections = names;
+      row.className = 'flex flex-wrap items-center gap-2 ml-6 p-2 rounded-2xl bg-[#0d1226] border border-emerald-500/30';
+
+      const label = document.createElement('span');
+      label.className = 'text-[11px] text-slate-300 font-semibold';
+      label.textContent = "C'était bien ça ?";
+
+      const okBtn = document.createElement('button');
+      okBtn.textContent = "OK, c'est ça";
+      okBtn.className = 'px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold transition';
+      okBtn.onclick = function () {
+        row.remove();
+        if (typeof showCaptureToast === 'function') showCaptureToast('Parfait — modification validée.');
+      };
+
+      const fixBtn = document.createElement('button');
+      fixBtn.textContent = 'Corriger sur place';
+      fixBtn.className = 'px-3 py-1.5 rounded-lg bg-[#141a2e] hover:bg-[#1c2440] text-slate-300 text-[11px] font-semibold transition';
+      fixBtn.onclick = function () {
+        const input = document.getElementById('wsPromptInput');
+        if (input) {
+          input.value = 'Corrige la section « ' + (names) + ' » : ';
+          input.focus();
+        }
+        row.remove();
+      };
+
+      const info = document.createElement('span');
+      info.className = 'text-[10px] text-slate-500';
+      info.textContent = 'Sections : ' + names;
+
+      row.appendChild(label);
+      row.appendChild(okBtn);
+      row.appendChild(fixBtn);
+      row.appendChild(info);
+      history.appendChild(row);
+      history.scrollTop = history.scrollHeight;
+    }
+
     function appendChatMessage(role, content) {
+
       const history = document.getElementById('wsChatHistory');
       if (!history) return null;
 
