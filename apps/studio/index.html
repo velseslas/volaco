@@ -3047,60 +3047,26 @@
       window._planFirstContexts = window._planFirstContexts || {};
       window._planFirstContexts[cardId] = { message, isModification, cleanTitle };
       const gate = planFirstEnabled();
-      const stepCount = (plan.steps || []).length;
+      // Conversation vivante : le chat affiche une carte DISCRÈTE et humaine.
+      // Les étapes mécaniques (anglais technique du PlanGenerator) ne sont
+      // montrées QUE en mode Plan First, où l'utilisateur doit décider.
       const steps = (plan.steps || []).map((s, i) =>
-        `<li class="ml-1 flex items-center space-x-2 py-1" data-vibe-step="${i}" data-done="0">` +
-          `<i class="vibe-step-icon fa-regular fa-circle text-slate-500 text-xs"></i>` +
-          `<span class="vibe-step-label text-slate-300 text-[11px]">${canonicalEscape(s.title || ("Étape " + (i + 1)))}</span>` +
-        `</li>`
-      ).join("");
-      appendChatMessage("assistant", `
+        `<li class="ml-4 list-disc text-slate-300 text-[11px]"><strong>${canonicalEscape(s.title || ('Étape ' + (i + 1)))}</strong>${s.description ? ' — ' + canonicalEscape(s.description) : ''}</li>`
+      ).join('');
+      appendChatMessage('assistant', `
         <div class="p-3 rounded-xl bg-[#0d1226] border border-violet-500/30 space-y-2" id="${cardId}">
           <div class="flex items-center justify-between border-b border-[#182036] pb-2">
-            <div class="flex items-center space-x-2 text-violet-300 font-bold text-xs"><i class="fa-solid fa-list-check"></i><span>${gate ? "Mon plan — valide et je démarre" : "Ce que je vais faire"}</span></div>
-            <span class="text-[10px] text-slate-500"><span id="vibePlanDone">0</span>/${stepCount}</span>
+            <div class="flex items-center space-x-2 text-violet-300 font-bold text-xs"><i class="fa-solid fa-list-check"></i><span>${gate ? 'Mon plan — valide et je démarre' : 'Ce que je vais faire'}</span></div>
+            <span class="text-[10px] text-slate-500">${(plan.steps || []).length} étape(s)</span>
           </div>
-          <div class="text-[11px] text-slate-400">${canonicalEscape(plan.summary || "")}</div>
-          <ul id="vibePlanChecklist" class="space-y-1">${steps}</ul>
-          <div class="h-1 rounded-full bg-[#161c2e] overflow-hidden"><div id="vibePlanProgress" class="h-full bg-gradient-to-r from-violet-500 to-fuchsia-500 rounded-full transition-all duration-500" style="width:0%"></div></div>
-          ${gate ? `
+          <div class="text-[11px] text-slate-400">${canonicalEscape(plan.summary || '')}</div>
+          ${gate ? `<ul class="space-y-1">${steps}</ul>
           <div class="flex items-center justify-end space-x-2 pt-2 border-t border-[#161c32]">
             <button onclick="rejectPlanFirstCard('${cardId}')" class="px-3 py-1.5 rounded-lg bg-[#141a2e] hover:bg-[#1c2440] text-slate-300 text-xs font-semibold">Rejeter</button>
             <button onclick="approvePlanFirstCard('${cardId}')" class="px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold transition active:scale-95">Approuver et générer</button>
-          </div>` : ""}
+          </div>` : ''}
         </div>
       `);
-    }
-
-    // Checklist vivant : chaque section construite coche une étape du plan
-    function vibeBuildingStep() {
-      const list = document.getElementById("vibePlanChecklist");
-      if (!list) return;
-      const next = list.querySelector('[data-done="0"]');
-      if (!next) return;
-      const icon = next.querySelector(".vibe-step-icon");
-      if (icon) icon.className = "vibe-step-icon fa-solid fa-hammer text-amber-400 text-xs animate-pulse";
-      next.dataset.building = "1";
-    }
-
-    function vibeTickStep() {
-      const list = document.getElementById("vibePlanChecklist");
-      if (!list) return;
-      const items = list.querySelectorAll("[data-vibe-step]");
-      if (items.length === 0) return;
-      const next = list.querySelector('[data-done="0"]');
-      if (next) {
-        next.dataset.done = "1";
-        const icon = next.querySelector(".vibe-step-icon");
-        if (icon) icon.className = "vibe-step-icon fa-solid fa-circle-check text-emerald-400 text-xs";
-        const label = next.querySelector(".vibe-step-label");
-        if (label) { label.classList.add("text-emerald-300"); label.classList.remove("text-slate-300"); }
-      }
-      const done = list.querySelectorAll('[data-done="1"]').length;
-      const doneEl = document.getElementById("vibePlanDone");
-      if (doneEl) doneEl.textContent = String(done);
-      const bar = document.getElementById("vibePlanProgress");
-      if (bar) bar.style.width = Math.round(done / items.length * 100) + "%";
     }
 
     function approvePlanFirstCard(cardId) {
@@ -3343,20 +3309,15 @@
 
         function pumpNarration(el) {
           if (pacerTimer) return;
-          // Rythme humain v2 : salves rapides, pauses sur la ponctuation,
-          // micro-hésitations — la narration respire au lieu de couler à vitesse constante.
-          const tick = () => {
-            if (shownChatLen >= chatText.length) { pacerTimer = null; return; }
-            const step = 2 + (chatText.length % 3);
-            shownChatLen = Math.min(chatText.length, shownChatLen + step);
+          pacerTimer = setInterval(() => {
+            if (shownChatLen >= chatText.length) {
+              clearInterval(pacerTimer);
+              pacerTimer = null;
+              return;
+            }
+            shownChatLen = Math.min(chatText.length, shownChatLen + 3 + (shownChatLen % 4));
             if (el) el.innerHTML = formatNarration(chatText.slice(0, shownChatLen));
-            const last = chatText.charAt(shownChatLen - 1);
-            const delay = /[.!?]/.test(last) ? 280 + (chatText.length % 3) * 90
-                        : /[,;:]/.test(last) ? 130
-                        : 24 + (chatText.length % 3) * 9;
-            pacerTimer = setTimeout(tick, delay);
-          };
-          pacerTimer = setTimeout(tick, 24);
+          }, 24);
         }
 
         function flushNarration(el) {
@@ -3488,7 +3449,6 @@ ${sections}
                 // Conversation vivante — focus : le preview défile sur la section
                 // en construction et l'entoure d'un halo.
                 focusPreviewSection(event.name);
-                vibeBuildingStep();
                 if (modWorkingDoc) {
                   // Mode modification : le document existant reste affiché,
                   // le halo marque la section qui va être remplacée.
@@ -3523,7 +3483,6 @@ ${sections}
                     renderDebounced(currentAppHtml);
                     updateEditorContent(currentAppHtml);
                     if (!lastModifiedSections.includes(event.name)) lastModifiedSections.push(event.name);
-                vibeTickStep();
                     setTimeout(() => focusPreviewSection(event.name, true), 400);
                   }
                   // Conversation vivante v2 — le badge « modifié » marque la
