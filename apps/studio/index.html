@@ -3148,12 +3148,38 @@
               </div>
               <span class="text-[10px] bg-violet-500/15 text-violet-300 border border-violet-500/30 px-2 py-0.5 rounded-full font-mono">Streaming Live</span>
             </div>
-            <div class="text-slate-300 text-xs leading-relaxed whitespace-pre-wrap" id="${msgId}-text"></div>
+            <div id="${msgId}-trace" class="space-y-2"></div>
             <div class="text-[10px] text-slate-500" id="${msgId}-status">en cours...</div>
             <div id="agentSteps-${msgId}" class="mt-2 space-y-1 border border-[#1a2238] rounded-xl p-2 bg-[#0a0e1c] hidden"><div class="text-[9px] font-bold text-slate-500 uppercase tracking-wide mb-1">Étapes de l'agent</div></div>
           </div>
         `);
-        const textEl = document.getElementById(msgId + '-text');
+        let textEl = null;
+        let thoughtStart = Date.now();
+        const traceEl = document.getElementById(msgId + '-trace');
+
+        // Trace de l'agent : cartes Thought / Write / Terminal (style ZCode)
+        function traceCard(kind, title) {
+          const trace = document.getElementById(msgId + '-trace');
+          if (!trace) return null;
+          const card = document.createElement('div');
+          card.className = 'rounded-xl border border-[#1a2238] bg-[#0a0e1c] overflow-hidden';
+          const icons = { thought: 'fa-solid fa-brain text-violet-400', write: 'fa-regular fa-file-code text-emerald-400', terminal: 'fa-solid fa-terminal text-slate-300' };
+          const labels = { thought: 'Thought', write: 'Write — index.html', terminal: 'Terminal' };
+          const head = document.createElement('div');
+          head.className = 'flex items-center justify-between px-3 py-1.5 bg-[#0d1222] border-b border-[#161c2e] cursor-pointer select-none';
+          head.innerHTML = '<div class="flex items-center space-x-2 text-[10px] font-bold text-slate-300"><i class="' + (icons[kind] || '') + '"></i><span>' + title + '</span></div><i class="chev fa-solid fa-chevron-up text-[9px] text-slate-500"></i>';
+          const body = document.createElement('div');
+          body.className = 'px-3 py-2 text-[11px] leading-relaxed whitespace-pre-wrap';
+          head.addEventListener('click', () => {
+            body.classList.toggle('hidden');
+            const ch = head.querySelector('.chev');
+            if (ch) ch.classList.toggle('rotate-180');
+          });
+          card.appendChild(head);
+          card.appendChild(body);
+          trace.appendChild(card);
+          return body;
+        }
         const statusEl = document.getElementById(msgId + '-status');
         const titleEl = document.getElementById(msgId)?.querySelector('.text-violet-400');
 
@@ -3501,6 +3527,10 @@ ${sections}
 
               if (event.type === 'start') {
                 if (statusEl) statusEl.textContent = 'Connexion au LLM...';
+                thoughtStart = Date.now();
+                textEl = traceCard('thought', 'Thought · en cours');
+                textEl.innerHTML = '<span class="animate-pulse text-violet-300 tracking-widest">● ● ●</span>';
+                agentStepAdd('fa-solid fa-brain', 'Réflexion sur ta demande…');
                 agentStepAdd('fa-solid fa-brain', 'Réflexion sur ta demande…');
                 // Conversation vivante — indicateur de frappe vivant pendant la
                 // réflexion (remplacé par la narration dès qu'elle arrive)
@@ -3618,10 +3648,16 @@ ${sections}
                     const dur = ((Date.now() - startTime) / 1000).toFixed(1);
                     statusEl.innerHTML = '<span style="color:#4ade80;">✓ ' + tokenCount + ' tokens · ' + dur + 's</span>';
                   }
+                  const durThought = ((Date.now() - thoughtStart) / 1000).toFixed(0);
                   flushNarration(textEl);
-                  if (textEl && event.thinking) {
-                    chatText = event.thinking;
-                    flushNarration(textEl);
+                  if (textEl && event.thinking) { chatText = event.thinking; flushNarration(textEl); }
+                  // Collapse du bloc Thought (comme ZCode) + durée réelle
+                  const thoughtCard = textEl ? textEl.closest('.rounded-xl') : null;
+                  if (thoughtCard) {
+                    const bodyEl = thoughtCard.querySelector('[data-body]');
+                    if (bodyEl) bodyEl.classList.add('hidden');
+                    const th = thoughtCard.querySelector('span');
+                    if (th) th.textContent = 'Thought · ' + durThought + 's';
                   }
                   // Conversation vivante — actions tangibles directement dans le flux
                   appendQuickActions();
@@ -3641,6 +3677,22 @@ ${sections}
                     appendConfirmationBar(lastModifiedSections);
                   }
                   agentStepClose('Rendu validé par le Quality Gate');
+                  // Cartes Write + Terminal — le fichier écrit et la vérification,
+                  // visibles dans la conversation comme des tool calls.
+                  const writeBody = traceCard('write', 'Write — index.html · ' + (currentAppHtml.length / 1024).toFixed(1) + ' Ko');
+                  if (writeBody) {
+                    writeBody.innerHTML = "index.html — " + currentAppHtml.split(String.fromCharCode(10)).length + " lignes enregistrées dans le projet. <span class='text-violet-300 cursor-pointer underline' data-open-code>Ouvrir l éditeur</span>";
+                    const openCode = writeBody.querySelector('[data-open-code]');
+                    if (openCode) openCode.addEventListener('click', () => { requestWorkspaceSubTab('code'); selectCodeFile('index.html'); });
+                  }
+                  runQualityGate().then((gate) => {
+                    if (!gate) return;
+                    const termBody = traceCard('terminal', 'Terminal — vibe render index.html');
+                    if (!termBody) return;
+                    const lines = ['$ render index.html (Chromium headless)', '✓ Quality Gate : ' + gate.score + '/100'];
+                    (gate.findings || []).slice(0, 6).forEach((f) => lines.push('• [' + f.severity + '] ' + f.title));
+                    termBody.textContent = lines.join(String.fromCharCode(10));
+                  });
                   const fileRow = agentStepAdd('fa-regular fa-file-code', 'index.html sauvegardé — voir le code');
                   if (fileRow) {
                     fileRow.classList.add('cursor-pointer', 'hover:text-violet-300');
@@ -5825,7 +5877,7 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
     async function runQualityGate() {
       const proj = userProjects.find(p => p.id === activeProjectId);
       const pid = proj && proj.serverProjectId;
-      if (!pid || !currentAppHtml || currentAppHtml.length < 100) return;
+      if (!pid || !currentAppHtml || currentAppHtml.length < 100) return null;
       try {
         await fetch(`/api/v1/projects/${pid}/files/content`, {
           method: 'PUT',
@@ -5833,8 +5885,13 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
           body: JSON.stringify({ path: 'index.html', content: currentAppHtml })
         });
         const res = await fetch(`/api/v1/projects/${pid}/visual/analyze`, { method: 'POST', headers: studioApiHeaders() });
-        if (res.ok) showQualityGateBanner(await res.json());
+        if (res.ok) {
+          const data = await res.json();
+          showQualityGateBanner(data);
+          return data;
+        }
       } catch (_) { /* gate indisponible : silencieux, ne casse jamais le flux */ }
+      return null;
     }
 
     function showQualityGateBanner(data) {
