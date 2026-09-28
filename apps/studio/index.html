@@ -3284,7 +3284,11 @@
          */
         function stitchBegin(info) {
           const frame = document.getElementById('wsLiveIframe');
-          if (!frame || !frame.contentDocument || !frame.contentDocument.body) { stitch.fallbackRender = true; return; }
+          if (!frame || !frame.contentDocument || !frame.contentDocument.body) {
+            stitch.fallbackRender = true;
+            (window.__stitchFallbacks = window.__stitchFallbacks || []).push({ reason: 'doc_absent', section: info && info.name });
+            return;
+          }
           const doc = frame.contentDocument;
           stitchInjectCss(doc);
           // Une section précédente encore en révélation ? On la termine
@@ -3332,7 +3336,11 @@
             target = doc.querySelector(name);
           }
           if (mode === 'delete') { stitch.targetEl = target; stitch.buildEl = null; return; }
-          if (!target && mode === 'modify') { stitch.fallbackRender = true; stitch.open = true; return; }
+          if (!target && mode === 'modify') {
+            stitch.fallbackRender = true; stitch.open = true;
+            (window.__stitchFallbacks = window.__stitchFallbacks || []).push({ reason: 'cible_modify_absente', section: name });
+            return;
+          }
 
           let anchor = target;
           if (mode === 'add' && !anchor && after) {
@@ -3350,7 +3358,11 @@
             try { stitch.buildEl.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {}
             return;
           }
-          if (!anchor) { stitch.fallbackRender = true; stitch.open = true; return; }
+          if (!anchor) {
+            stitch.fallbackRender = true; stitch.open = true;
+            (window.__stitchFallbacks = window.__stitchFallbacks || []).push({ reason: 'ancre_absente', section: name, mode });
+            return;
+          }
 
           stitch.targetEl = (mode === 'modify') ? target : null;
           if (stitch.targetEl) stitch.targetEl.classList.add('vibe-stitch-old');
@@ -4221,11 +4233,14 @@ ${sections}
                 timelineCancelCurrent();
                 // STITCH v2 — le preview revient à l'état d'avant génération
                 stitchRestoreSane();
+                // Overlays : voile + laser doivent partir, sinon preview « cassé »
+                sendCanvasState('reset');
               } else if (event.type === 'error') {
                 if (statusEl) statusEl.innerHTML = '<span style="color:#f87171;">Erreur: ' + (event.error || '') + '</span>';
                 timelineFailCurrent();
                 removeStopBtn();
                 stitchRestoreSane();
+                sendCanvasState('reset');
               }
             } catch (e) { (window.__vibeHandlerErrors = window.__vibeHandlerErrors || []).push(String((e && e.message) || e)); }
           }
@@ -6046,6 +6061,14 @@ npx serve .
       vibeCanvasEls['vibe-ready'].classList.add('on');
       setTimeout(function(){ vibeCanvasEls['vibe-sweep'].classList.remove('on'); }, 1000);
       setTimeout(function(){ vibeCanvasEls['vibe-ready'].classList.remove('on'); }, 3000);
+    }
+    else if (d.state === 'reset') {
+      // ERREUR / ANNULATION : TOUS les overlays doivent partir — un voile
+      // sombre ou un laser oublié rend le preview « cassé » définitivement.
+      vibeCanvasEls['vibe-dim'].classList.remove('on');
+      vibeCanvasEls['vibe-laser'].classList.remove('on');
+      vibeCanvasEls['vibe-sweep'].classList.remove('on');
+      vibeCanvasEls['vibe-ready'].classList.remove('on');
     }
   });
   document.head.appendChild(haloStyle);
