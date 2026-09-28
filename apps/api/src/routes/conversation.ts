@@ -1183,6 +1183,11 @@ export async function handleConversationRoutes(
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      // CDC §39 — séparation log technique / message utilisateur : une erreur
+      // d'auth fournisseur (401/403) doit être ACTIONNABLE, pas brute.
+      const friendly = /HTTP\s*40[13]/.test(message)
+        ? "Ta clé Mistral est refusée par l'API (HTTP 401) — elle est invalide ou révoquée. Génère une nouvelle clé sur console.mistral.ai, place-la dans .env (MISTRAL_API_KEY=...) puis redémarre le serveur."
+        : message;
       logger.warn("Erreur pendant le streaming conversationnel", {
         component: 'conversation-route-stream',
         tenantId: context.tenantId,
@@ -1190,7 +1195,7 @@ export async function handleConversationRoutes(
         error: message
       });
       if (recorder) executionStore.failExecution(executionId, message);
-      emit({ type: 'error', error: message });
+      emit({ type: 'error', error: friendly });
     } finally {
       activeCancelFlags.delete(executionId);
       res.end();
