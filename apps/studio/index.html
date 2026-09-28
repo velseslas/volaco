@@ -3107,7 +3107,7 @@
             </div>
             <div id="${msgId}-trace" class="space-y-2"></div>
             <div class="text-[10px] text-slate-500" id="${msgId}-status">en cours...</div>
-            <div id="agentSteps-${msgId}" class="mt-2 space-y-1 border border-[#1a2238] rounded-xl p-2 bg-[#0a0e1c] hidden"><div class="text-[9px] font-bold text-slate-500 uppercase tracking-wide mb-1">Étapes de l'agent</div></div>
+            <div id="agentSteps-${msgId}" class="mt-2 border border-[#1a2238] rounded-xl p-2 bg-[#0a0e1c] hidden"><div class="text-[9px] font-bold text-slate-500 uppercase tracking-wide mb-1">Étapes de l'agent</div><div id="agentStepsPhases-${msgId}" class="space-y-1"></div></div>
           </div>
         `);
         let textEl = null;
@@ -3350,17 +3350,108 @@
           if (el) el.innerHTML = formatNarration(chatText);
         }
 
-        // ==================== ÉTAPES DE L'AGENT VISIBLES (style vibecoding) ====
-        // Comme un vrai agent : chaque action réelle apparaît comme une étape
-        // (réflexion, plan, construction par section, vérification, sauvegarde),
-        // avec spinner -> check vert. L'utilisateur voit le travail, pas juste
-        // le résultat.
+        // ============ ÉTAPES DE L'AGENT — TIMELINE PAR PHASES (T3, §13-§15) ====
+        // Chaque phase (Analyse → Plan → Construction → Vérification → Terminé)
+        // est une ligne : statut réel (pending/running/done/failed/waiting),
+        // durée MESURÉE à la clôture, et ses événements dépliables en dessous.
+        // La phase active est dépliée ; les phases terminées se replient.
         const agentStepsBox = () => document.getElementById('agentSteps-' + msgId);
         let agentRunningRow = null;
         // T2 honnêteté (§31/§32 CDC) : la ligne « Vérification du rendu réel »
         // n'est close que par le RÉSULTAT du Quality Gate (score réel), jamais
         // par une affirmation prématurée — et reste distinguable d'un échec.
         let verifyStepRow = null;
+
+        const PHASE_ORDER = ['UNDERSTAND', 'PLAN', 'IMPLEMENT', 'VALIDATE', 'COMPLETE'];
+        const PHASE_META = {
+          UNDERSTAND: ['fa-solid fa-brain', 'Analyse'],
+          PLAN: ['fa-solid fa-list-check', 'Plan'],
+          IMPLEMENT: ['fa-solid fa-hammer', 'Construction'],
+          VALIDATE: ['fa-solid fa-magnifying-glass-chart', 'Vérification'],
+          COMPLETE: ['fa-solid fa-flag-checkered', 'Terminé']
+        };
+        const phaseEls = {};
+        let currentPhase = null;
+
+        function phaseSetChevron(refs, expanded) {
+          if (refs.chev) refs.chev.className = 'phase-chev fa-solid ' + (expanded ? 'fa-chevron-up' : 'fa-chevron-down') + ' text-[8px] text-slate-600';
+        }
+
+        function ensurePhaseRow(phase) {
+          if (phaseEls[phase]) return phaseEls[phase];
+          const box = agentStepsBox();
+          const wrap = box ? document.getElementById('agentStepsPhases-' + msgId) : null;
+          if (!wrap) return null;
+          box.classList.remove('hidden');
+          const el = document.createElement('div');
+          el.className = 'rounded-lg border border-[#161c2e] bg-[#0d1222] overflow-hidden';
+          el.innerHTML =
+            '<div class="flex items-center justify-between px-2 py-1 cursor-pointer select-none phase-head">' +
+              '<div class="flex items-center space-x-2 text-[10px] font-bold text-slate-400">' +
+                '<i class="phase-ic ' + PHASE_META[phase][0] + ' text-[10px] w-3.5 text-slate-600"></i>' +
+                '<span class="phase-lb">' + PHASE_META[phase][1] + '</span>' +
+                '<span class="phase-dur text-[9px] font-normal text-slate-500"></span>' +
+              '</div>' +
+              '<i class="phase-chev fa-solid fa-chevron-down text-[8px] text-slate-600"></i>' +
+            '</div>' +
+            '<div class="px-2 pb-1 pt-0.5 space-y-1 phase-detail hidden"></div>';
+          wrap.appendChild(el);
+          const refs = {
+            root: el,
+            detail: el.querySelector('.phase-detail'),
+            icon: el.querySelector('.phase-ic'),
+            dur: el.querySelector('.phase-dur'),
+            chev: el.querySelector('.phase-chev'),
+            status: 'pending',
+            startedAt: null
+          };
+          el.querySelector('.phase-head').addEventListener('click', () => {
+            refs.detail.classList.toggle('hidden');
+            phaseSetChevron(refs, !refs.detail.classList.contains('hidden'));
+          });
+          phaseEls[phase] = refs;
+          // Ordre stable de la timeline quel que soit l'ordre d'arrivée
+          PHASE_ORDER.forEach((p) => { const r = phaseEls[p]; if (r) wrap.appendChild(r.root); });
+          return refs;
+        }
+
+        function timelineEnterPhase(phase, opts) {
+          const waiting = opts && opts.waiting;
+          if (currentPhase !== phase && currentPhase && phaseEls[currentPhase] && phaseEls[currentPhase].status === 'running') {
+            const prev = phaseEls[currentPhase];
+            prev.status = 'done';
+            prev.icon.className = 'phase-ic ' + PHASE_META[currentPhase][0] + ' text-[10px] w-3.5 text-emerald-400';
+            // Durée uniquement quand elle a réellement été mesurée (§26)
+            if (prev.startedAt) {
+              const d = Math.max(1, Math.round((Date.now() - prev.startedAt) / 1000));
+              prev.dur.textContent = '· ' + d + 's';
+            }
+            prev.detail.classList.add('hidden');
+            phaseSetChevron(prev, false);
+          }
+          const refs = ensurePhaseRow(phase);
+          if (!refs) return null;
+          if (waiting) {
+            refs.status = 'waiting';
+            refs.icon.className = 'phase-ic fa-solid fa-circle-half-stroke text-[10px] w-3.5 text-amber-400';
+          } else if (refs.status !== 'done') {
+            refs.status = 'running';
+            refs.startedAt = refs.startedAt || Date.now();
+            refs.icon.className = 'phase-ic fa-solid fa-circle-notch fa-spin text-[10px] w-3.5 text-violet-400';
+          }
+          refs.detail.classList.remove('hidden');
+          phaseSetChevron(refs, true);
+          currentPhase = phase;
+          return refs;
+        }
+
+        function timelineFailCurrent() {
+          if (currentPhase && phaseEls[currentPhase] && phaseEls[currentPhase].status === 'running') {
+            const refs = phaseEls[currentPhase];
+            refs.status = 'failed';
+            refs.icon.className = 'phase-ic fa-solid fa-circle-xmark text-[10px] w-3.5 text-rose-400';
+          }
+        }
 
         function agentStepClose(okLabel) {
           if (!agentRunningRow) return;
@@ -3371,14 +3462,15 @@
         }
 
         function agentStepAdd(icon, label) {
-          const box = agentStepsBox();
-          if (!box) return;
-          box.classList.remove('hidden');
+          // La row rejoint la phase courante (fallback Analyse) — le détail
+          // de la phase active reste visible, les autres se replient.
+          const refs = phaseEls[currentPhase || ''] || ensurePhaseRow('UNDERSTAND');
+          if (!refs) return;
           agentStepClose();
           const row = document.createElement('div');
           row.className = 'flex items-center space-x-2 text-[11px] text-slate-400';
           row.innerHTML = '<i class="' + icon + ' text-violet-400 text-[10px] w-3.5"></i><span>' + canonicalEscape(label) + '</span>';
-          box.appendChild(row);
+          refs.detail.appendChild(row);
           agentRunningRow = row;
           return row;
         }
@@ -3492,6 +3584,7 @@ ${sections}
                 thoughtStart = Date.now();
                 textEl = traceCard('thought', 'Thought · en cours');
                 textEl.innerHTML = '<span class="animate-pulse text-violet-300 tracking-widest">● ● ●</span>';
+                timelineEnterPhase('UNDERSTAND');
                 agentStepAdd('fa-solid fa-brain', 'Réflexion sur ta demande…');
                 // Conversation vivante — indicateur de frappe vivant pendant la
                 // réflexion (remplacé par la narration dès qu'elle arrive)
@@ -3686,6 +3779,7 @@ ${sections}
                 }
               } else if (event.type === 'plan' && event.plan) {
                 // LOT 4 — carte de plan réelle (Plan Engine, §17 CDC)
+                timelineEnterPhase('PLAN');
                 agentStepClose("Plan validé — " + (event.plan.steps || []).length + " étapes");
               } else if (event.type === 'compass' && event.state) {
                 // LOT 3 — les 9 états du Conversation Compass (§11 CDC)
@@ -3704,9 +3798,22 @@ ${sections}
                 if (info) setCompassState(event.state, info[0], info[1], info[2]);
                 const canvasStateMap = { UNDERSTANDING: 'thinking', PLANNING: 'thinking', EXECUTING: 'writing', REPAIRING: 'writing', VALIDATING: 'validating', COMPLETED: 'ready' };
                 if (canvasStateMap[event.state]) sendCanvasState(canvasStateMap[event.state]);
-                if (event.state === 'VALIDATING') verifyStepRow = agentStepAdd('fa-solid fa-magnifying-glass-chart', 'Vérification du rendu réel…');
+                // T3 — la timeline suit les transitions réelles du Compass
+                if (event.state === 'WAITING_CONFIRMATION') {
+                  timelineEnterPhase('PLAN', { waiting: true });
+                } else if (event.state === 'UNDERSTANDING') {
+                  timelineEnterPhase('UNDERSTAND');
+                } else if (event.state === 'EXECUTING') {
+                  timelineEnterPhase('IMPLEMENT');
+                } else if (event.state === 'VALIDATING') {
+                  timelineEnterPhase('VALIDATE');
+                  verifyStepRow = agentStepAdd('fa-solid fa-magnifying-glass-chart', 'Vérification du rendu réel…');
+                } else if (event.state === 'COMPLETED') {
+                  timelineEnterPhase('COMPLETE');
+                }
               } else if (event.type === 'error') {
                 if (statusEl) statusEl.innerHTML = '<span style="color:#f87171;">Erreur: ' + (event.error || '') + '</span>';
+                timelineFailCurrent();
               }
             } catch (e) { /* ignore JSON parse errors */ }
           }
@@ -9915,6 +10022,65 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
       return map[ex.status] || ['fa-solid fa-circle-question text-slate-400', ex.status];
     }
 
+    // Timeline de replay : mêmes phases que le direct, reconstruites depuis
+    // les événements RÉELS persistés (ts serveur) — durées calculées sur les
+    // timestamps serveur, statut de la dernière phase = statut de l'exécution.
+    const REPLAY_PHASES = ['UNDERSTAND', 'PLAN', 'IMPLEMENT', 'VALIDATE', 'COMPLETE'];
+    const REPLAY_PHASE_META = {
+      UNDERSTAND: ['fa-solid fa-brain', 'Analyse'],
+      PLAN: ['fa-solid fa-list-check', 'Plan'],
+      IMPLEMENT: ['fa-solid fa-hammer', 'Construction'],
+      VALIDATE: ['fa-solid fa-magnifying-glass-chart', 'Vérification'],
+      COMPLETE: ['fa-solid fa-flag-checkered', 'Terminé']
+    };
+
+    function buildReplayTimelineHtml(events, recordStatus) {
+      const byPhase = {};
+      const order = [];
+      for (const ev of events || []) {
+        const p = ev && ev.phase;
+        if (!REPLAY_PHASE_META[p]) continue;
+        if (!byPhase[p]) { byPhase[p] = []; order.push(p); }
+        byPhase[p].push(ev);
+      }
+      if (!order.length) return '';
+      const lastPhase = order[order.length - 1];
+      const statusIcon = {
+        done: 'fa-solid fa-circle-check text-emerald-400',
+        failed: 'fa-solid fa-circle-xmark text-rose-400',
+        cancelled: 'fa-solid fa-circle-stop text-slate-400',
+        waiting: 'fa-solid fa-circle-half-stroke text-amber-400'
+      };
+      const finalStatusMap = { COMPLETED: 'done', FAILED: 'failed', CANCELLED: 'cancelled', WAITING_USER: 'waiting', RUNNING: 'waiting' };
+      let html = '<div class="space-y-1 replay-timeline">';
+      for (const phase of order) {
+        const evs = byPhase[phase];
+        const isLast = phase === lastPhase;
+        const st = isLast ? (finalStatusMap[recordStatus] || 'done') : 'done';
+        const first = evs[0];
+        const lastE = evs[evs.length - 1];
+        let durTxt = '';
+        if (lastE.ts && first.ts && lastE.ts > first.ts) {
+          const d = Math.max(1, Math.round((lastE.ts - first.ts) / 1000));
+          durTxt = '· ' + (d >= 60 ? Math.floor(d / 60) + 'm ' + (d % 60) + 's' : d + 's');
+        }
+        html += '<div class="rounded-lg border border-[#161c2e] bg-[#0d1222] overflow-hidden">' +
+          '<div class="flex items-center justify-between px-2 py-1 cursor-pointer select-none replay-phase-head">' +
+            '<div class="flex items-center space-x-2 text-[10px] font-bold text-slate-400">' +
+              '<i class="' + (statusIcon[st] || statusIcon.done) + ' text-[10px] w-3.5"></i>' +
+              '<span>' + REPLAY_PHASE_META[phase][1] + '</span>' +
+              '<span class="text-[9px] font-normal text-slate-500">' + durTxt + '</span>' +
+            '</div>' +
+            '<i class="replay-chev fa-solid fa-chevron-down text-[8px] text-slate-600"></i>' +
+          '</div>' +
+          '<div class="px-2 pb-1 pt-0.5 space-y-1 hidden replay-phase-detail">' +
+            evs.map((ev) => '<div class="flex items-start space-x-2 text-[10px] text-slate-400"><span class="text-slate-600">•</span><span>' + canonicalEscape(ev.title || ev.type) + '</span></div>').join('') +
+          '</div></div>';
+      }
+      html += '</div>';
+      return html;
+    }
+
     async function renderLastExecutionReplay() {
       try {
         const proj = userProjects.find(p => p.id === activeProjectId);
@@ -9944,12 +10110,41 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
         if (s.error) rows.push('<div class="text-rose-300">' + canonicalEscape(String(s.error).slice(0, 140)) + '</div>');
         if (ex.prompt) rows.push('<div class="text-slate-500 italic">&laquo; ' + canonicalEscape(ex.prompt.slice(0, 110)) + ' &raquo;</div>');
 
-        appendChatMessage('assistant',
+        // T3 — déroulé complet dépliable : les événements réels groupés par phase
+        const events = ex.events || [];
+        const timelineHtml = buildReplayTimelineHtml(events, ex.status);
+        const toggleHtml = timelineHtml
+          ? '<div class="text-[10px] text-violet-300 cursor-pointer select-none w-fit replay-toggle"><i class="fa-solid fa-list-ul"></i> Déroulé (' + events.length + ' événements)</div>'
+          : '';
+
+        const card = appendChatMessage('assistant',
           '<div class="rounded-xl border border-[#1a2238] bg-[#0a0e1c] px-3 py-2 space-y-1">' +
           '<div class="flex items-center justify-between text-[10px] font-bold text-slate-300">' +
           '<span class="flex items-center space-x-2"><i class="fa-solid fa-clock-rotate-left text-violet-400"></i><span>Dernière génération</span></span>' +
           '<span class="text-slate-500 font-normal">' + executionRelativeTime(ex.updatedAt || ex.startedAt) + '</span></div>' +
-          rows.join('') + '</div>');
+          rows.join('') + toggleHtml +
+          '<div class="hidden replay-timeline-wrap">' + timelineHtml + '</div>' +
+          '</div>');
+        if (card) {
+          const toggle = card.querySelector('.replay-toggle');
+          const wrap = card.querySelector('.replay-timeline-wrap');
+          if (toggle && wrap) {
+            toggle.addEventListener('click', () => {
+              wrap.classList.toggle('hidden');
+              toggle.innerHTML = wrap.classList.contains('hidden')
+                ? '<i class="fa-solid fa-list-ul"></i> Déroulé (' + events.length + ' événements)'
+                : '<i class="fa-solid fa-chevron-up"></i> Replier le déroulé';
+            });
+          }
+          card.querySelectorAll('.replay-phase-head').forEach((head) => {
+            head.addEventListener('click', () => {
+              const detail = head.parentElement ? head.parentElement.querySelector('.replay-phase-detail') : null;
+              const chev = head.querySelector('.replay-chev');
+              if (detail) detail.classList.toggle('hidden');
+              if (chev && detail) chev.className = 'replay-chev fa-solid ' + (detail.classList.contains('hidden') ? 'fa-chevron-down' : 'fa-chevron-up') + ' text-[8px] text-slate-600';
+            });
+          });
+        }
       } catch (_) { /* replay best-effort : ne casse jamais le chargement */ }
     }
 
