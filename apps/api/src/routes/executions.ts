@@ -14,7 +14,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { assertPermission } from '../../../../packages/core/src/identity/permissions.js';
 import { NotFoundError } from '../../../../packages/core/src/errors.js';
 import { projectStore } from '../../../../packages/core/src/identity/project.js';
-import { executionStore } from '../../../../packages/core/src/ai-native/execution/store.js';
+import { executionStore, activeCancelFlags } from '../../../../packages/core/src/ai-native/execution/store.js';
 import type { ExecutionRecord } from '../../../../packages/core/src/ai-native/execution/types.js';
 import type { RequestContext } from '../middleware/auth.js';
 
@@ -51,7 +51,7 @@ export async function handleExecutionRoutes(
   if (!pathname.startsWith(prefix) || !pathname.includes('/executions')) {
     return false;
   }
-  if (req.method !== 'GET') {
+  if (req.method !== 'GET' && req.method !== 'POST') {
     return false;
   }
 
@@ -69,6 +69,32 @@ export async function handleExecutionRoutes(
     throw new NotFoundError(`Projet ${projectId}`, requestId);
   }
   assertPermission(context.role, 'PROJECT_READ', requestId);
+
+  // POST .../executions/:id/cancel → annulation réelle (T5, CDC §20)
+  if (req.method === 'POST') {
+    if (parts[3] !== 'cancel' || !executionId) {
+      return false;
+    }
+    const record = executionStore.getExecution(executionId);
+    if (!record || record.tenantId !== context.tenantId) {
+      throw new NotFoundError(`Exécution ${executionId}`, requestId);
+    }
+    const flag = activeCancelFlags.get(executionId);
+    if (flag) {
+      flag.cancelled = true;
+      sendJson(res, 200, { cancelled: true, executionId, requestId });
+      return true;
+    }
+    // Exécution en attente de validation de plan : l'annulation est la
+    // décision « rejeter » — marquée CANCELLED, pas FAILED.
+    if (record.status === 'WAITING_USER') {
+      executionStore.cancelExecution(executionId, 'user_cancel');
+      sendJson(res, 200, { cancelled: true, executionId, requestId });
+      return true;
+    }
+    sendJson(res, 200, { cancelled: false, reason: 'not_active', status: record.status, executionId, requestId });
+    return true;
+  }
 
   // GET .../executions → liste (méta)
   if (!executionId) {

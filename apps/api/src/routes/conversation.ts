@@ -19,7 +19,7 @@ import { aiProviderRegistry } from '../../../../packages/core/src/ai/providers/r
 import { logger } from '../../../../packages/core/src/logger.js';
 import type { EngineeringPlan, IntentResult } from '../../../../packages/core/src/ai-native/conversation-intelligence/types.js';
 import { PlanGenerator } from '../../../../packages/core/src/ai-native/conversation-intelligence/engine/plan-generator.js';
-import { executionStore } from '../../../../packages/core/src/ai-native/execution/store.js';
+import { executionStore, activeCancelFlags } from '../../../../packages/core/src/ai-native/execution/store.js';
 import { ExecutionRecorder, type RecordableEvent } from '../../../../packages/core/src/ai-native/execution/recorder.js';
 import type { RequestContext } from '../middleware/auth.js';
 
@@ -476,6 +476,9 @@ export async function handleConversationRoutes(
     // et les événements correspondants sont persistés dans executionStore.
     const executionId = requestId;
     let recorder: ExecutionRecorder | null = null;
+    // T5 (CDC §20) — annulation utilisateur réelle : la route cancel retourne
+    // ce drapeau ; la boucle LLM le vérifie à chaque chunk et s'arrête net.
+    const cancelFlag = { cancelled: false };
     if (executionTimelineEnabled) {
       executionStore.startExecution({
         executionId,
@@ -485,6 +488,7 @@ export async function handleConversationRoutes(
         prompt: body.message || ''
       });
       recorder = new ExecutionRecorder(executionStore, executionId, sendSSE);
+      activeCancelFlags.set(executionId, cancelFlag);
     }
     /** Frame SSE enrichie ; enregistre l'événement quand il est fourni. */
     const emit = (data: Record<string, unknown>, event?: RecordableEvent): void => {
@@ -545,6 +549,9 @@ export async function handleConversationRoutes(
       });
       if (recorder) executionStore.setStatus(executionId, 'WAITING_USER');
       emit({ type: 'done', awaitingConfirmation: true });
+      // Sortie anticipée : le finally du stream LLM ne passe pas ici —
+      // le drapeau d'annulation doit partir avec l'exécution inactive.
+      activeCancelFlags.delete(executionId);
       res.end();
       return true;
     }
@@ -564,6 +571,7 @@ export async function handleConversationRoutes(
       const providerError = "Aucun fournisseur IA streaming disponible (Mistral requis).";
       emit({ type: 'error', error: providerError });
       if (recorder) executionStore.failExecution(executionId, providerError);
+      activeCancelFlags.delete(executionId);
       res.end();
       return true;
     }
@@ -718,7 +726,7 @@ export async function handleConversationRoutes(
       );
 
       for await (const chunk of stream) {
-        if (clientGone) break;
+        if (clientGone || cancelFlag.cancelled) break;
         fullText += chunk;
 
         // Détecte l'ouverture d'une nouvelle section <SECTION name="...">
@@ -824,6 +832,21 @@ export async function handleConversationRoutes(
           // Hors section : texte conversationnel normal
           sendSSE({ type: 'token', token: chunk });
         }
+      }
+
+      // T5 — annulation explicite de l'utilisateur : on n'assemble ni ne
+      // sauvegarde rien, on enregistre CANCELLED (⏹ pas ❌, CDC §20) et on
+      // prévient le client qui a demandé l'arrêt.
+      if (cancelFlag.cancelled) {
+        logger.warn('Génération annulée par l\'utilisateur — HTML non sauvegardé', {
+          component: 'conversation-route-stream',
+          tenantId: context.tenantId,
+          projectId,
+          charsReceived: fullText.length
+        });
+        sendSSE({ type: 'cancelled' });
+        if (recorder) executionStore.cancelExecution(executionId, 'user_cancel');
+        return true;
       }
 
       // Client parti en cours de génération : on n'assemble ni ne sauvegarde un
@@ -1057,6 +1080,7 @@ export async function handleConversationRoutes(
       if (recorder) executionStore.failExecution(executionId, message);
       emit({ type: 'error', error: message });
     } finally {
+      activeCancelFlags.delete(executionId);
       res.end();
     }
 

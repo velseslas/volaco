@@ -3146,6 +3146,27 @@
         let preSectionCount = 0;
         // T4 — diffs réels reçus du serveur (frames 'diff')
         const diffRows = [];
+        // T5 — annulation : id d'exécution (frame start) + bouton Stop
+        let currentExecutionId = '';
+        let stopBtn = null;
+        function removeStopBtn() { if (stopBtn) { stopBtn.remove(); stopBtn = null; } }
+        (function mountStopButton() {
+          const headerRow = document.getElementById(msgId) ? document.getElementById(msgId).querySelector('.flex.items-center.justify-between') : null;
+          if (!headerRow) return;
+          stopBtn = document.createElement('button');
+          stopBtn.className = 'text-[10px] px-2 py-0.5 rounded-lg bg-[#141a2e] hover:bg-rose-950/40 text-slate-400 hover:text-rose-300 border border-[#1e243c] transition';
+          stopBtn.innerHTML = '<i class="fa-solid fa-stop text-[8px]"></i> Stop';
+          stopBtn.onclick = async () => {
+            if (!currentExecutionId) return;
+            try {
+              stopBtn.disabled = true;
+              stopBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin text-[8px]"></i> Annulation…';
+              if (statusEl) statusEl.innerHTML = '<span style="color:#fbbf24;">⏹ Annulation demandée…</span>';
+              await fetch('/api/v1/projects/' + serverProjectId + '/executions/' + currentExecutionId + '/cancel', { method: 'POST', headers: studioApiHeaders() });
+            } catch (_) { /* le serveur tranchera : rien à faire côté client */ }
+          };
+          headerRow.appendChild(stopBtn);
+        })();
         // LOT 5 — capture la version AVANT pour la comparaison A/B
         if (typeof currentAppHtml === 'string' && currentAppHtml.length > 100) {
           window._preGenerationHtml = currentAppHtml;
@@ -3455,6 +3476,17 @@
           }
         }
 
+        // T5 — phase courante marquée ⏹ (annulée), jamais ✗ (échec)
+        function timelineCancelCurrent() {
+          const refs = currentPhase ? phaseEls[currentPhase] : null;
+          if (refs && (refs.status === 'running' || refs.status === 'waiting')) {
+            refs.status = 'cancelled';
+            refs.icon.className = 'phase-ic fa-solid fa-circle-stop text-[10px] w-3.5 text-slate-400';
+            refs.detail.classList.add('hidden');
+            phaseSetChevron(refs, false);
+          }
+        }
+
         function agentStepClose(okLabel) {
           if (!agentRunningRow) return;
           const icon = agentRunningRow.querySelector('i');
@@ -3584,6 +3616,7 @@ ${sections}
               if (event.type === 'start') {
                 if (statusEl) statusEl.textContent = 'Connexion au LLM...';
                 thoughtStart = Date.now();
+                currentExecutionId = event.executionId || currentExecutionId;
                 textEl = traceCard('thought', 'Thought · en cours');
                 textEl.innerHTML = '<span class="animate-pulse text-violet-300 tracking-widest">● ● ●</span>';
                 timelineEnterPhase('UNDERSTAND');
@@ -3661,6 +3694,7 @@ ${sections}
                   pumpNarration(textEl);
                 }
               } else if (event.type === 'done') { // sécurité : plus de croissance en cours
+                removeStopBtn();
                 if (event.awaitingConfirmation) {
                   // LOT 4 — mode Plan First : le serveur attend la décision humaine
                   if (statusEl) statusEl.innerHTML = '<span style="color:#fbbf24;">⏸ En attente de confirmation du plan ci-dessus</span>';
@@ -3836,9 +3870,16 @@ ${sections}
                   }
                   refs.detail.appendChild(row);
                 }
+              } else if (event.type === 'cancelled') {
+                // T5 — le serveur confirme l'annulation : rien n'a été sauvegardé
+                removeStopBtn();
+                if (statusEl) statusEl.innerHTML = '<span style="color:#fbbf24;">⏹ Génération annulée — rien n\u2019a été enregistré.</span>';
+                if (titleEl) titleEl.innerHTML = '<i class="fa-solid fa-circle-stop text-sm" style="color:#94a3b8;"></i><span style="color:#94a3b8;">Annulée</span>';
+                timelineCancelCurrent();
               } else if (event.type === 'error') {
                 if (statusEl) statusEl.innerHTML = '<span style="color:#f87171;">Erreur: ' + (event.error || '') + '</span>';
                 timelineFailCurrent();
+                removeStopBtn();
               }
             } catch (e) { /* ignore JSON parse errors */ }
           }

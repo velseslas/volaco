@@ -242,4 +242,13 @@ export const phaseLabels: Record<ExecutionPhase, string> = {
   COMPLETE: 'Terminé'
 };
 
+/**
+ * T5 (CDC §20) — drapeaux d'annulation des exécutions ACTIVES. La route du
+ * stream enregistre son drapeau au démarrage et le retire à la fin ; la route
+ * POST /executions/:id/cancel le retourne. Le stream vérifie le drapeau à
+ * chaque chunk LLM — l'interruption est réelle (plus de tokens facturés),
+ * rien n'est sauvegardé, et l'exécution reste marquée CANCELLED (⏹, pas ❌).
+ */
+export const activeCancelFlags = new Map<string, { cancelled: boolean }>();
+
 export const executionStore = new ExecutionEventStore({ persist: true });

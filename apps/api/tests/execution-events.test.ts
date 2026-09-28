@@ -295,3 +295,73 @@ describe('T4 : diff réel de lignes (countLineDelta)', () => {
     assert.deepEqual(countLineDelta('a\n   \n', 'a'), { added: 0, removed: 0 });
   });
 });
+
+describe('T5 : annulation utilisateur (CDC §20)', () => {
+  let server: Server;
+  let baseUrl: string;
+  let projectId: string;
+
+  before(async () => {
+    delete process.env.MISTRAL_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    const instance = createApiServer({ port: 0 });
+    server = instance.server;
+    await new Promise<void>((resolve) => {
+      server.listen(0, () => {
+        const address = server.address() as AddressInfo;
+        baseUrl = `http://127.0.0.1:${address.port}`;
+        resolve();
+      });
+    });
+    const res = await fetch(`${baseUrl}/api/v1/projects`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ name: 'T5 Cancel' })
+    });
+    projectId = ((await res.json()) as { project: { id: string } }).project.id;
+  });
+
+  after(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  it('9. cancel sur exécution inconnue : 404', async () => {
+    const res = await fetch(`${baseUrl}/api/v1/projects/${projectId}/executions/inconnu/cancel`, {
+      method: 'POST', headers: H
+    });
+    assert.equal(res.status, 404);
+  });
+
+  it('10. cancel d\u2019une exécution WAITING_USER : CANCELLED (⏹), motif conservé, idempotent', async () => {
+    // Plan First : le flux s'arrête en attente de validation
+    const events = await streamEvents(baseUrl, projectId, {
+      message: 'Crée une page à annuler',
+      isModification: false,
+      planFirst: true
+    });
+    const executionId = events.find((e) => e.type === 'start')!.executionId!;
+    assert.equal(executionStore.getExecution(executionId)!.status, 'WAITING_USER');
+
+    // Annulation = décision « rejeter » du plan
+    const cancelRes = await fetch(`${baseUrl}/api/v1/projects/${projectId}/executions/${executionId}/cancel`, {
+      method: 'POST', headers: H
+    });
+    assert.equal(cancelRes.status, 200);
+    const cancel = (await cancelRes.json()) as { cancelled: boolean };
+    assert.equal(cancel.cancelled, true);
+
+    const record = executionStore.getExecution(executionId)!;
+    assert.equal(record.status, 'CANCELLED');
+    assert.equal(record.cancelReason, 'user_cancel');
+    assert.equal(record.events.filter((e) => e.type === 'EXECUTION_CANCELLED').length, 1);
+    assert.ok(!record.events.some((e) => e.type === 'EXECUTION_FAILED'), 'annulé ≠ échoué (CDC §20)');
+
+    // Deuxième cancel : réponse honnête « déjà terminée »
+    const again = await fetch(`${baseUrl}/api/v1/projects/${projectId}/executions/${executionId}/cancel`, {
+      method: 'POST', headers: H
+    });
+    const againBody = (await again.json()) as { cancelled: boolean; reason?: string; status?: string };
+    assert.equal(againBody.cancelled, false);
+    assert.equal(againBody.status, 'CANCELLED');
+  });
+});
