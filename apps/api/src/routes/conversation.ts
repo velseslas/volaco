@@ -82,6 +82,35 @@ function sendJson(res: ServerResponse, statusCode: number, payload: unknown): vo
   res.end(JSON.stringify(payload));
 }
 
+/**
+ * T4 (CDC §11) — delta réel de lignes entre deux textes : diff multiset par
+ * ligne (ajouts = lignes de `after` absentes de `before`, et inversement).
+ * Déterministe, sans dépendance — jamais de faux chiffres affichés.
+ */
+export function countLineDelta(beforeText: string, afterText: string): { added: number; removed: number } {
+  const count = (text: string): Map<string, number> => {
+    const map = new Map<string, number>();
+    for (const line of text.split('\n')) {
+      const key = line.trim();
+      if (!key) continue;
+      map.set(key, (map.get(key) || 0) + 1);
+    }
+    return map;
+  };
+  const before = count(beforeText || '');
+  const after = count(afterText || '');
+  let added = 0;
+  let removed = 0;
+  const keys = new Set<string>([...before.keys(), ...after.keys()]);
+  for (const key of keys) {
+    const b = before.get(key) || 0;
+    const a = after.get(key) || 0;
+    if (a > b) added += a - b;
+    else if (b > a) removed += b - a;
+  }
+  return { added, removed };
+}
+
 async function parseJsonBody<T>(req: IncomingMessage, requestId: string): Promise<T> {
   const bodyText = await readBody(req);
   if (!bodyText || bodyText.trim().length === 0) {
@@ -823,6 +852,8 @@ export async function handleConversationRoutes(
       // === ASSEMBLE LE HTML FINAL ET SAUVEGARDE DANS FILESTORE ===
       // Pour que la prochaine demande de modification trouve un HTML existant.
       let assembledHtml = '';
+      // T4 — diffs réels par section, émis au client et persistés
+      const sectionDiffs: Array<{ name: string; mode: string; applied: boolean; added: number; removed: number }> = [];
 
       if (isModificationMode && currentHtml) {
         // Mode modification : on part du HTML existant et on applique les modifications
@@ -830,20 +861,31 @@ export async function handleConversationRoutes(
         // ou par les IDs des balises <section>, <header>, <footer>, etc.
         // Pour simplifier, on parse les balises principales.
 
-        // Pour chaque section modifiée par l'IA, on remplace dans le HTML existant
+        // Pour chaque section modifiée par l'IA, on remplace dans le HTML existant.
+        // T4 — diff réel capturé par section (bloc remplacé vs nouveau bloc) ;
+        // `applied` dit la VÉRITÉ du merge : un regex qui ne matche pas n'est
+        // pas une modification appliquée.
         let modifiedHtml = currentHtml;
         for (const sec of serverSections) {
+          const htmlBeforeSection = modifiedHtml;
+          let oldBlock = '';
           if (sec.mode === 'delete') {
             // Supprime la section existante avec cet attribut data-section
             const deleteRegex = new RegExp(`<div[^>]*data-section="${sec.name}"[^>]*>[\\s\\S]*?(?=<div[^>]*data-section|<\\/body>|$)`, 'g');
-            modifiedHtml = modifiedHtml.replace(deleteRegex, '');
+            const deleteMatch = deleteRegex.exec(modifiedHtml);
+            if (deleteMatch) oldBlock = deleteMatch[0];
+            modifiedHtml = modifiedHtml.replace(new RegExp(deleteRegex.source, 'g'), '');
             // Ou supprime par ID de section
             const idRegex = new RegExp(`<section[^>]*id="${sec.name}"[^>]*>[\\s\\S]*?<\\/section>`, 'g');
-            modifiedHtml = modifiedHtml.replace(idRegex, '');
+            const idMatch = idRegex.exec(modifiedHtml);
+            if (idMatch && !oldBlock) oldBlock = idMatch[0];
+            modifiedHtml = modifiedHtml.replace(new RegExp(idRegex.source, 'g'), '');
             // Ou supprime par balise (header, footer, etc.)
             if (sec.name === 'header' || sec.name === 'footer' || sec.name === 'nav') {
               const tagRegex = new RegExp(`<${sec.name}[\\s\\S]*?<\\/${sec.name}>`, 'g');
-              modifiedHtml = modifiedHtml.replace(tagRegex, '');
+              const tagMatch = tagRegex.exec(modifiedHtml);
+              if (tagMatch && !oldBlock) oldBlock = tagMatch[0];
+              modifiedHtml = modifiedHtml.replace(new RegExp(tagRegex.source, 'g'), '');
             }
           } else if (sec.mode === 'modify' && sec.html) {
             // Remplace la section existante par la nouvelle version
@@ -852,17 +894,23 @@ export async function handleConversationRoutes(
             const cleanHtml = sec.html.replace(/^<div[^>]*data-section="[^"]*"[^>]*>([\s\S]*)<\/div>$/, '$1').trim();
             // Tente par data-section d'abord (notre format stitchReveal)
             const dataAttrRegex = new RegExp(`<div[^>]*data-section="${sec.name}"[^>]*>[\\s\\S]*?(?=<div[^>]*data-section|<\\/body>|$)`, 'g');
+            const dataMatch = dataAttrRegex.exec(modifiedHtml);
+            if (dataMatch) oldBlock = dataMatch[0];
             const before = modifiedHtml;
-            modifiedHtml = modifiedHtml.replace(dataAttrRegex, `<div class="vibe-stitched" data-section="${sec.name}">${cleanHtml}</div>`);
+            modifiedHtml = modifiedHtml.replace(new RegExp(dataAttrRegex.source, 'g'), `<div class="vibe-stitched" data-section="${sec.name}">${cleanHtml}</div>`);
             // Si pas de remplacement, tente par ID de section
             if (modifiedHtml === before) {
               const idRegex = new RegExp(`<section[^>]*id="${sec.name}"[^>]*>[\\s\\S]*?<\\/section>`, 'g');
+              const idMatch = idRegex.exec(modifiedHtml);
+              if (idMatch && !oldBlock) oldBlock = idMatch[0];
               const before2 = modifiedHtml;
-              modifiedHtml = modifiedHtml.replace(idRegex, sec.html);
+              modifiedHtml = modifiedHtml.replace(new RegExp(idRegex.source, 'g'), sec.html);
               // Si toujours pas, tente par balise (header, footer, nav)
               if (modifiedHtml === before2 && (sec.name === 'header' || sec.name === 'footer' || sec.name === 'nav')) {
                 const tagRegex = new RegExp(`<${sec.name}[\\s\\S]*?<\\/${sec.name}>`, 'g');
-                modifiedHtml = modifiedHtml.replace(tagRegex, sec.html);
+                const tagMatch = tagRegex.exec(modifiedHtml);
+                if (tagMatch && !oldBlock) oldBlock = tagMatch[0];
+                modifiedHtml = modifiedHtml.replace(new RegExp(tagRegex.source, 'g'), sec.html);
               }
             }
           } else if (sec.mode === 'add' && sec.html) {
@@ -883,13 +931,19 @@ export async function handleConversationRoutes(
             const cleanCreateHtml = sec.html.replace(/^<div[^>]*data-section="[^"]*"[^>]*>([\s\S]*)<\/div>$/, '$1').trim();
             modifiedHtml += `<div class="vibe-stitched" data-section="${sec.name}">${cleanCreateHtml}</div>`;
           }
+          // T4 — delta réel de la section (bloc remplacé vs contenu généré)
+          const applied = modifiedHtml !== htmlBeforeSection;
+          const delta = countLineDelta(oldBlock, sec.mode === 'delete' ? '' : (sec.html || ''));
+          sectionDiffs.push({ name: sec.name, mode: sec.mode, applied, added: delta.added, removed: delta.removed });
         }
         assembledHtml = modifiedHtml;
       } else {
-        // Mode création : assemble simplement les sections dans l'ordre
+        // Mode création : assemble simplement les sections dans l'ordre.
+        // T4 — en création, tout est ajout : delta réel par section.
         for (const sec of serverSections) {
           if (sec.html) {
             assembledHtml += `<div class="vibe-stitched" data-section="${sec.name}">${sec.html}</div>\n`;
+            sectionDiffs.push({ name: sec.name, mode: sec.mode || 'create', applied: true, added: countLineDelta('', sec.html).added, removed: 0 });
           }
         }
       }
@@ -951,6 +1005,28 @@ export async function handleConversationRoutes(
       // EXECUTION TRANSPARENCY : bilan réel (ce qui a été fait, pas ce qu'on
       // espérait) enregistré avant le done — la synthèse du CDC §24-§25 en T7
       // s'appuiera sur ces compteurs.
+      // T4 — les diffs réels partent sur le fil ET dans le store.
+      const totalAdded = sectionDiffs.reduce((acc, d) => acc + d.added, 0);
+      const totalRemoved = sectionDiffs.reduce((acc, d) => acc + d.removed, 0);
+      for (const diff of sectionDiffs) {
+        emit({
+          type: 'diff',
+          section: diff.name,
+          mode: diff.mode,
+          applied: diff.applied,
+          added: diff.added,
+          removed: diff.removed
+        });
+        recordOnly({
+          type: 'DIFF_GENERATED',
+          phase: 'IMPLEMENT',
+          status: diff.applied ? 'COMPLETED' : 'FAILED',
+          title: diff.applied
+            ? `Diff calculé — section ${diff.name}`
+            : `Section ${diff.name} non appliquée : cible introuvable dans le HTML`,
+          detail: { section: diff.name, mode: diff.mode, applied: diff.applied, addedLines: diff.added, removedLines: diff.removed }
+        });
+      }
       if (recorder) {
         executionStore.completeExecution(executionId, {
           sectionsCreated: serverSections.filter((s) => s.mode === 'create' || s.mode === 'add').length,
@@ -958,6 +1034,8 @@ export async function handleConversationRoutes(
           sectionsDeleted: serverSections.filter((s) => s.mode === 'delete').length,
           filesTouched: ['index.html'],
           htmlChars: assembledHtml.length,
+          addedLines: totalAdded,
+          removedLines: totalRemoved,
           ...(savedRevisionId ? { revisionId: savedRevisionId } : {})
         });
       }

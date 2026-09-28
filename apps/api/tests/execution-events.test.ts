@@ -279,3 +279,19 @@ describe('T1 : ExecutionEventStore — invariants unitaires', () => {
     assert.equal(record!.events[0]!.type, 'PLAN_CREATED');
   });
 });
+
+describe('T4 : diff réel de lignes (countLineDelta)', () => {
+  it('8. delta multiset honnête : ajouts, retraits, mixte, vide', async () => {
+    const { countLineDelta } = await import('../src/routes/conversation.js');
+    // Tout ajouté
+    assert.deepEqual(countLineDelta('', '<div>a\n<div>b'), { added: 2, removed: 0 });
+    // Tout retiré
+    assert.deepEqual(countLineDelta('x\ny\ny', ''), { added: 0, removed: 3 });
+    // Mixte avec doublons : une ligne gardée ne compte pas
+    assert.deepEqual(countLineDelta('gardé\nancien', 'gardé\nnouveau'), { added: 1, removed: 1 });
+    // Identique
+    assert.deepEqual(countLineDelta('a\nb', 'a\nb'), { added: 0, removed: 0 });
+    // Lignes vides / espaces ignorés
+    assert.deepEqual(countLineDelta('a\n   \n', 'a'), { added: 0, removed: 0 });
+  });
+});

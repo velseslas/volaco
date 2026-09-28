@@ -3144,6 +3144,8 @@
         // Ouvre la connexion SSE
         let serverDeletes = 0;
         let preSectionCount = 0;
+        // T4 — diffs réels reçus du serveur (frames 'diff')
+        const diffRows = [];
         // LOT 5 — capture la version AVANT pour la comparaison A/B
         if (typeof currentAppHtml === 'string' && currentAppHtml.length > 100) {
           window._preGenerationHtml = currentAppHtml;
@@ -3742,9 +3744,16 @@ ${sections}
                   // visibles dans la conversation comme des tool calls.
                   const writeBody = traceCard('write', 'Write — index.html · ' + (currentAppHtml.length / 1024).toFixed(1) + ' Ko');
                   if (writeBody) {
-                    writeBody.innerHTML = "index.html — " + currentAppHtml.split(String.fromCharCode(10)).length + " lignes enregistrées dans le projet. <span class='text-violet-300 cursor-pointer underline' data-open-code>Ouvrir l'éditeur</span>";
+                    const diffTotal = diffRows.reduce((a, d) => a + (d.added || 0), 0);
+                    const remTotal = diffRows.reduce((a, d) => a + (d.removed || 0), 0);
+                    writeBody.innerHTML = "index.html — " + currentAppHtml.split(String.fromCharCode(10)).length + " lignes enregistrées dans le projet."
+                      + (diffTotal || remTotal ? " <span class='text-emerald-400 font-bold'>+" + diffTotal + "</span> <span class='text-rose-400 font-bold'>−" + remTotal + "</span>" : "")
+                      + " <span class='text-violet-300 cursor-pointer underline' data-open-code>Ouvrir l'éditeur</span>"
+                      + (diffTotal || remTotal ? " · <span class='text-violet-300 cursor-pointer underline' data-open-diff>Voir le diff</span>" : "");
                     const openCode = writeBody.querySelector('[data-open-code]');
                     if (openCode) openCode.addEventListener('click', () => { requestWorkspaceSubTab('code'); selectCodeFile('index.html'); });
+                    const openDiff = writeBody.querySelector('[data-open-diff]');
+                    if (openDiff) openDiff.addEventListener('click', () => openTextDiffModal(window._preGenerationHtml || '', currentAppHtml || ''));
                   }
                   // La ligne « Vérification » reste ouverte : c'est le résultat
                   // RÉEL du gate ci-dessous qui la clôturera (✓ score, ou ⚠ si le
@@ -3810,6 +3819,22 @@ ${sections}
                   verifyStepRow = agentStepAdd('fa-solid fa-magnifying-glass-chart', 'Vérification du rendu réel…');
                 } else if (event.state === 'COMPLETED') {
                   timelineEnterPhase('COMPLETE');
+                }
+              } else if (event.type === 'diff') {
+                // T4 (CDC §11) — diff RÉEL calculé par le serveur au merge :
+                // +lignes ajoutées / −lignes retirées, et la vérité du merge.
+                diffRows.push(event);
+                const refs = phaseEls['IMPLEMENT'];
+                if (refs) {
+                  const row = document.createElement('div');
+                  if (event.applied === false) {
+                    row.className = 'flex items-center space-x-2 text-[10px] text-amber-300';
+                    row.innerHTML = '<i class="fa-solid fa-triangle-exclamation text-[9px]"></i><span>Section ' + canonicalEscape(event.section || '') + ' générée mais non appliquée (cible introuvable)</span>';
+                  } else {
+                    row.className = 'flex items-center space-x-2 text-[10px] text-slate-400';
+                    row.innerHTML = '<span class="text-emerald-400 font-bold">+' + (event.added || 0) + '</span><span class="text-rose-400 font-bold">−' + (event.removed || 0) + '</span><span>section ' + canonicalEscape(event.section || '') + '</span>';
+                  }
+                  refs.detail.appendChild(row);
                 }
               } else if (event.type === 'error') {
                 if (statusEl) statusEl.innerHTML = '<span style="color:#f87171;">Erreur: ' + (event.error || '') + '</span>';
@@ -6082,6 +6107,55 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
     function closeCompareModal() {
       const m = document.getElementById('compareModal');
       if (m) m.classList.add('hidden');
+    }
+
+    // ==================== T4 — DIFF TEXTE RÉEL (CDC §11) ====================
+    // Affiche les lignes réellement ajoutées/retirées entre l'état AVANT la
+    // génération et l'état APRÈS — mêmes données que le serveur (+n/−n),
+    // jamais un faux diff. Plafonné à l'affichage pour rester lisible.
+    function closeTextDiffModal() {
+      const m = document.getElementById('textDiffModal');
+      if (m) m.classList.add('hidden');
+    }
+
+    function openTextDiffModal(before, after) {
+      if (!before && !after) { showCaptureToast("Aucun contenu à comparer."); return; }
+      if (before === after) { showCaptureToast("Aucune différence — le fichier est identique."); return; }
+      const trim = (t) => (t || '').split('\n').map(l => l.trim());
+      const multiset = (lines) => {
+        const m = new Map();
+        for (const l of lines) m.set(l, (m.get(l) || 0) + 1);
+        return m;
+      };
+      const beforeLines = trim(before);
+      const afterLines = trim(after);
+      const beforeCount = multiset(beforeLines);
+      const afterCount = multiset(afterLines);
+      const removed = beforeLines.filter((l) => {
+        if (l && (beforeCount.get(l) || 0) > (afterCount.get(l) || 0)) { beforeCount.set(l, beforeCount.get(l) - 1); return true; }
+        return false;
+      });
+      const added = afterLines.filter((l) => {
+        if (l && (afterCount.get(l) || 0) > (beforeCount.get(l) || 0)) { afterCount.set(l, afterCount.get(l) - 1); return true; }
+        return false;
+      });
+      const MAX = 400;
+      const rows = [];
+      removed.slice(0, MAX).forEach((l) => rows.push('<div class="px-3 text-rose-300 bg-rose-950/25">− ' + canonicalEscape(l.slice(0, 180)) + '</div>'));
+      added.slice(0, MAX).forEach((l) => rows.push('<div class="px-3 text-emerald-300 bg-emerald-950/20">+ ' + canonicalEscape(l.slice(0, 180)) + '</div>'));
+      const rest = removed.length + added.length - rows.length;
+      if (rest > 0) rows.push('<div class="px-3 text-slate-500">… ' + rest + ' autres lignes</div>');
+      if (!rows.length) rows.push('<div class="px-3 text-slate-500">Aucune différence de lignes (mise en forme uniquement).</div>');
+
+      const title = document.getElementById('textDiffTitle');
+      if (title) title.textContent = 'Diff réel — index.html (+' + added.length + ' −' + removed.length + ')';
+      const body = document.getElementById('textDiffBody');
+      if (body) {
+        body.innerHTML = '<div class="font-mono text-[10px] leading-relaxed py-2">' + rows.join('') + '</div>';
+        body.scrollTop = 0;
+      }
+      const modal = document.getElementById('textDiffModal');
+      if (modal) modal.classList.remove('hidden');
     }
 
     function updateLineNumbers() {
@@ -12643,6 +12717,21 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
         </div>
       </div>
       <div class="text-[10px] text-slate-500">Rendus isolés (sandbox). Le score Quality Gate de la version courante est visible dans le bandeau du preview.</div>
+    </div>
+  </div>
+
+  <!-- T4 : Diff texte réel (lignes ajoutées / retirées, données serveur) -->
+  <div id="textDiffModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="bg-[#0c1020] border border-violet-500/40 rounded-2xl max-w-3xl w-full space-y-3 shadow-2xl text-slate-100 max-h-[85vh] flex flex-col p-4">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center space-x-2.5 text-violet-300 font-bold text-sm">
+          <i class="fa-solid fa-code-compare text-base"></i>
+          <span id="textDiffTitle">Diff réel</span>
+        </div>
+        <button onclick="closeTextDiffModal()" class="text-slate-400 hover:text-white"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div id="textDiffBody" class="rounded-xl overflow-y-auto border border-[#1e2642] bg-[#070913] flex-1 min-h-[200px]"></div>
+      <div class="text-[10px] text-slate-500">Lignes réellement ajoutées (+) et retirées (−), calculées sur le contenu avant/après génération.</div>
     </div>
   </div>
 

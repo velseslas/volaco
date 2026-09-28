@@ -70,6 +70,9 @@ export interface ExecutionSummary {
   sectionsDeleted?: number;
   filesTouched?: string[];
   htmlChars?: number;
+  /** T4 — delta réel de lignes (diff multiset, jamais inventé). */
+  addedLines?: number;
+  removedLines?: number;
   revisionId?: string;
   prompt?: string;
   error?: string;
