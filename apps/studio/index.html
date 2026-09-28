@@ -3144,6 +3144,10 @@
         // Ouvre la connexion SSE
         let serverDeletes = 0;
         let preSectionCount = 0;
+        // STITCH v2 — le mode de visualisation suit la VÉRITÉ du serveur
+        // (frame start.isModification), pas l'intention du client : c'est le
+        // serveur qui décide création vs modification (html > 200 chars).
+        let serverIsModification = false;
         // T4 — diffs réels reçus du serveur (frames 'diff')
         const diffRows = [];
         // T5 — annulation : id d'exécution (frame start) + bouton Stop
@@ -3172,6 +3176,28 @@
           window._preGenerationHtml = currentAppHtml;
           preSectionCount = (currentAppHtml.match(/data-section="/g) || []).length;
         }
+        // STITCH v2 + cohérence des données — avant une MODIFICATION, le
+        // preview et le document de travail sont ALIGNÉS sur le fichier
+        // serveur réel : c'est LUI que l'IA va modifier. Sans cette
+        // hydratation, une divergence local/serveur (autre session, autre
+        // machine) faisait construire l'effet Stitch sur une page obsolète,
+        // et le résultat final « sautait » d'un contenu à l'autre au done.
+        try {
+          if (isModification && serverProjectId) {
+            const syncRes = await fetch('/api/v1/projects/' + serverProjectId + '/files/content?path=index.html', { headers: studioApiHeaders() });
+            if (syncRes.ok) {
+              const syncData = await syncRes.json();
+              const serverHtml = syncData && syncData.file && syncData.file.content;
+              if (typeof serverHtml === 'string' && serverHtml.length > 100 && serverHtml !== currentAppHtml) {
+                currentAppHtml = serverHtml;
+                window._preGenerationHtml = currentAppHtml;
+                preSectionCount = (currentAppHtml.match(/data-section="/g) || []).length;
+                renderWorkspaceIframe(currentAppHtml);
+                updateEditorContent(currentAppHtml);
+              }
+            }
+          }
+        } catch (_) { /* sync best-effort : on garde l'état local */ }
 
         const response = await fetch(`/api/v1/projects/${serverProjectId}/conversation/sessions/${sessionId}/stream`, {
           method: 'POST',
@@ -3199,32 +3225,135 @@
         let tokenCount = 0;
         const startTime = Date.now();
         const S_END_LOCAL = '<' + '/script>';
-        // ==================== MOTEUR DE CONSTRUCTION EN DIRECT (effet Stitch) ====
-        // L'iframe est charg UNE SEULE fois (shell + Tailwind). Le HTML stream
-  // par le LLM est analys incr mentalement : chaque l ment top-level complet
-  // est mis dans une file, puis ins  ry thmement dans le document VIVANT
-  // (pas de rechargement, pas de flash, pas de scroll reset). Les l ments
-  // apparaissent un   un sous les yeux de l'utilisateur.
-        let liveCanvasOpen = false;
-        let canvasBuffer = '';
-        let canvasQueue = [];
-        let canvasPump = null;
+        // ==================== STITCH LIVE CANVAS v2 ====================
+        // L'effet Google Stitch, reconstruit en bonne et due forme :
+        // - l'iframe est chargée UNE SEULE fois au début de la génération, puis
+        //   PLUS JAMAIS de srcdoc pendant le flux — tout se passe dans le
+        //   document VIVANT (contentDocument), sans flash ni scroll reset ;
+        // - les tokens du LLM sont analysés incrémentalement : chaque élément
+        //   top-level complet est placé en file, puis injecté au rythme de
+        //   ~140 ms avec une animation de révélation (fondu + montée + flou) ;
+        // - CRÉATION : les éléments construisent la page de haut en bas ;
+        // - MODIFICATION : la section remplacée s'estompe (vibe-stitch-old),
+        //   un conteneur de construction s'ouvre à son emplacement (ou après
+        //   l'ancre pour un ajout) avec un squelette scintillant, et les
+        //   nouveaux éléments arrivent un à un — puis remplacement in-place
+        //   SANS rechargement au section_end ;
+        // - un seul re-rendu srcdoc à la toute fin (done) pour garantir
+        //   scripts et état final exact, masqué par l'effet "ready".
+        const stitch = {
+          open: false,
+          mode: null,            // 'create' | 'modify'
+          buildEl: null,         // conteneur de construction courant (dans l'iframe)
+          targetEl: null,        // section existante en cours de remplacement
+          fallbackRender: false, // cible introuvable → re-rendu classique au section_end
+          skeleton: null,
+          buffer: '',
+          queue: [],
+          pump: null,
+          shellLoaded: false,    // le shell de construction a-t-il été posé ?
+          htmlBeforeGen: ''      // état sain à restaurer en cas d'annulation/erreur
+        };
 
-        function openLiveCanvas() {
-          liveCanvasOpen = true;
-          canvasBuffer = '';
-          canvasQueue = [];
-          renderWorkspaceIframe(buildHtmlDoc('<div id="vibe-canvas-root"></div>'));
+        function stitchInjectCss(doc) {
+          if (!doc || !doc.head || doc.getElementById('vibe-stitch-style')) return;
+          const style = doc.createElement('style');
+          style.id = 'vibe-stitch-style';
+          style.textContent =
+            '@keyframes stitchReveal { 0% { opacity:0; transform: translateY(10px) scale(.985); filter: blur(4px); } 60% { opacity:.85; filter: blur(1.5px); } 100% { opacity:1; transform:none; filter:blur(0); } }' +
+            '.vibe-el-in { animation: stitchReveal .5s cubic-bezier(.22,.9,.34,1) both; }' +
+            '.vibe-stitch-old { opacity:.25 !important; filter: grayscale(.85); transition: opacity .45s ease, filter .45s ease; }' +
+            '.vibe-stitch-build { display:flex; flex-direction:column; }' +
+            '@keyframes vibeShimmer { 0% { background-position: -800px 0; } 100% { background-position: 800px 0; } }' +
+            '.vibe-skeleton { border-radius:12px; min-height:110px; margin:14px 0; border:1px dashed rgba(139,92,246,.4); background: linear-gradient(90deg, rgba(99,102,241,.06) 25%, rgba(139,92,246,.2) 50%, rgba(99,102,241,.06) 75%); background-size: 800px 100%; animation: vibeShimmer 1.4s infinite linear; }';
+          doc.head.appendChild(style);
         }
 
-        function closeLiveCanvas() {
-          liveCanvasOpen = false;
-          canvasQueue = [];
-          canvasBuffer = '';
-          if (canvasPump) { clearInterval(canvasPump); canvasPump = null; }
+        function stitchMakeSkeleton(doc) {
+          const sk = doc.createElement('div');
+          sk.className = 'vibe-skeleton';
+          return sk;
         }
 
-        // Parseur incr mental : extrait le premier l ment top-level complet.
+        /**
+         * Ouvre une zone de construction dans le document vivant.
+         * create : la page se construit dans le body (shell chargé une seule fois).
+         * modify : la section cible s'estompe et un conteneur de build la précède
+         *          (mode=modify) ou suit l'ancre (mode=add).
+         */
+        function stitchBegin(info) {
+          const frame = document.getElementById('wsLiveIframe');
+          if (!frame || !frame.contentDocument || !frame.contentDocument.body) { stitch.fallbackRender = true; return; }
+          const doc = frame.contentDocument;
+          stitchInjectCss(doc);
+          // Ré-entrée : une zone de build non commitée est nettoyée d'abord
+          // (sinon le squelette orphelin reste visible à l'écran)
+          if (stitch.buildEl && stitch.buildEl.parentNode) stitch.buildEl.remove();
+          if (stitch.skeleton && stitch.skeleton.parentNode) stitch.skeleton.remove();
+          if (stitch.targetEl) stitch.targetEl.classList.remove('vibe-stitch-old');
+          stitch.open = true;
+          stitch.mode = (info && info.docMode) || 'create';
+          stitch.buffer = '';
+          stitch.queue = [];
+          stitch.fallbackRender = false;
+
+          if (stitch.mode === 'create') {
+            if (!stitch.shellLoaded) {
+              renderWorkspaceIframe(buildHtmlDoc(''));
+              stitch.shellLoaded = true;
+            }
+            const root = doc.getElementById('vibe-canvas-root') || doc.body;
+            stitch.buildEl = doc.createElement('div');
+            stitch.buildEl.className = 'vibe-stitch-build';
+            stitch.skeleton = stitchMakeSkeleton(doc);
+            stitch.buildEl.appendChild(stitch.skeleton);
+            root.appendChild(stitch.buildEl);
+            try { stitch.buildEl.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (e) {}
+            return;
+          }
+
+          // Mode modification : localise la cible dans le document vivant
+          const name = String((info && info.name) || '');
+          const mode = String((info && info.mode) || 'modify');
+          const after = String((info && info.after) || '');
+          let target = doc.querySelector('[data-section="' + name.replace(/"/g, '') + '"]');
+          if (!target) target = doc.getElementById(name);
+          if (!target && (name === 'header' || name === 'footer' || name === 'nav')) {
+            target = doc.querySelector(name);
+          }
+          if (mode === 'delete') { stitch.targetEl = target; stitch.buildEl = null; return; }
+          if (!target && mode === 'modify') { stitch.fallbackRender = true; stitch.open = true; return; }
+
+          let anchor = target;
+          if (mode === 'add' && !anchor && after) {
+            anchor = doc.querySelector('[data-section="' + after.replace(/"/g, '') + '"]') || doc.getElementById(after);
+          }
+          if (!anchor && mode !== 'modify') {
+            // Aucune ancre (template sans data-section, page quasi vide) :
+            // la construction se fait en FIN de document — l'effet reste
+            // vivant, le commit replace ensuite le bloc à sa place exacte.
+            stitch.buildEl = doc.createElement('div');
+            stitch.buildEl.className = 'vibe-stitch-build';
+            stitch.skeleton = stitchMakeSkeleton(doc);
+            stitch.buildEl.appendChild(stitch.skeleton);
+            doc.body.appendChild(stitch.buildEl);
+            try { stitch.buildEl.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {}
+            return;
+          }
+          if (!anchor) { stitch.fallbackRender = true; stitch.open = true; return; }
+
+          stitch.targetEl = (mode === 'modify') ? target : null;
+          if (stitch.targetEl) stitch.targetEl.classList.add('vibe-stitch-old');
+          stitch.buildEl = doc.createElement('div');
+          stitch.buildEl.className = 'vibe-stitch-build';
+          stitch.skeleton = stitchMakeSkeleton(doc);
+          stitch.buildEl.appendChild(stitch.skeleton);
+          if (mode === 'modify') anchor.parentNode.insertBefore(stitch.buildEl, anchor);
+          else anchor.parentNode.insertBefore(stitch.buildEl, anchor.nextSibling);
+          try { stitch.buildEl.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {}
+        }
+
+        // Parseur incrémental : extrait le premier élément top-level complet.
         // Retourne { element, rest } | { text, rest } | null (incomplet).
         function scanNextElement(buffer) {
           if (!buffer) return null;
@@ -3246,13 +3375,13 @@
           const name = nameMatch[1].toLowerCase();
           const VOID = ['img','br','hr','input','meta','link','source','area','base','col','embed','track','wbr'];
           const openEnd = buffer.indexOf('>', lt);
-          if (openEnd === -1) return null; // balise ouvrante encore incompl te
+          if (openEnd === -1) return null;
           if (VOID.includes(name) || buffer[openEnd - 1] === '/') {
             return { element: buffer.slice(0, openEnd + 1), rest: buffer.slice(openEnd + 1) };
           }
           if (name === 'script' || name === 'style') {
             const ci = lower.indexOf('</' + name, lt);
-            if (ci === -1) return null; // contenu brut diff r  la fin de balise
+            if (ci === -1) return null;
             const ce = lower.indexOf('>', ci);
             if (ce === -1) return null;
             return { element: buffer.slice(0, ce + 1), rest: buffer.slice(ce + 1) };
@@ -3282,55 +3411,192 @@
           return null;
         }
 
-        function drainCanvasBuffer() {
+        function stitchDrain() {
           for (;;) {
-            const r = scanNextElement(canvasBuffer);
+            // Les marqueurs <SECTION ...> / </SECTION> du LLM sont TRANSPARENTS
+            // pour le parseur : c'est le contenu INTERNE de la section qui doit
+            // arriver élément par élément. Sans cela, la section entière est
+            // vue comme UN seul élément qui ne se complète qu'au marqueur
+            // fermant — c'est-à-dire pile quand section_end commit et jette
+            // le conteneur : l'effet ne peut jamais démarrer.
+            const marker = /^<SECTION\s[^>]*>/i.exec(stitch.buffer) || /^<\/SECTION\s*>/i.exec(stitch.buffer);
+            if (marker) { stitch.buffer = stitch.buffer.slice(marker[0].length); continue; }
+            const r = scanNextElement(stitch.buffer);
             if (!r) break;
-            canvasBuffer = r.rest;
-            if (r.element) canvasQueue.push(r.element);
-            // le texte hors balise (narration du LLM) n'est pas inject  : il
-            // vit dans le chat, pas dans le canvas.
+            stitch.buffer = r.rest;
+            if (r.text) continue; // narration du LLM → elle vit dans le chat
+            if (r.element) stitchQueueElement(r.element);
           }
         }
 
-        function startCanvasPump() {
-          if (canvasPump) return;
-          canvasPump = setInterval(() => {
-            if (canvasQueue.length === 0) {
-              clearInterval(canvasPump);
-              canvasPump = null;
-              return;
-            }
-            insertCanvasElement(canvasQueue.shift());
-          }, 170);
+        /** Découpe les enfants top-level d'un élément conteneur. */
+        function stitchSplitChildren(el) {
+          const m = /^<(section|div|header|footer|main|aside|nav|article)\b/i.exec(el);
+          if (!m) return null;
+          const openEnd = el.indexOf('>');
+          const closeIdx = el.toLowerCase().lastIndexOf('</' + m[1].toLowerCase());
+          if (openEnd === -1 || closeIdx <= openEnd) return null;
+          let rest = el.slice(openEnd + 1, closeIdx);
+          const children = [];
+          for (;;) {
+            const r = scanNextElement(rest);
+            if (!r) break;
+            rest = r.rest;
+            if (r.element) children.push(r.element);
+          }
+          return children;
         }
 
-        function insertCanvasElement(el) {
+        /**
+         * Met un élément en file d'injection. Si c'est un bloc conteneur unique
+         * et volumineux (le LLM enveloppe presque toujours la section dans
+         * <section><div class="container">…</div></section>), on DESCEND dans
+         * les conteneurs (max 3 niveaux) jusqu'à trouver plusieurs enfants :
+         * ce sont eux qui arrivent un par un — l'effet Stitch survit aux
+         * wrappers et au conteneur principal.
+         */
+        function stitchQueueElement(el) {
+          let node = el;
+          for (let depth = 0; depth < 3; depth++) {
+            if (node.length <= 600) break;
+            const children = stitchSplitChildren(node);
+            if (!children || children.length === 0) break;
+            if (children.length === 1) { node = children[0]; continue; }
+            for (const child of children) stitch.queue.push(child);
+            return;
+          }
+          stitch.queue.push(node);
+        }
+
+        function stitchStopPump() {
+          if (stitch.pump) { clearInterval(stitch.pump); stitch.pump = null; }
+        }
+
+        function stitchStartPump() {
+          if (stitch.pump) return;
+          stitch.pump = setInterval(() => {
+            if (stitch.queue.length === 0) { stitchStopPump(); return; }
+            // Rattrapage adaptatif : on ne finit jamais en retard sur le stream
+            const burst = stitch.queue.length > 14 ? stitch.queue.length : stitch.queue.length > 6 ? 2 : 1;
+            for (let i = 0; i < burst; i++) {
+              const el = stitch.queue.shift();
+              if (el) stitchInsert(el);
+            }
+          }, 260);
+        }
+
+        function stitchInsert(el) {
           const frame = document.getElementById('wsLiveIframe');
-          if (!frame || !frame.contentDocument) return;
+          if (!frame || !frame.contentDocument || !stitch.buildEl) return;
           const doc = frame.contentDocument;
-          let root = doc.getElementById('vibe-canvas-root');
-          if (!root) { root = doc.createElement('div'); root.id = 'vibe-canvas-root'; if (doc.body) doc.body.appendChild(root); else return; }
+          if (stitch.skeleton && stitch.skeleton.parentNode) stitch.skeleton.remove();
+          stitch.skeleton = null;
           const holder = doc.createElement('div');
           holder.innerHTML = el;
           while (holder.firstChild) {
             const node = holder.firstChild;
             if (node.nodeType === 1) node.classList.add('vibe-el-in');
-            root.appendChild(node);
+            stitch.buildEl.appendChild(node);
           }
+          try { stitch.buildEl.lastElementChild.scrollIntoView({ behavior: 'smooth', block: 'end' }); } catch (e) {}
         }
 
-        function feedCanvas(chunk) {
-          if (!liveCanvasOpen) return;
-          canvasBuffer += chunk;
-          drainCanvasBuffer();
-          startCanvasPump();
+        function stitchFeed(chunk) {
+          if (!stitch.open || stitch.fallbackRender) return;
+          stitch.buffer += chunk;
+          stitchDrain();
+          stitchStartPump();
+        }
+
+        /**
+         * Remplacement IN-PLACE au section_end — aucun rechargement.
+         * Le contenu streamé est remplacé par le HTML final (identique à
+         * l'œil près), les classes temporaires sont retirées, et la section
+         * suivante pourra rouvrir une nouvelle zone de build.
+         */
+        function stitchCommit(info) {
+          const frame = document.getElementById('wsLiveIframe');
+          stitchStopPump();
+          // Rattrapage : ce qui est encore en file est injecté immédiatement —
+          // rien de ce qui a été streamé ne disparait au moment du commit.
+          while (stitch.queue.length) {
+            const pending = stitch.queue.shift();
+            stitchInsert(pending);
+          }
+          stitch.buffer = '';
+          const doc = frame && frame.contentDocument;
+          const name = String((info && info.name) || '');
+          const mode = String((info && info.mode) || 'modify');
+          if (doc && stitch.buildEl && stitch.buildEl.parentNode) {
+            const cleanHtml = String((info && info.html) || '').replace(/^<div[^>]*data-section="[^"]*"[^>]*>([\s\S]*)<\/div>$/, '$1').trim();
+            const wrapped = '<div class="vibe-stitched" data-section="' + name.replace(/"/g, '') + '">' + cleanHtml + '</div>';
+            if (mode !== 'delete' && cleanHtml.length > 30) {
+              stitch.buildEl.insertAdjacentHTML('beforebegin', wrapped);
+            }
+            stitch.buildEl.remove();
+          }
+          if (doc && stitch.targetEl && stitch.targetEl.parentNode && mode !== 'delete') {
+            stitch.targetEl.remove();
+          }
+          if (doc && mode === 'delete' && stitch.targetEl && stitch.targetEl.parentNode) {
+            stitch.targetEl.remove();
+          }
+          if (doc && stitch.skeleton && stitch.skeleton.parentNode) stitch.skeleton.remove();
+          stitch.buildEl = null;
+          stitch.targetEl = null;
+          stitch.skeleton = null;
+        }
+
+        /** Rejet (diff-guard) : on retire la zone de construction et on
+         * réaffiche la section d'origine telle quelle. */
+        function stitchDiscardBuild() {
+          stitchStopPump();
+          stitch.queue = [];
+          stitch.buffer = '';
+          const frame = document.getElementById('wsLiveIframe');
+          const doc = frame && frame.contentDocument;
+          if (doc && stitch.buildEl && stitch.buildEl.parentNode) stitch.buildEl.remove();
+          if (doc && stitch.targetEl) stitch.targetEl.classList.remove('vibe-stitch-old');
+          if (doc && stitch.skeleton && stitch.skeleton.parentNode) stitch.skeleton.remove();
+          stitch.buildEl = null;
+          stitch.targetEl = null;
+          stitch.skeleton = null;
+        }
+
+        /** Nettoyage complet (annulation, erreur, déconnexion) : le document
+         * vivant revient à un état propre, sans zone de build ni cible estompée. */
+        function stitchAbort(saneHtml) {
+          stitchStopPump();
+          stitch.queue = [];
+          stitch.buffer = '';
+          stitch.buildEl = null;
+          stitch.targetEl = null;
+          stitch.skeleton = null;
+          stitch.open = false;
+          stitch.shellLoaded = false;
+          if (typeof saneHtml === 'string' && saneHtml.length > 100) {
+            renderWorkspaceIframeNow(saneHtml);
+          }
         }
 
         function sendCanvasState(state) {
           const f = document.getElementById('wsLiveIframe');
           if (f && f.contentWindow) f.contentWindow.postMessage({ source: 'vibecode-studio', command: 'canvas-state', state }, '*');
         }
+
+        /** Restaure le document vivant à l'état d'avant génération (annulation
+         * ou erreur en plein construction) — honnête : rien n'est sauvegardé. */
+        function stitchRestoreSane() {
+          if (!stitch.open && !stitch.pump) return;
+          const sane = stitch.htmlBeforeGen;
+          stitchAbort(sane && sane.length > 100 ? sane : undefined);
+        }
+
+        // STITCH v2 — remise à zéro du canvas vivant pour cette génération,
+        // et conservation de l'état sain (restauré si annulation/erreur).
+        // (Placement APRÈS la déclaration `stitch` — accès anticipé = TDZ.)
+        stitchAbort();
+        stitch.htmlBeforeGen = (typeof currentAppHtml === 'string' && currentAppHtml.length > 100) ? currentAppHtml : '';
 
 
 
@@ -3619,6 +3885,7 @@ ${sections}
                 thoughtStart = Date.now();
                 currentExecutionId = event.executionId || currentExecutionId;
                 window._lastExecutionId = currentExecutionId;
+                serverIsModification = event.isModification === true;
                 textEl = traceCard('thought', 'Thought · en cours');
                 textEl.innerHTML = '<span class="animate-pulse text-violet-300 tracking-widest">● ● ●</span>';
                 timelineEnterPhase('UNDERSTAND');
@@ -3631,7 +3898,7 @@ ${sections}
                 pumpNarration(textEl);
               } else if (event.type === 'token' && event.token) {
                 tokenCount++;
-                feedCanvas(event.token);
+                stitchFeed(event.token);
               } else if (event.type === 'section_start') {
                 tokenCount++;
                 if (statusEl) statusEl.innerHTML = `Construction de <strong>${event.name}</strong>...`;
@@ -3641,19 +3908,15 @@ ${sections}
                 focusPreviewSection(event.name);
                 agentStepAdd('fa-solid fa-pen-ruler', 'Construction de ' + event.name + '…');
                 vibeBuildingStep();
-                if (modWorkingDoc) {
-                  // Mode modification : le document existant reste affiché,
-                  // le halo marque la section qui va être remplacée.
-                } else {
-                  // Création : marqueur discret SANS animation en boucle
-                  // (le shimmer en boucle fatiguait l'œil — retour utilisateur)
-                  openLiveCanvas();
-                }
+                // STITCH v2 — le document vivant reste affiché : une zone de
+                // construction s'ouvre à l'emplacement réel (squelette compris),
+                // en création comme en modification. Jamais de rechargement ici.
+                stitchBegin({ docMode: (modWorkingDoc || serverIsModification) ? 'modify' : 'create', name: event.name, mode: event.mode, after: event.after });
               } else if (event.type === 'section_end') {
                 if (event.mode === 'delete') serverDeletes++;
-                closeLiveCanvas(); // resync autoritaire via le render ci-dessous
-                // La section complète arrive du serveur : la croissance s'arrête
-                // Nettoie le wrapper si présent
+                // STITCH v2 — la section complète arrive du serveur : on fige
+                // la construction en remplaçant le contenu streamé IN-PLACE
+                // (aucun rechargement d'iframe ; le re-rendu final a lieu au done).
                 let cleanHtml = (event.html || '').replace(/^<div[^>]*data-section="[^"]*"[^>]*>([\s\S]*)<\/div>$/, '$1').trim();
                 if (modWorkingDoc) {
                   // MODE MODIFICATION : applique la modification sur le
@@ -3669,12 +3932,14 @@ ${sections}
                   if (rejectedByGuard) {
                     showCaptureToast("Modification refusee : la section " + event.name + " perdait son contenu.");
                     if (typeof addTerminalLogEntry === "function") addTerminalLogEntry({ source: "AUDIT", level: "warn", category: "DIFF-GUARD", message: "Section " + event.name + " rejetee : " + cleanHtml.length + " vs " + oldSecLen + " caracteres." });
+                    stitchDiscardBuild();
                   } else {
                     modWorkingDoc = applySectionToDoc(modWorkingDoc, event.name, event.mode, event.after, cleanHtml);
                     currentAppHtml = modWorkingDoc;
-                    renderDebounced(currentAppHtml);
                     updateEditorContent(currentAppHtml);
                     if (!lastModifiedSections.includes(event.name)) lastModifiedSections.push(event.name);
+                    if (stitch.fallbackRender) renderDebounced(currentAppHtml);
+                    else stitchCommit({ name: event.name, mode: event.mode, html: cleanHtml });
                 vibeTickStep();
                     setTimeout(() => focusPreviewSection(event.name, true), 400);
                 agentStepClose('✓ Section ' + event.name + ' posée');
@@ -3684,11 +3949,14 @@ ${sections}
                   if (!lastModifiedSections.includes(event.name)) lastModifiedSections.push(event.name);
                   setTimeout(() => focusPreviewSection(event.name, true), 400);
                 } else if (cleanHtml.length > 50) {
-                  // MODE CRÉATION : assemblage progressif des fragments
+                  // MODE CRÉATION : la page s'est construite en direct dans le
+                  // canvas vivant — on fige la section (wrapper + data-section)
+                  // et on continue sur le même document, sans rechargement.
                   assembledHtml += '<div class="vibe-stitched" data-section="' + event.name + '">' + cleanHtml + '</div>\n';
                   currentAppHtml = buildHtmlDoc(assembledHtml);
-                  renderDebounced(currentAppHtml);
                   updateEditorContent(currentAppHtml);
+                  if (stitch.fallbackRender) renderDebounced(currentAppHtml);
+                  else stitchCommit({ name: event.name, mode: event.mode || 'create', html: cleanHtml });
                 }
                 if (statusEl) statusEl.innerHTML = '<span style="color:#4ade80;">✓ Section ' + event.name + ' assemblée</span>';
                 if (textEl && event.text) {
@@ -3729,6 +3997,10 @@ ${sections}
                   const isFullDoc = /<!DOCTYPE|<html[\s>]/i.test(assembledHtml);
                   currentAppHtml = isFullDoc ? assembledHtml : buildHtmlDoc(assembledHtml);
                   renderNow(currentAppHtml);
+                  // STITCH v2 — le document reconstruit en direct est remplacé
+                  // par LE rendu final exact (scripts, images) une seule fois ;
+                  // le canvas vivant est réinitialisé pour la prochaine fois.
+                  stitchAbort();
                   updateEditorContent(currentAppHtml);
                   // Sauvegarde
                   try {
@@ -3891,12 +4163,15 @@ ${sections}
                 if (statusEl) statusEl.innerHTML = '<span style="color:#fbbf24;">⏹ Génération annulée — rien n\u2019a été enregistré.</span>';
                 if (titleEl) titleEl.innerHTML = '<i class="fa-solid fa-circle-stop text-sm" style="color:#94a3b8;"></i><span style="color:#94a3b8;">Annulée</span>';
                 timelineCancelCurrent();
+                // STITCH v2 — le preview revient à l'état d'avant génération
+                stitchRestoreSane();
               } else if (event.type === 'error') {
                 if (statusEl) statusEl.innerHTML = '<span style="color:#f87171;">Erreur: ' + (event.error || '') + '</span>';
                 timelineFailCurrent();
                 removeStopBtn();
+                stitchRestoreSane();
               }
-            } catch (e) { /* ignore JSON parse errors */ }
+            } catch (e) { (window.__vibeHandlerErrors = window.__vibeHandlerErrors || []).push(String((e && e.message) || e)); }
           }
         }
 

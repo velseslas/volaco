@@ -958,26 +958,32 @@ export async function handleConversationRoutes(
               const idMatch = idRegex.exec(modifiedHtml);
               if (idMatch && !oldBlock) oldBlock = idMatch[0];
               const before2 = modifiedHtml;
-              modifiedHtml = modifiedHtml.replace(new RegExp(idRegex.source, 'g'), sec.html);
+              // STITCH : même contrat que le chemin data-section — la section
+              // insérée porte TOUJOURS son wrapper data-section (halo,
+              // diff-guard et ancrages des générations suivantes en dépendent).
+              modifiedHtml = modifiedHtml.replace(new RegExp(idRegex.source, 'g'), `<div class="vibe-stitched" data-section="${sec.name}">${sec.html}</div>`);
               // Si toujours pas, tente par balise (header, footer, nav)
               if (modifiedHtml === before2 && (sec.name === 'header' || sec.name === 'footer' || sec.name === 'nav')) {
                 const tagRegex = new RegExp(`<${sec.name}[\\s\\S]*?<\\/${sec.name}>`, 'g');
                 const tagMatch = tagRegex.exec(modifiedHtml);
                 if (tagMatch && !oldBlock) oldBlock = tagMatch[0];
-                modifiedHtml = modifiedHtml.replace(new RegExp(tagRegex.source, 'g'), sec.html);
+                modifiedHtml = modifiedHtml.replace(new RegExp(tagRegex.source, 'g'), `<div class="vibe-stitched" data-section="${sec.name}">${sec.html}</div>`);
               }
             }
           } else if (sec.mode === 'add' && sec.html) {
             // Ajoute après la section 'after'
             // Nettoie aussi le wrapper si présent
             const cleanAddHtml = sec.html.replace(/^<div[^>]*data-section="[^"]*"[^>]*>([\s\S]*)<\/div>$/, '$1').trim();
-            const afterRegex = new RegExp(`(<div[^>]*data-section="${sec.after}"[^>]*>[\\s\\S]*?</div>)(\\s*<div[^>]*data-section)`, 'g');
+            // SANS flag /g : si le document contient plusieurs sections du même
+            // nom, la section ajoutée ne doit apparaître qu'après la PREMIÈRE
+            // ancre (sinon duplications en cascade).
+            const afterRegex = new RegExp(`(<div[^>]*data-section="${sec.after}"[^>]*>[\\s\\S]*?</div>)(\\s*<div[^>]*data-section)`);
             const before = modifiedHtml;
             modifiedHtml = modifiedHtml.replace(afterRegex, `$1\n<div class="vibe-stitched" data-section="${sec.name}">${cleanAddHtml}</div>$2`);
             if (modifiedHtml === before) {
-              // Tente par ID
+              // Tente par ID — avec wrapper (même contrat que le chemin principal)
               const idAfterRegex = new RegExp(`(<section[^>]*id="${sec.after}"[^>]*>[\\s\\S]*?<\\/section>)`, 'g');
-              modifiedHtml = modifiedHtml.replace(idAfterRegex, `$1\n${sec.html}`);
+              modifiedHtml = modifiedHtml.replace(idAfterRegex, `$1\n<div class="vibe-stitched" data-section="${sec.name}">${sec.html}</div>`);
             }
             if (modifiedHtml === before) {
               // T4/T7 — l'ancre est la DERNIÈRE section : insertion avant
