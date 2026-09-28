@@ -53,6 +53,38 @@ const planGenerator = new PlanGenerator();
 const executionTimelineEnabled = process.env.VOLACO_EXECUTION_TIMELINE !== 'off';
 
 /**
+ * AUDIT PREVIEW — déduplication des blocs data-section : les générations
+ * antérieures à la garde d'unicité ont pu accumuler des doublons
+ * (footer ×3, header ×2 constatés en production). À chaque sauvegarde, la
+ * dernière occurrence de chaque nom gagne — le fichier s'assainit tout seul.
+ */
+export function dedupeSectionBlocks(html: string): string {
+  const re = /<div[^>]*data-section="([^"]+)"[^>]*>[\s\S]*?(?=<div[^>]*data-section|<\/body>|$)/g;
+  const blocks: Array<{ name: string; block: string; start: number; end: number }> = [];
+  for (const m of html.matchAll(re)) {
+    blocks.push({ name: (m[1] || '').toLowerCase(), block: m[0], start: m.index ?? 0, end: (m.index ?? 0) + m[0].length });
+  }
+  if (blocks.length === 0) return html;
+  const lastByName = new Map<string, { start: number; end: number }>();
+  for (const b of blocks) lastByName.set(b.name, { start: b.start, end: b.end });
+  let out = '';
+  let cursor = 0;
+  for (const b of blocks) {
+    const keep = lastByName.get(b.name);
+    if (keep && keep.start === b.start && keep.end === b.end) {
+      out += html.slice(cursor, b.end);
+      cursor = b.end;
+    } else {
+      // doublon évincé : il est sauté (le texte qui le précède reste)
+      out += html.slice(cursor, b.start);
+      cursor = b.end;
+    }
+  }
+  out += html.slice(cursor);
+  return out;
+}
+
+/**
  * T7 (CDC §24-§25) — synthèse finale de l'exécution, construite UNIQUEMENT
  * à partir de mesures réelles : comptes de sections, delta de lignes,
  * score du gate s'il a tourné, durée mesurée. Aucun chiffre inventé.
@@ -981,36 +1013,53 @@ export async function handleConversationRoutes(
               }
             }
           } else if (sec.mode === 'add' && sec.html) {
-            // Ajoute après la section 'after'
-            // Nettoie aussi le wrapper si présent
+            // UNICITÉ (audit preview) : une section « ajoutée » dont le nom
+            // existe DÉJÀ est un REMPLACEMENT, pas un doublon — sinon chaque
+            // génération ré-émettant header/footer empilait des copies
+            // (footer ×3, header ×2 constatés en production).
             const cleanAddHtml = sec.html.replace(/^<div[^>]*data-section="[^"]*"[^>]*>([\s\S]*)<\/div>$/, '$1').trim();
-            // SANS flag /g : si le document contient plusieurs sections du même
-            // nom, la section ajoutée ne doit apparaître qu'après la PREMIÈRE
-            // ancre (sinon duplications en cascade).
-            const afterRegex = new RegExp(`(<div[^>]*data-section="${sec.after}"[^>]*>[\\s\\S]*?</div>)(\\s*<div[^>]*data-section)`);
-            const before = modifiedHtml;
-            modifiedHtml = modifiedHtml.replace(afterRegex, `$1\n<div class="vibe-stitched" data-section="${sec.name}">${cleanAddHtml}</div>$2`);
-            if (modifiedHtml === before) {
-              // Tente par ID — avec wrapper (même contrat que le chemin principal)
-              const idAfterRegex = new RegExp(`(<section[^>]*id="${sec.after}"[^>]*>[\\s\\S]*?<\\/section>)`, 'g');
-              modifiedHtml = modifiedHtml.replace(idAfterRegex, `$1\n<div class="vibe-stitched" data-section="${sec.name}">${sec.html}</div>`);
-            }
-            if (modifiedHtml === before) {
-              // T4/T7 — l'ancre est la DERNIÈRE section : insertion avant
-              // </body> (même convention que le client), sinon la section
-              // générée serait perdue (applied:false pour rien).
-              const bodyClose = modifiedHtml.lastIndexOf('</body>');
-              if (bodyClose !== -1) {
-                modifiedHtml = modifiedHtml.slice(0, bodyClose)
-                  + `\n<div class="vibe-stitched" data-section="${sec.name}">${cleanAddHtml}</div>\n`
-                  + modifiedHtml.slice(bodyClose);
+            const existsRe = new RegExp(`<div[^>]*data-section="${sec.name}"[^>]*>[\\s\\S]*?(?=<div[^>]*data-section|<\\/body>|$)`, 'i');
+            const existing = existsRe.exec(modifiedHtml);
+            if (existing) {
+              oldBlock = existing[0];
+              modifiedHtml = modifiedHtml.replace(new RegExp(existsRe.source, 'i'), `<div class="vibe-stitched" data-section="${sec.name}">${cleanAddHtml}</div>`);
+            } else {
+              // SANS flag /g : si le document contient plusieurs sections du même
+              // nom d'ANCRE, la section ajoutée ne doit apparaître qu'après la
+              // PREMIÈRE ancre (sinon duplications en cascade).
+              const afterRegex = new RegExp(`(<div[^>]*data-section="${sec.after}"[^>]*>[\\s\\S]*?</div>)(\\s*<div[^>]*data-section)`);
+              const before = modifiedHtml;
+              modifiedHtml = modifiedHtml.replace(afterRegex, `$1\n<div class="vibe-stitched" data-section="${sec.name}">${cleanAddHtml}</div>$2`);
+              if (modifiedHtml === before) {
+                // Tente par ID — avec wrapper (même contrat que le chemin principal)
+                const idAfterRegex = new RegExp(`(<section[^>]*id="${sec.after}"[^>]*>[\\s\\S]*?<\\/section>)`, 'g');
+                modifiedHtml = modifiedHtml.replace(idAfterRegex, `$1\n<div class="vibe-stitched" data-section="${sec.name}">${sec.html}</div>`);
+              }
+              if (modifiedHtml === before) {
+                // T4/T7 — l'ancre est la DERNIÈRE section : insertion avant
+                // </body> (même convention que le client), sinon la section
+                // générée serait perdue (applied:false pour rien).
+                const bodyClose = modifiedHtml.lastIndexOf('</body>');
+                if (bodyClose !== -1) {
+                  modifiedHtml = modifiedHtml.slice(0, bodyClose)
+                    + `\n<div class="vibe-stitched" data-section="${sec.name}">${cleanAddHtml}</div>\n`
+                    + modifiedHtml.slice(bodyClose);
+                }
               }
             }
           } else if (sec.mode === 'create' && sec.html) {
-            // En mode modification, une section "create" = ajout à la fin
-            // Nettoie aussi le wrapper si présent
+            // UNICITÉ : « create » sur un nom déjà présent = remplacement
+            // (le LLM ré-émet souvent header/footer en mode create — sans
+            // cette garde, chaque génération ajoutait un doublon en fin de page).
             const cleanCreateHtml = sec.html.replace(/^<div[^>]*data-section="[^"]*"[^>]*>([\s\S]*)<\/div>$/, '$1').trim();
-            modifiedHtml += `<div class="vibe-stitched" data-section="${sec.name}">${cleanCreateHtml}</div>`;
+            const existsRe = new RegExp(`<div[^>]*data-section="${sec.name}"[^>]*>[\\s\\S]*?(?=<div[^>]*data-section|<\\/body>|$)`, 'i');
+            const existing = existsRe.exec(modifiedHtml);
+            if (existing) {
+              oldBlock = existing[0];
+              modifiedHtml = modifiedHtml.replace(new RegExp(existsRe.source, 'i'), `<div class="vibe-stitched" data-section="${sec.name}">${cleanCreateHtml}</div>`);
+            } else {
+              modifiedHtml += `<div class="vibe-stitched" data-section="${sec.name}">${cleanCreateHtml}</div>`;
+            }
           }
           // T4 — delta réel de la section (bloc remplacé vs contenu généré)
           const applied = modifiedHtml !== htmlBeforeSection;
@@ -1035,6 +1084,10 @@ export async function handleConversationRoutes(
       // et cassait le contexte des tours suivants. Un document complet est
       // envoyé au client ET sauvegardé — le client détecte le DOCTYPE et ne
       // ré-emballe pas (même convention que buildHtmlDoc côté Studio).
+      // UNICITÉ — déduplication douce avant sauvegarde : la dernière
+      // occurrence de chaque data-section gagne (assainit les fichiers
+      // pollués par les générations antérieures).
+      assembledHtml = dedupeSectionBlocks(assembledHtml);
       if (assembledHtml.trim().length > 100 && !/<!DOCTYPE|<html[\s>]/i.test(assembledHtml)) {
         assembledHtml = buildStudioShell(assembledHtml);
       }

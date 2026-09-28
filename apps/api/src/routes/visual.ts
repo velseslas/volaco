@@ -161,6 +161,33 @@ export async function analyzeProjectVisual(
     });
   }
 
+  // 4. INTÉGRITÉ STRUCTURELLE (audit preview) — la duplication de sections
+  // (footer ×3, header ×2 constatés en production) ne produit AUCUNE erreur
+  // runtime ni dérive de palette : sans ce contrôle, la page la plus
+  // désorganisée pouvait afficher 98/100.
+  const sectionNames = [...htmlContent.matchAll(/data-section="([^"]+)"/g)].map((m) => (m[1] || '').toLowerCase());
+  const nameCounts = new Map<string, number>();
+  for (const n of sectionNames) nameCounts.set(n, (nameCounts.get(n) || 0) + 1);
+  const duplicates = [...nameCounts.entries()].filter(([, c]) => c > 1);
+  if (duplicates.length) {
+    findings.push({
+      severity: 'HIGH',
+      source: 'DESIGN',
+      title: `Sections dupliquées : ${duplicates.map(([n, c]) => `${n} ×${c}`).join(', ')}`,
+      detail: 'Le même bloc data-section apparaît plusieurs fois dans la page (accumulation entre générations). La prochaine génération déduplique automatiquement — la dernière version gagne.'
+    });
+  }
+  const headerTagCount = (htmlContent.match(/<header[\s>]/gi) || []).length;
+  const footerTagCount = (htmlContent.match(/<footer[\s>]/gi) || []).length;
+  if (headerTagCount > 1 || footerTagCount > 1) {
+    findings.push({
+      severity: 'HIGH',
+      source: 'DESIGN',
+      title: `Structure dupliquée : ${headerTagCount} <header>, ${footerTagCount} <footer>`,
+      detail: 'Une page cohérente ne contient qu un seul header et un seul footer — des doublons signifient que des blocs ont été empilés par des fusions successives.'
+    });
+  }
+
   return {
     score: computeCriticScore(findings),
     findings,

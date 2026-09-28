@@ -15,6 +15,7 @@ import type { AddressInfo } from 'node:net';
 import { createApiServer } from '../src/server.js';
 import { executionStore } from '../../../packages/core/src/ai-native/execution/store.js';
 import { aiProviderRegistry } from '../../../packages/core/src/ai/providers/registry.js';
+import { dedupeSectionBlocks } from '../src/routes/conversation.js';
 
 const H = { 'Content-Type': 'application/json', 'x-tenant-id': 'studio-local', 'x-user-role': 'ENGINEER' };
 
@@ -80,6 +81,12 @@ class FakeStreamingAdapter {
       '<SECTION name="contact" mode="add" after="header">',
       'J\u2019ajoute un contact.',
       '<section id="contact"><p>contact@exemple.fr</p></section>',
+      '</SECTION>',
+      // AUDIT PREVIEW — le LLM ré-émet le footer en mode create alors qu'il
+      // existe : la garde d'unicité doit REMPLACER, jamais empiler.
+      '<SECTION name="footer" mode="create">',
+      'Je rafraichis le pied de page.',
+      '<footer><p>© 2026 — nouveau pied de page</p></footer>',
       '</SECTION>',
       'Voilà, c\u2019est prêt !'
     ];
@@ -168,10 +175,17 @@ describe('T7 : E2E — génération complète, annulation réelle, réparation v
     assert.ok((done.html || '').includes('Titre Moderne'), 'le HTML final contient la section modifiée');
     assert.ok((done.html || '').includes('contact@exemple.fr'), 'le HTML final contient la section ajoutée');
 
-    // Frames de diff réelles émises (modify + add)
+    // Frames de diff réelles émises (modify + add + create-footer)
     const diffFrames = events.filter((e) => e.type === 'diff') as unknown as Array<{ section: string; added: number; applied?: boolean }>;
-    assert.equal(diffFrames.length, 2, 'une frame diff par section');
+    assert.equal(diffFrames.length, 3, 'une frame diff par section');
     assert.ok(diffFrames.every((d) => d.applied === true && d.added > 0), 'diffs appliqués avec ajouts réels');
+
+    // UNICITÉ — le footer ré-émis en mode create est REMPLACÉ, pas empilé :
+    // exactement 1 <footer> et 1 data-section="footer" dans le document final.
+    const footerTags = ((done.html || '').match(/<footer[\s>]/gi) || []).length;
+    assert.equal(footerTags, 1, 'footer ×1 (la garde d unicité a remplacé, pas dupliqué)');
+    const footerSections = ((done.html || '').match(/data-section="footer"/g) || []).length;
+    assert.equal(footerSections, 1, 'un seul bloc data-section="footer"');
 
     // Le gate serveur a tourné et son résultat est dans la frame
     assert.ok(done.gate && typeof done.gate.score === 'number', 'event.gate porte le score réel du Quality Gate');
@@ -193,9 +207,9 @@ describe('T7 : E2E — génération complète, annulation réelle, réparation v
     const seqs = record.events.map((e) => e.seq);
     for (let i = 1; i < seqs.length; i++) assert.ok(seqs[i]! > seqs[i - 1]!, 'seq strictement croissante');
 
-    // Bilan réel
+    // Bilan réel (header modify + contact add + footer create-remplacé)
     assert.equal(record.summary?.sectionsModified, 1);
-    assert.equal(record.summary?.sectionsCreated, 1);
+    assert.equal(record.summary?.sectionsCreated, 2);
     assert.ok((record.summary?.addedLines || 0) > 0, 'lignes ajoutées réelles');
     assert.ok(record.summary?.revisionId, 'révision automatique liée');
     assert.equal(record.summary?.score, done.gate!.score, 'score du bilan = score du gate');
@@ -256,5 +270,37 @@ describe('T7 : E2E — génération complète, annulation réelle, réparation v
     const afterRes = await fetch(`${baseUrl}/api/v1/projects/${projectId}/files/content`, { headers: H });
     const htmlAfter = ((await afterRes.json()) as { file?: { content?: string } }).file?.content || '';
     assert.equal(htmlAfter, htmlBefore, 'le fichier existant n\u2019est pas touché par une génération annulée');
+  });
+
+  it('14. déduplication : dernier bloc data-section gagne, uniques conservés', () => {
+    const dirty = '<div data-section="a">A1</div><div data-section="b">B</div><div data-section="a">A2</div><div data-section="c">C</div>';
+    const clean = dedupeSectionBlocks(dirty);
+    assert.equal((clean.match(/data-section="a"/g) || []).length, 1, 'a ×1');
+    assert.ok(clean.includes('A2') && !clean.includes('A1'), 'la DERNIÈRE version de a gagne');
+    assert.ok(clean.includes('B') && clean.includes('C'), 'les sections uniques sont intactes');
+
+    // Page sans doublon : inchangée
+    const cleanPage = '<div data-section="x">X</div><div data-section="y">Y</div>';
+    assert.equal(dedupeSectionBlocks(cleanPage), cleanPage);
+  });
+
+  it('15. le gate détecte la duplication structurelle (98/100 impossible sur footer ×3)', async () => {
+    // Page volontairement polluée : 3 footers, 3 headers
+    const dirtyPage = '<!DOCTYPE html><html><head><title>Dup</title></head><body>'
+      + '<div data-section="header"><header><h1>H</h1></header></div>'.repeat(3)
+      + '<div data-section="main"><p>Contenu</p></div>'
+      + '<div data-section="footer"><footer><p>F</p></footer></div>'.repeat(3)
+      + '</body></html>';
+    await fetch(`${baseUrl}/api/v1/projects/${projectId}/files/content`, {
+      method: 'PUT', headers: H, body: JSON.stringify({ path: 'index.html', content: dirtyPage })
+    });
+    const res = await fetch(`${baseUrl}/api/v1/projects/${projectId}/visual/analyze`, { method: 'POST', headers: H });
+    assert.equal(res.status, 200);
+    const gate = (await res.json()) as { score: number; findings: Array<{ severity: string; title: string }> };
+    assert.ok(gate.score <= 85, 'une page avec footer ×3 ne peut plus afficher 98/100 (score: ' + gate.score + ')');
+    const titles = gate.findings.map((f) => f.title).join(' | ');
+    assert.ok(titles.includes('Sections dupliquées'), 'finding « Sections dupliquées » présent');
+    assert.ok(/Structure dupliquée/.test(titles), 'finding « Structure dupliquée » (header/footer multiples) présent');
+    assert.ok(gate.findings.some((f) => f.severity === 'HIGH'), 'la duplication est au moins HIGH');
   });
 });
