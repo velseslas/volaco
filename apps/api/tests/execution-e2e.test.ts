@@ -35,14 +35,19 @@ async function streamEvents(baseUrl: string, projectId: string, body: Record<str
     headers: { ...H, Accept: 'text/event-stream' },
     body: JSON.stringify(body)
   });
+  const raw = await res.text();
+  lastStreamRaw = raw;
   const events: SSEEvent[] = [];
-  for (const line of (await res.text()).split('\n')) {
+  for (const line of raw.split('\n')) {
     const t = line.trim();
     if (!t.startsWith('data:')) continue;
     try { events.push(JSON.parse(t.slice(5).trim())); } catch { /* ignore */ }
   }
   return events;
 }
+
+/** Corps brut de la dernière réponse SSE (pour les assertions hors frames data:). */
+let lastStreamRaw = '';
 
 /** Adaptateur LLM factice streamant un scénario réaliste section par section. */
 class FakeStreamingAdapter {
@@ -119,6 +124,9 @@ describe('T7 : E2E — génération complète, annulation réelle, réparation v
   before(async () => {
     delete process.env.MISTRAL_API_KEY;
     delete process.env.GEMINI_API_KEY;
+    // Heartbeat SSE accéléré : pendant le blocage de l'adaptateur factice,
+    // des pings doivent maintenir la connexion ouverte (fiabilité §17).
+    process.env.VOLACO_SSE_HEARTBEAT_MS = '80';
     cancelAdapter = new CancelableFakeAdapter();
     installFakeAdapter(new FakeStreamingAdapter());
     const instance = createApiServer({ port: 0 });
@@ -239,6 +247,7 @@ describe('T7 : E2E — génération complète, annulation réelle, réparation v
 
     assert.ok(events.some((e) => e.type === 'cancelled'), 'le serveur confirme l\u2019annulation');
     assert.ok(!events.some((e) => e.type === 'done'), 'aucun done après annulation');
+    assert.ok(lastStreamRaw.includes(': ping'), 'le heartbeat SSE a maintenu la connexion pendant le silence');
     const record = executionStore.getExecution(running.executionId)!;
     assert.equal(record.status, 'CANCELLED');
     assert.equal(record.cancelReason, 'user_cancel');

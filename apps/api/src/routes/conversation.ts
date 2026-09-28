@@ -740,6 +740,16 @@ export async function handleConversationRoutes(
     // Sinon, la prochaine demande de modification ne trouvera pas de HTML existant
     // et l'IA repassera en mode création (recréera tout le site).
     const serverSections: Array<{ name: string; mode: string; after: string; html: string }> = [];
+    // Heartbeat SSE (fiabilité CDC §17) : un commentaire périodique garde la
+    // connexion ouverte à travers les proxys pendant les silences du flux
+    // (attente du premier token LLM, gate Chromium). Une ligne de commentaire
+    // SSE est ignorée par tout consommateur qui ne lit que les `data:`.
+    const heartbeatMs = Number(process.env.VOLACO_SSE_HEARTBEAT_MS ?? 15000);
+    const heartbeat = heartbeatMs > 0 ? setInterval(() => {
+      if (clientGone) return;
+      try { res.write(': ping\n\n'); } catch { /* socket déjà fermé */ }
+    }, heartbeatMs) : null;
+
     try {
       // @ts-expect-error — generateStream existe sur MistralProviderAdapter
       const stream = adapter.generateStream(
@@ -1203,6 +1213,7 @@ export async function handleConversationRoutes(
       if (recorder) executionStore.failExecution(executionId, message);
       emit({ type: 'error', error: friendly });
     } finally {
+      if (heartbeat) clearInterval(heartbeat);
       activeCancelFlags.delete(executionId);
       res.end();
     }
