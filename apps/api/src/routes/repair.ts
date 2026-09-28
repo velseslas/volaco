@@ -21,6 +21,7 @@ import { projectStore } from '../../../../packages/core/src/identity/project.js'
 import { assertPermission } from '../../../../packages/core/src/identity/permissions.js';
 import { aiProviderRegistry } from '../../../../packages/core/src/ai/providers/registry.js';
 import { revisionStore } from '../../../../packages/core/src/model/revision-store.js';
+import { executionStore } from '../../../../packages/core/src/ai-native/execution/store.js';
 import { logger } from '../../../../packages/core/src/logger.js';
 import type { RequestContext } from '../middleware/auth.js';
 import { readBody } from '../middleware/body.js';
@@ -94,14 +95,20 @@ export async function handleRepairRoutes(
     return true;
   }
 
-  let body: { maxIterations?: number } = {};
+  let body: { maxIterations?: number; executionId?: string } = {};
   try {
-    body = (await readBody(req) || '{}') as unknown as { maxIterations?: number };
-    if (typeof body === 'string') body = JSON.parse(body) as { maxIterations?: number };
+    body = (await readBody(req) || '{}') as unknown as { maxIterations?: number; executionId?: string };
+    if (typeof body === 'string') body = JSON.parse(body) as { maxIterations?: number; executionId?: string };
   } catch {
     body = {};
   }
   const maxIterations = Math.max(1, Math.min(MAX_REPAIR_ITERATIONS, Number(body.maxIterations) || 2));
+
+  // T6 (CDC §22-§23) — le cycle de réparation devient VISIBLE : si un
+  // executionId est fourni (et appartient au tenant), les événements
+  // REPAIR_* rejoignent la timeline de la génération concernée.
+  const linkedExecution = body.executionId ? executionStore.getExecution(body.executionId) : null;
+  const repairEvents = linkedExecution && linkedExecution.tenantId === context.tenantId ? body.executionId! : null;
 
   const preferredProviderId = process.env.MISTRAL_API_KEY ? 'mistral' : process.env.GEMINI_API_KEY ? 'gemini' : undefined;
   const adapter = aiProviderRegistry.resolve(preferredProviderId ? { preferredProviderId } : {});
@@ -119,6 +126,16 @@ export async function handleRepairRoutes(
 
   let diagnosis = await diagnose(context.tenantId, projectId);
   let currentScore = diagnosis.score;
+
+  if (repairEvents) {
+    executionStore.appendEvent(repairEvents, {
+      type: 'REPAIR_STARTED',
+      phase: 'REPAIR',
+      status: 'RUNNING',
+      title: 'Réparation automatique lancée',
+      detail: { initialScore: currentScore, maxIterations, runtimeErrors: diagnosis.runtimeErrors.slice(0, 5) }
+    });
+  }
 
   for (let i = 1; i <= maxIterations; i++) {
     iterations.push({ iteration: i, scoreBefore: currentScore, scoreAfter: null, action: 'diagnosis', errorsDiagnosed: diagnosis.runtimeErrors.slice(0, 10) });
@@ -190,6 +207,27 @@ export async function handleRepairRoutes(
     });
   } catch {
     // best effort
+  }
+
+  // T6 — conclusion du cycle, visible dans la timeline (réussie ou non)
+  if (repairEvents) {
+    const lastAction = iterations[iterations.length - 1]?.action || 'unknown';
+    const improved = iterations.some((i) => i.action === 'patch-applied');
+    executionStore.appendEvent(repairEvents, {
+      type: 'REPAIR_COMPLETED',
+      phase: 'REPAIR',
+      status: improved ? 'COMPLETED' : 'FAILED',
+      title: improved
+        ? `Réparation appliquée — score ${currentScore}/100`
+        : lastAction === 'no-repair-needed'
+          ? 'Aucune réparation nécessaire'
+          : 'Réparation sans amélioration — version précédente conservée',
+      detail: {
+        iterations: iterations.length,
+        finalScore: currentScore,
+        actions: iterations.map((i) => i.action)
+      }
+    });
   }
 
   sendJson(res, 200, {

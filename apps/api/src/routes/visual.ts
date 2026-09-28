@@ -40,28 +40,28 @@ export function computeCriticScore(findings: readonly CriticFinding[]): number {
   return Math.max(0, Math.min(100, 100 - total));
 }
 
-export async function handleVisualRoutes(
-  req: IncomingMessage,
-  res: ServerResponse,
-  pathname: string,
-  context: RequestContext,
+export interface VisualAnalysisResult {
+  score: number;
+  findings: CriticFinding[];
+  stats: { colors: number; fonts: number; interactiveElements: number };
+  renderAvailable: boolean;
+  screenshotBase64?: string;
+  consoleMessages: { type: string; text: string }[];
+}
+
+/**
+ * T6 — pipeline de critique visuelle réutilisable : rendu réel (Chromium) +
+ * analyse DOM déterministe + règles design + score. Utilisé par la route
+ * /visual/analyze ET par le stream conversationnel (gate serveur — source de
+ * vérité unique : le HTML analysé est exactement celui qui est sauvegardé).
+ */
+export async function analyzeProjectVisual(
+  tenantId: string,
+  role: RequestContext['role'],
+  projectId: string,
   requestId: string
-): Promise<boolean> {
-  // POST /api/v1/projects/:projectId/visual/analyze
-  if (!pathname.startsWith('/api/v1/projects/') || !pathname.endsWith('/visual/analyze') || req.method !== 'POST') {
-    return false;
-  }
-  const projectId = pathname.slice('/api/v1/projects/'.length, -'/visual/analyze'.length);
-  if (!projectId) return false;
-
-  assertPermission(context.role, 'PROJECT_READ', requestId);
-
-  const project = projectStore.getProject(context.tenantId, projectId);
-  if (!project) {
-    throw new NotFoundError(`Projet ${projectId}`, requestId);
-  }
-
-  const files = fileStore.getAllProjectFiles(context.tenantId, projectId);
+): Promise<VisualAnalysisResult> {
+  const files = fileStore.getAllProjectFiles(tenantId, projectId);
   const htmlContent = files['index.html'];
   if (!htmlContent || htmlContent.trim().length === 0) {
     throw new ValidationError('Ce projet ne contient aucun index.html à analyser', undefined, requestId);
@@ -110,8 +110,8 @@ export async function handleVisualRoutes(
   let interactiveCount = 0;
   try {
     const analysis = await visualService.analyzeVisuals(
-      { tenantId: context.tenantId, projectId, htmlContent, screenshotBase64, requestId },
-      context.role
+      { tenantId, projectId, htmlContent, screenshotBase64, requestId },
+      role
     );
     colors = [...analysis.snapshot.extractedColors];
     fonts = [...analysis.snapshot.extractedFonts];
@@ -161,21 +161,48 @@ export async function handleVisualRoutes(
     });
   }
 
-  const score = computeCriticScore(findings);
+  return {
+    score: computeCriticScore(findings),
+    findings,
+    stats: { colors: uniqueColors.length, fonts: uniqueFonts.length, interactiveElements: interactiveCount },
+    renderAvailable,
+    ...(screenshotBase64 ? { screenshotBase64 } : {}),
+    consoleMessages
+  };
+}
+
+export async function handleVisualRoutes(
+  req: IncomingMessage,
+  res: ServerResponse,
+  pathname: string,
+  context: RequestContext,
+  requestId: string
+): Promise<boolean> {
+  // POST /api/v1/projects/:projectId/visual/analyze
+  if (!pathname.startsWith('/api/v1/projects/') || !pathname.endsWith('/visual/analyze') || req.method !== 'POST') {
+    return false;
+  }
+  const projectId = pathname.slice('/api/v1/projects/'.length, -'/visual/analyze'.length);
+  if (!projectId) return false;
+
+  assertPermission(context.role, 'PROJECT_READ', requestId);
+
+  const project = projectStore.getProject(context.tenantId, projectId);
+  if (!project) {
+    throw new NotFoundError(`Projet ${projectId}`, requestId);
+  }
+
+  const result = await analyzeProjectVisual(context.tenantId, context.role, projectId, requestId);
 
   res.statusCode = 200;
   res.setHeader('Content-Type', 'application/json');
   res.end(JSON.stringify({
-    score,
-    findings,
-    stats: {
-      colors: uniqueColors.length,
-      fonts: uniqueFonts.length,
-      interactiveElements: interactiveCount
-    },
-    renderAvailable,
-    screenshotBase64,
-    consoleMessages,
+    score: result.score,
+    findings: result.findings,
+    stats: result.stats,
+    renderAvailable: result.renderAvailable,
+    screenshotBase64: result.screenshotBase64,
+    consoleMessages: result.consoleMessages,
     analyzedAt: new Date().toISOString(),
     requestId
   }));

@@ -96,13 +96,23 @@ export class ExecutionEventStore {
     return this.executions.get(record.executionId)!;
   }
 
-  /** Ajoute un événement typé. Refusé si l'exécution est terminée (invariant). */
+  /**
+   * Ajoute un événement typé. Refusé si l'exécution est terminée, SAUF les
+   * événements post-clôture légitimes : bilan/fin, synthèse, et cycles de
+   * réparation/vérification déclenchés après coup (Self-Repair sur une
+   * génération déjà terminée — T6).
+   */
   public appendEvent(executionId: string, input: AppendEventInput): ExecutionEvent {
     const record = this.executions.get(executionId);
     if (!record) {
       throw new NotFoundError(`Exécution ${executionId}`);
     }
-    if (['COMPLETED', 'FAILED', 'CANCELLED'].includes(record.status) && !['EXECUTION_COMPLETED', 'EXECUTION_FAILED', 'EXECUTION_CANCELLED', 'SUMMARY_GENERATED'].includes(input.type)) {
+    const postTerminalAllowed: readonly string[] = [
+      'EXECUTION_COMPLETED', 'EXECUTION_FAILED', 'EXECUTION_CANCELLED', 'SUMMARY_GENERATED',
+      'REPAIR_STARTED', 'RETRY_STARTED', 'REPAIR_COMPLETED',
+      'VALIDATION_STARTED', 'VALIDATION_COMPLETED', 'VALIDATION_FAILED'
+    ];
+    if (['COMPLETED', 'FAILED', 'CANCELLED'].includes(record.status) && !postTerminalAllowed.includes(input.type)) {
       throw new ValidationError(`Exécution ${executionId} déjà terminée (${record.status})`);
     }
     const last = record.events[record.events.length - 1];

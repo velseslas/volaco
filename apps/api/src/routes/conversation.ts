@@ -15,6 +15,7 @@ import { NotFoundError, ValidationError } from '../../../../packages/core/src/er
 import { projectStore } from '../../../../packages/core/src/identity/project.js';
 import { fileStore } from '../../../../packages/core/src/file-explorer/store.js';
 import { revisionStore } from '../../../../packages/core/src/model/revision-store.js';
+import { analyzeProjectVisual } from './visual.js';
 import { aiProviderRegistry } from '../../../../packages/core/src/ai/providers/registry.js';
 import { logger } from '../../../../packages/core/src/logger.js';
 import type { EngineeringPlan, IntentResult } from '../../../../packages/core/src/ai-native/conversation-intelligence/types.js';
@@ -988,9 +989,11 @@ export async function handleConversationRoutes(
 
       // Sauvegarde dans fileStore pour que la prochaine demande trouve le HTML
       let savedRevisionId: string | undefined;
+      let gateEligible = false;
       if (assembledHtml.trim().length > 100) {
         try {
           fileStore.saveFile(context.tenantId, projectId, 'index.html', assembledHtml);
+          gateEligible = true;
           // ÉTAPE 6 — révision automatique (§32 CDC Evolution Engine) : chaque
           // génération produit une révision réversible (rollback déjà branché).
           try {
@@ -1008,8 +1011,8 @@ export async function handleConversationRoutes(
               error: revErr instanceof Error ? revErr.message : String(revErr)
             });
           }
-          // LOT 3 — Compass : cycle terminé
-          emit({ type: 'compass', state: 'COMPLETED' });
+          // LOT 3 — Compass : l'état COMPLETED sera émis APRÈS le Quality Gate
+          // (le client ne doit pas voir « Terminé » pendant la vérification).
           logger.info('HTML final sauvegardé dans fileStore après stream', {
             component: 'conversation-route-stream',
             tenantId: context.tenantId,
@@ -1024,6 +1027,56 @@ export async function handleConversationRoutes(
           });
         }
       }
+
+      // T6 (CDC §24/§31) — QUALITY GATE SERVEUR : source de vérité unique.
+      // Le gate tourne sur le HTML EXACTEMENT sauvegardé (fin de la bifurcation
+      // client/serveur) et son résultat part dans la frame done + le store.
+      let gateResult: { score: number; findings: Array<{ severity: string; title: string }>; stats: { colors: number; fonts: number; interactiveElements: number }; renderAvailable: boolean } | null = null;
+      if (recorder && gateEligible) {
+        recordOnly({
+          type: 'VALIDATION_STARTED',
+          phase: 'VALIDATE',
+          status: 'RUNNING',
+          title: 'Vérification du rendu réel (Chromium + DOM)'
+        });
+        try {
+          const analysis = await analyzeProjectVisual(context.tenantId, context.role, projectId, requestId);
+          gateResult = {
+            score: analysis.score,
+            findings: analysis.findings,
+            stats: analysis.stats,
+            renderAvailable: analysis.renderAvailable
+          };
+          const criticals = analysis.findings.filter((f) => f.severity === 'CRITICAL').length;
+          recordOnly({
+            type: 'VALIDATION_COMPLETED',
+            phase: 'VALIDATE',
+            status: 'COMPLETED',
+            title: `Quality Gate : ${analysis.score}/100`,
+            detail: {
+              score: analysis.score,
+              criticals,
+              findings: analysis.findings.length,
+              renderAvailable: analysis.renderAvailable
+            }
+          });
+        } catch (gateErr) {
+          logger.warn('Quality Gate serveur indisponible', {
+            component: 'conversation-route-stream',
+            error: gateErr instanceof Error ? gateErr.message : String(gateErr)
+          });
+          recordOnly({
+            type: 'VALIDATION_FAILED',
+            phase: 'VALIDATE',
+            status: 'FAILED',
+            title: 'Vérification impossible — gate indisponible',
+            detail: { error: gateErr instanceof Error ? gateErr.message : String(gateErr) }
+          });
+        }
+      }
+
+      // Compass : le cycle n'est vraiment terminé qu'après le gate
+      emit({ type: 'compass', state: 'COMPLETED' });
 
       // EXECUTION TRANSPARENCY : bilan réel (ce qui a été fait, pas ce qu'on
       // espérait) enregistré avant le done — la synthèse du CDC §24-§25 en T7
@@ -1059,6 +1112,7 @@ export async function handleConversationRoutes(
           htmlChars: assembledHtml.length,
           addedLines: totalAdded,
           removedLines: totalRemoved,
+          ...(gateResult ? { score: gateResult.score } : {}),
           ...(savedRevisionId ? { revisionId: savedRevisionId } : {})
         });
       }
@@ -1067,7 +1121,8 @@ export async function handleConversationRoutes(
         type: 'done',
         updated: true,
         html: assembledHtml,
-        thinking: fullText.replace(/<SECTION[^>]*>[\s\S]*?<\/SECTION>/g, '').trim()
+        thinking: fullText.replace(/<SECTION[^>]*>[\s\S]*?<\/SECTION>/g, '').trim(),
+        ...(gateResult ? { gate: gateResult } : {})
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

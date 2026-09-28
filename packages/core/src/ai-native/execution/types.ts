@@ -73,6 +73,8 @@ export interface ExecutionSummary {
   /** T4 — delta réel de lignes (diff multiset, jamais inventé). */
   addedLines?: number;
   removedLines?: number;
+  /** T6 — score du Quality Gate serveur quand la vérification a tourné. */
+  score?: number;
   revisionId?: string;
   prompt?: string;
   error?: string;

@@ -278,6 +278,21 @@ describe('T1 : ExecutionEventStore — invariants unitaires', () => {
     assert.equal(record!.events.length, 1);
     assert.equal(record!.events[0]!.type, 'PLAN_CREATED');
   });
+
+  it('8. cycle REPAIR accepté APRÈS clôture (Self-Repair post-génération, T6)', () => {
+    const store = new ExecutionEventStore();
+    store.startExecution({ executionId: 'r-1', tenantId: 't', projectId: 'p', mode: 'create', prompt: 'x' });
+    store.completeExecution('r-1', { score: 82 });
+
+    // Les événements de flux restent refusés après clôture
+    assert.throws(() => store.appendEvent('r-1', { type: 'FILE_MODIFIED', phase: 'IMPLEMENT', status: 'COMPLETED', title: 'x' }));
+
+    // Mais le cycle de réparation post-clôture est traçable (CDC §22-§23)
+    store.appendEvent('r-1', { type: 'REPAIR_STARTED', phase: 'REPAIR', status: 'RUNNING', title: 'Réparation lancée' });
+    store.appendEvent('r-1', { type: 'REPAIR_COMPLETED', phase: 'REPAIR', status: 'FAILED', title: 'Sans amélioration — rollback' });
+    const types = store.getExecution('r-1')!.events.map((e) => e.type);
+    assert.ok(types.includes('REPAIR_STARTED') && types.includes('REPAIR_COMPLETED'));
+  });
 });
 
 describe('T4 : diff réel de lignes (countLineDelta)', () => {

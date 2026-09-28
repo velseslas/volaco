@@ -3385,12 +3385,13 @@
         // par une affirmation prématurée — et reste distinguable d'un échec.
         let verifyStepRow = null;
 
-        const PHASE_ORDER = ['UNDERSTAND', 'PLAN', 'IMPLEMENT', 'VALIDATE', 'COMPLETE'];
+        const PHASE_ORDER = ['UNDERSTAND', 'PLAN', 'IMPLEMENT', 'VALIDATE', 'REPAIR', 'COMPLETE'];
         const PHASE_META = {
           UNDERSTAND: ['fa-solid fa-brain', 'Analyse'],
           PLAN: ['fa-solid fa-list-check', 'Plan'],
           IMPLEMENT: ['fa-solid fa-hammer', 'Construction'],
           VALIDATE: ['fa-solid fa-magnifying-glass-chart', 'Vérification'],
+          REPAIR: ['fa-solid fa-wrench', 'Réparation'],
           COMPLETE: ['fa-solid fa-flag-checkered', 'Terminé']
         };
         const phaseEls = {};
@@ -3617,6 +3618,7 @@ ${sections}
                 if (statusEl) statusEl.textContent = 'Connexion au LLM...';
                 thoughtStart = Date.now();
                 currentExecutionId = event.executionId || currentExecutionId;
+                window._lastExecutionId = currentExecutionId;
                 textEl = traceCard('thought', 'Thought · en cours');
                 textEl.innerHTML = '<span class="animate-pulse text-violet-300 tracking-widest">● ● ●</span>';
                 timelineEnterPhase('UNDERSTAND');
@@ -3744,8 +3746,30 @@ ${sections}
                   } catch (e) { console.warn('Sauvegarde:', e); }
                   // LOT 2 — l'arborescence réelle change après génération
                   loadFileTree();
-                  // LOT 5 — Quality Gate automatique (§25 V8 : No Quality Regression)
-                  runQualityGate();
+                  // LOT 5 — le Quality Gate tourne désormais CÔTÉ SERVEUR (T6,
+                  // source de vérité unique) : résultat dans event.gate.
+                  const gate = event.gate || null;
+                  if (verifyStepRow) {
+                    const vIcon = verifyStepRow.querySelector('i');
+                    const vLabel = verifyStepRow.querySelector('span');
+                    if (gate) {
+                      if (vIcon) vIcon.className = 'fa-solid fa-check text-emerald-400 text-[10px] w-3.5';
+                      if (vLabel) vLabel.textContent = '✓ Quality Gate : ' + gate.score + '/100';
+                    } else {
+                      if (vIcon) vIcon.className = 'fa-solid fa-triangle-exclamation text-amber-400 text-[10px] w-3.5';
+                      if (vLabel) vLabel.textContent = 'Vérification non exécutée — gate serveur indisponible';
+                    }
+                    verifyStepRow = null;
+                  }
+                  const termBody = traceCard('terminal', 'Terminal — vibe render index.html');
+                  if (termBody) {
+                    const lines = gate
+                      ? ['$ render index.html (Chromium headless)', '✓ Quality Gate : ' + gate.score + '/100']
+                      : ['$ render index.html (Chromium headless)', '✗ Vérification non exécutée (gate serveur indisponible)'];
+                    if (gate) (gate.findings || []).slice(0, 6).forEach((f) => lines.push('• [' + f.severity + '] ' + f.title));
+                    termBody.textContent = lines.join(String.fromCharCode(10));
+                  }
+                  if (gate) showQualityGateBanner(gate);
                   if (titleEl) titleEl.innerHTML = '<i class="fa-solid fa-circle-check text-sm" style="color:#4ade80;"></i><span style="color:#4ade80;">Application générée</span>';
                   if (statusEl) {
                     const dur = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -3798,27 +3822,6 @@ ${sections}
                     fileRow.classList.add('cursor-pointer', 'hover:text-violet-300');
                     fileRow.onclick = () => { requestWorkspaceSubTab('code'); selectCodeFile('index.html'); };
                   }
-                  runQualityGate().then((gate) => {
-                    if (verifyStepRow) {
-                      const vIcon = verifyStepRow.querySelector('i');
-                      const vLabel = verifyStepRow.querySelector('span');
-                      if (gate) {
-                        if (vIcon) vIcon.className = 'fa-solid fa-check text-emerald-400 text-[10px] w-3.5';
-                        if (vLabel) vLabel.textContent = '✓ Quality Gate : ' + gate.score + '/100';
-                      } else {
-                        if (vIcon) vIcon.className = 'fa-solid fa-triangle-exclamation text-amber-400 text-[10px] w-3.5';
-                        if (vLabel) vLabel.textContent = 'Vérification indisponible — le gate n\u2019a pas répondu';
-                      }
-                      verifyStepRow = null;
-                    }
-                    const termBody = traceCard('terminal', 'Terminal — vibe render index.html');
-                    if (!termBody) return;
-                    const lines = gate
-                      ? ['$ render index.html (Chromium headless)', '✓ Quality Gate : ' + gate.score + '/100']
-                      : ['$ render index.html (Chromium headless)', '✗ Quality Gate injoignable — vérification non exécutée'];
-                    if (gate) (gate.findings || []).slice(0, 6).forEach((f) => lines.push('• [' + f.severity + '] ' + f.title));
-                    termBody.textContent = lines.join(String.fromCharCode(10));
-                  });
                 }
               } else if (event.type === 'plan' && event.plan) {
                 // LOT 4 — carte de plan réelle (Plan Engine, §17 CDC)
@@ -3848,6 +3851,8 @@ ${sections}
                   timelineEnterPhase('UNDERSTAND');
                 } else if (event.state === 'EXECUTING') {
                   timelineEnterPhase('IMPLEMENT');
+                } else if (event.state === 'REPAIRING') {
+                  timelineEnterPhase('REPAIR');
                 } else if (event.state === 'VALIDATING') {
                   timelineEnterPhase('VALIDATE');
                   verifyStepRow = agentStepAdd('fa-solid fa-magnifying-glass-chart', 'Vérification du rendu réel…');
@@ -6106,7 +6111,7 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
         const res = await fetch(`/api/v1/projects/${pid}/repair`, {
           method: 'POST',
           headers: studioApiHeaders(),
-          body: JSON.stringify({ maxIterations: 2 })
+          body: JSON.stringify({ maxIterations: 2, executionId: window._lastExecutionId || undefined })
         });
         const data = await res.json();
         if (res.ok) {
@@ -10140,12 +10145,13 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
     // Timeline de replay : mêmes phases que le direct, reconstruites depuis
     // les événements RÉELS persistés (ts serveur) — durées calculées sur les
     // timestamps serveur, statut de la dernière phase = statut de l'exécution.
-    const REPLAY_PHASES = ['UNDERSTAND', 'PLAN', 'IMPLEMENT', 'VALIDATE', 'COMPLETE'];
+    const REPLAY_PHASES = ['UNDERSTAND', 'PLAN', 'IMPLEMENT', 'VALIDATE', 'REPAIR', 'COMPLETE'];
     const REPLAY_PHASE_META = {
       UNDERSTAND: ['fa-solid fa-brain', 'Analyse'],
       PLAN: ['fa-solid fa-list-check', 'Plan'],
       IMPLEMENT: ['fa-solid fa-hammer', 'Construction'],
       VALIDATE: ['fa-solid fa-magnifying-glass-chart', 'Vérification'],
+      REPAIR: ['fa-solid fa-wrench', 'Réparation'],
       COMPLETE: ['fa-solid fa-flag-checkered', 'Terminé']
     };
 
