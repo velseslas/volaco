@@ -174,6 +174,50 @@ describe('T1 : Execution Transparency — événements typés et persistés', ()
     assert.ok(approved, 'l\'approbation humaine du plan doit être tracée (CDC §21)');
     assert.ok(record.events.find((e) => e.type === 'EXECUTION_STARTED')!.seq! < approved!.seq!, 'PLAN_APPROVED vient après le démarrage');
   });
+
+  it('6. GET /executions : liste légère (méta, sans events) + latest complète + 404 + isolation tenant', async () => {
+    // Produit une exécution connue via le stream planFirst
+    const events = await streamEvents(baseUrl, projectId, {
+      message: 'Crée une une page vitrine',
+      isModification: false,
+      planFirst: true
+    });
+    const executionId = events.find((e) => e.type === 'start')!.executionId!;
+
+    // Liste : méta seulement
+    const listRes = await fetch(`${baseUrl}/api/v1/projects/${projectId}/executions`, { headers: H });
+    assert.equal(listRes.status, 200);
+    const list = (await listRes.json()) as { executions: Array<Record<string, unknown>> };
+    assert.ok(list.executions.length >= 1, 'au moins une exécution listée');
+    const mine = list.executions.find((e) => e.executionId === executionId);
+    assert.ok(mine, 'l\'exécution du stream est listée');
+    assert.ok(!('events' in (mine || {})), 'la liste ne porte pas les événements (volume)');
+    assert.equal(mine!.eventsCount, executionStore.getExecution(executionId)!.events.length, 'eventsCount reflète le réel');
+
+    // Latest : enregistrement complet avec événements
+    const latestRes = await fetch(`${baseUrl}/api/v1/projects/${projectId}/executions/latest`, { headers: H });
+    assert.equal(latestRes.status, 200);
+    const latest = (await latestRes.json()) as { execution: { executionId: string; events: unknown[] } };
+    assert.equal(latest.execution.executionId, executionId, 'latest = exécution la plus récente');
+    assert.ok(Array.isArray(latest.execution.events) && latest.execution.events.length > 0, 'latest porte les événements');
+
+    // Détail par id inconnu : 404
+    const missingRes = await fetch(`${baseUrl}/api/v1/projects/${projectId}/executions/inexistant`, { headers: H });
+    assert.equal(missingRes.status, 404);
+
+    // Isolation tenant : un autre tenant ne voit NI la liste NI l'exécution
+    const otherH = { ...H, 'x-tenant-id': 'autre-tenant' };
+    const otherProjectRes = await fetch(`${baseUrl}/api/v1/projects`, {
+      method: 'POST', headers: otherH, body: JSON.stringify({ name: 'Autre projet' })
+    });
+    const otherProjectId = ((await otherProjectRes.json()) as { project: { id: string } }).project.id;
+    const crossRes = await fetch(`${baseUrl}/api/v1/projects/${otherProjectId}/executions`, { headers: otherH });
+    const cross = (await crossRes.json()) as { executions: unknown[] };
+    assert.equal(cross.executions.length, 0, 'aucune exécution ne fuit entre tenants');
+    const crossDetail = await fetch(`${baseUrl}/api/v1/projects/${projectId}/executions/${executionId}`, { headers: otherH });
+    // Le projet n'appartient pas à ce tenant : projet introuvable pour lui
+    assert.equal(crossDetail.status, 404);
+  });
 });
 
 describe('T1 : ExecutionEventStore — invariants unitaires', () => {

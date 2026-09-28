@@ -14,6 +14,7 @@ import { handleProjectsRoutes } from './routes/projects.js';
 import { handleDashboardRoutes } from './routes/dashboard.js';
 import { handleFilesRoutes } from './routes/files.js';
 import { handleTerminalRoutes } from './routes/terminal.js';
+import { handleExecutionRoutes } from './routes/executions.js';
 import { handleSettingsRoutes } from './routes/settings.js';
 import { handleRevisionsRoutes } from './routes/revisions.js';
 import { handleObservabilityRoutes } from './routes/observability.js';
@@ -346,6 +347,7 @@ const API_ROUTES: readonly RouteEntry[] = [
   { name: 'ai-proxy', handler: handleAiProxyRoutes },
   { name: 'files (CORE-003/004)', handler: handleFilesRoutes },
   { name: 'terminal (CORE-005)', handler: handleTerminalRoutes },
+  { name: 'executions (Transparency)', handler: handleExecutionRoutes },
   { name: 'settings (CORE-006)', handler: handleSettingsRoutes },
   { name: 'projects (FND-003)', handler: projectsWithAudit },
   { name: 'revisions (FND-004)', handler: revisionsWithAudit }

@@ -3127,6 +3127,7 @@
           head.innerHTML = '<div class="flex items-center space-x-2 text-[10px] font-bold text-slate-300"><i class="' + (icons[kind] || '') + '"></i><span>' + title + '</span></div><i class="chev fa-solid fa-chevron-up text-[9px] text-slate-500"></i>';
           const body = document.createElement('div');
           body.className = 'px-3 py-2 text-[11px] leading-relaxed whitespace-pre-wrap';
+          body.setAttribute('data-body', '1');
           head.addEventListener('click', () => {
             body.classList.toggle('hidden');
             const ch = head.querySelector('.chev');
@@ -3356,6 +3357,10 @@
         // le résultat.
         const agentStepsBox = () => document.getElementById('agentSteps-' + msgId);
         let agentRunningRow = null;
+        // T2 honnêteté (§31/§32 CDC) : la ligne « Vérification du rendu réel »
+        // n'est close que par le RÉSULTAT du Quality Gate (score réel), jamais
+        // par une affirmation prématurée — et reste distinguable d'un échec.
+        let verifyStepRow = null;
 
         function agentStepClose(okLabel) {
           if (!agentRunningRow) return;
@@ -3488,10 +3493,8 @@ ${sections}
                 textEl = traceCard('thought', 'Thought · en cours');
                 textEl.innerHTML = '<span class="animate-pulse text-violet-300 tracking-widest">● ● ●</span>';
                 agentStepAdd('fa-solid fa-brain', 'Réflexion sur ta demande…');
-                agentStepAdd('fa-solid fa-brain', 'Réflexion sur ta demande…');
                 // Conversation vivante — indicateur de frappe vivant pendant la
                 // réflexion (remplacé par la narration dès qu'elle arrive)
-                if (textEl) textEl.innerHTML = '<span class="animate-pulse text-violet-300 tracking-widest">● ● ●</span>';
               } else if (event.type === 'chat' && event.text) {
                 chatText += event.text;
                 tokenCount++;
@@ -3642,28 +3645,44 @@ ${sections}
                     if (statusEl) statusEl.innerHTML = '<span style="color:#fbbf24;">⚠ Modification rejetée : des sections ont disparu sans demande.</span>';
                   }
                   setTimeout(() => sendCanvasState('ready'), 350);
-                  agentStepClose('Rendu validé par le Quality Gate');
                   // Cartes Write + Terminal — le fichier écrit et la vérification,
                   // visibles dans la conversation comme des tool calls.
                   const writeBody = traceCard('write', 'Write — index.html · ' + (currentAppHtml.length / 1024).toFixed(1) + ' Ko');
                   if (writeBody) {
-                    writeBody.innerHTML = "index.html — " + currentAppHtml.split(String.fromCharCode(10)).length + " lignes enregistrées dans le projet. <span class='text-violet-300 cursor-pointer underline' data-open-code>Ouvrir l éditeur</span>";
+                    writeBody.innerHTML = "index.html — " + currentAppHtml.split(String.fromCharCode(10)).length + " lignes enregistrées dans le projet. <span class='text-violet-300 cursor-pointer underline' data-open-code>Ouvrir l'éditeur</span>";
                     const openCode = writeBody.querySelector('[data-open-code]');
                     if (openCode) openCode.addEventListener('click', () => { requestWorkspaceSubTab('code'); selectCodeFile('index.html'); });
                   }
-                  runQualityGate().then((gate) => {
-                    if (!gate) return;
-                    const termBody = traceCard('terminal', 'Terminal — vibe render index.html');
-                    if (!termBody) return;
-                    const lines = ['$ render index.html (Chromium headless)', '✓ Quality Gate : ' + gate.score + '/100'];
-                    (gate.findings || []).slice(0, 6).forEach((f) => lines.push('• [' + f.severity + '] ' + f.title));
-                    termBody.textContent = lines.join(String.fromCharCode(10));
-                  });
+                  // La ligne « Vérification » reste ouverte : c'est le résultat
+                  // RÉEL du gate ci-dessous qui la clôturera (✓ score, ou ⚠ si le
+                  // gate n'a pas répondu). On détache donc la row du suivi auto.
+                  agentRunningRow = null;
                   const fileRow = agentStepAdd('fa-regular fa-file-code', 'index.html sauvegardé — voir le code');
                   if (fileRow) {
                     fileRow.classList.add('cursor-pointer', 'hover:text-violet-300');
                     fileRow.onclick = () => { requestWorkspaceSubTab('code'); selectCodeFile('index.html'); };
                   }
+                  runQualityGate().then((gate) => {
+                    if (verifyStepRow) {
+                      const vIcon = verifyStepRow.querySelector('i');
+                      const vLabel = verifyStepRow.querySelector('span');
+                      if (gate) {
+                        if (vIcon) vIcon.className = 'fa-solid fa-check text-emerald-400 text-[10px] w-3.5';
+                        if (vLabel) vLabel.textContent = '✓ Quality Gate : ' + gate.score + '/100';
+                      } else {
+                        if (vIcon) vIcon.className = 'fa-solid fa-triangle-exclamation text-amber-400 text-[10px] w-3.5';
+                        if (vLabel) vLabel.textContent = 'Vérification indisponible — le gate n\u2019a pas répondu';
+                      }
+                      verifyStepRow = null;
+                    }
+                    const termBody = traceCard('terminal', 'Terminal — vibe render index.html');
+                    if (!termBody) return;
+                    const lines = gate
+                      ? ['$ render index.html (Chromium headless)', '✓ Quality Gate : ' + gate.score + '/100']
+                      : ['$ render index.html (Chromium headless)', '✗ Quality Gate injoignable — vérification non exécutée'];
+                    if (gate) (gate.findings || []).slice(0, 6).forEach((f) => lines.push('• [' + f.severity + '] ' + f.title));
+                    termBody.textContent = lines.join(String.fromCharCode(10));
+                  });
                 }
               } else if (event.type === 'plan' && event.plan) {
                 // LOT 4 — carte de plan réelle (Plan Engine, §17 CDC)
@@ -3685,7 +3704,7 @@ ${sections}
                 if (info) setCompassState(event.state, info[0], info[1], info[2]);
                 const canvasStateMap = { UNDERSTANDING: 'thinking', PLANNING: 'thinking', EXECUTING: 'writing', REPAIRING: 'writing', VALIDATING: 'validating', COMPLETED: 'ready' };
                 if (canvasStateMap[event.state]) sendCanvasState(canvasStateMap[event.state]);
-                if (event.state === 'VALIDATING') agentStepAdd('fa-solid fa-magnifying-glass-chart', 'Vérification du rendu réel…');
+                if (event.state === 'VALIDATING') verifyStepRow = agentStepAdd('fa-solid fa-magnifying-glass-chart', 'Vérification du rendu réel…');
               } else if (event.type === 'error') {
                 if (statusEl) statusEl.innerHTML = '<span style="color:#f87171;">Erreur: ' + (event.error || '') + '</span>';
               }
@@ -5099,6 +5118,8 @@ ${sections}
       const dd = document.getElementById('projectDropdown');
       if (dd) dd.classList.add('hidden');
       showCaptureToast(`Projet "${proj.name}" chargé !`);
+      // T2 — replay : la dernière génération de CE projet réapparaît (réelle)
+      renderLastExecutionReplay();
     }
 
     function openNewProjectModal() {
@@ -9748,6 +9769,10 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
       // Bloquer le comportement par défaut du navigateur sur toute la page
       window.addEventListener('dragover', (e) => e.preventDefault(), false);
       window.addEventListener('drop', (e) => e.preventDefault(), false);
+      // T2 — replay au refresh (CDC §17) : la dernière exécution du projet
+      // actif est restituée depuis le backend, la conversation ne « perd »
+      // pas la trace de la génération précédente.
+      renderLastExecutionReplay();
 
       const chatPanelEl = document.getElementById('chatPanel');
       const textarea = document.getElementById('wsPromptInput');
@@ -9857,6 +9882,75 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
       // Chat initial 100% propre et épuré : aucune bulle d'accueil superflue
       const history = document.getElementById('wsChatHistory');
       if (history) history.innerHTML = '';
+    }
+
+    // ==================== T2 — REPLAY DE LA DERNIÈRE EXÉCUTION (CDC §17) ====
+    // Après un refresh ou un changement de projet, la dernière génération
+    // réapparaît sous forme d'une carte compacte — données RÉELLES du backend
+    // (ExecutionEventStore), jamais reconstruites de tête côté client.
+    const replayedExecutions = new Set();
+
+    function executionRelativeTime(ts) {
+      const diffMin = Math.max(0, Math.round((Date.now() - ts) / 60000));
+      if (diffMin < 1) return 'à l\u2019instant';
+      if (diffMin < 60) return 'il y a ' + diffMin + ' min';
+      const h = Math.floor(diffMin / 60);
+      if (h < 24) return 'il y a ' + h + ' h';
+      return 'il y a ' + Math.floor(h / 24) + ' j';
+    }
+
+    function executionStatusInfo(ex) {
+      // RUNNING + silence serveur > 2 min = interrompue par un refresh :
+      // honnête, on n'affiche pas « en cours » pour une génération morte.
+      if (ex.status === 'RUNNING' && Date.now() - (ex.updatedAt || ex.startedAt) > 120000) {
+        return ['fa-solid fa-circle-pause text-amber-400', 'Interrompue (génération coupée par un rafraîchissement)'];
+      }
+      const map = {
+        COMPLETED: ['fa-solid fa-circle-check text-emerald-400', 'Terminée'],
+        FAILED: ['fa-solid fa-circle-xmark text-rose-400', 'Échouée'],
+        CANCELLED: ['fa-solid fa-circle-stop text-slate-400', 'Annulée'],
+        WAITING_USER: ['fa-solid fa-circle-half-stroke text-amber-400', 'En attente de validation du plan'],
+        RUNNING: ['fa-solid fa-circle-notch fa-spin text-violet-400', 'En cours…']
+      };
+      return map[ex.status] || ['fa-solid fa-circle-question text-slate-400', ex.status];
+    }
+
+    async function renderLastExecutionReplay() {
+      try {
+        const proj = userProjects.find(p => p.id === activeProjectId);
+        const pid = proj && proj.serverProjectId;
+        if (!pid) return;
+        const res = await fetch('/api/v1/projects/' + pid + '/executions/latest', { headers: studioApiHeaders() });
+        if (!res.ok) return;
+        const data = await res.json();
+        const ex = data && data.execution;
+        if (!ex || !ex.executionId || replayedExecutions.has(ex.executionId)) return;
+        replayedExecutions.add(ex.executionId);
+
+        const [iconCls, statusLabel] = executionStatusInfo(ex);
+        const rows = [];
+        let durTxt = '';
+        if (ex.completedAt && ex.completedAt > ex.startedAt) {
+          const d = Math.round((ex.completedAt - ex.startedAt) / 1000);
+          durTxt = d >= 60 ? Math.floor(d / 60) + 'm ' + (d % 60) + 's' : d + 's';
+        }
+        rows.push('<div class="flex items-center space-x-2"><i class="' + iconCls + ' text-[10px]"></i><span>' + canonicalEscape(statusLabel) + (durTxt ? ' · ' + durTxt : '') + '</span></div>');
+        const s = ex.summary || {};
+        const bits = [];
+        if (s.sectionsCreated) bits.push(s.sectionsCreated + ' section' + (s.sectionsCreated > 1 ? 's' : '') + ' construite' + (s.sectionsCreated > 1 ? 's' : ''));
+        if (s.sectionsModified) bits.push(s.sectionsModified + ' modifiée' + (s.sectionsModified > 1 ? 's' : ''));
+        if (s.sectionsDeleted) bits.push(s.sectionsDeleted + ' supprimée' + (s.sectionsDeleted > 1 ? 's' : ''));
+        if (bits.length) rows.push('<div class="text-slate-400">' + canonicalEscape(bits.join(' · ')) + '</div>');
+        if (s.error) rows.push('<div class="text-rose-300">' + canonicalEscape(String(s.error).slice(0, 140)) + '</div>');
+        if (ex.prompt) rows.push('<div class="text-slate-500 italic">&laquo; ' + canonicalEscape(ex.prompt.slice(0, 110)) + ' &raquo;</div>');
+
+        appendChatMessage('assistant',
+          '<div class="rounded-xl border border-[#1a2238] bg-[#0a0e1c] px-3 py-2 space-y-1">' +
+          '<div class="flex items-center justify-between text-[10px] font-bold text-slate-300">' +
+          '<span class="flex items-center space-x-2"><i class="fa-solid fa-clock-rotate-left text-violet-400"></i><span>Dernière génération</span></span>' +
+          '<span class="text-slate-500 font-normal">' + executionRelativeTime(ex.updatedAt || ex.startedAt) + '</span></div>' +
+          rows.join('') + '</div>');
+      } catch (_) { /* replay best-effort : ne casse jamais le chargement */ }
     }
 
     // Helper : Détecter si la demande correspond à un template instantané pré-compilé
