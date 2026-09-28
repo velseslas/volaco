@@ -13,6 +13,7 @@
 
 import type { ExecutionEventStore } from './store.js';
 import type { ExecutionEvent } from './types.js';
+import { normalizeExecutionEvent } from './activity.js';
 
 export interface RecordableEvent {
   type: ExecutionEvent['type'];
@@ -30,7 +31,12 @@ export class ExecutionRecorder {
     private readonly send: (data: Record<string, unknown>) => void
   ) {}
 
-  /** Envoie une frame SSE ; enregistre l'événement si fourni. */
+  /**
+   * Envoie une frame SSE ; enregistre l'événement si fourni. Les frames
+   * « milestone » portent la vue normalisée `activity` (LOT B) : le client
+   * du Live Activity Stream rend l'activité SANS posséder son propre
+   * normalisateur — une seule source de vérité, côté serveur.
+   */
   public frame(data: Record<string, unknown>, event?: RecordableEvent): void {
     if (event) {
       const stored = this.store.appendEvent(this.executionId, event);
@@ -39,7 +45,8 @@ export class ExecutionRecorder {
         executionId: this.executionId,
         seq: stored.seq,
         phase: stored.phase,
-        status: stored.status
+        status: stored.status,
+        activity: normalizeExecutionEvent(stored)
       });
       return;
     }

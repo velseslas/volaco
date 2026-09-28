@@ -15,6 +15,7 @@ import { assertPermission } from '../../../../packages/core/src/identity/permiss
 import { NotFoundError } from '../../../../packages/core/src/errors.js';
 import { projectStore } from '../../../../packages/core/src/identity/project.js';
 import { executionStore, activeCancelFlags } from '../../../../packages/core/src/ai-native/execution/store.js';
+import { normalizeExecutionRecord } from '../../../../packages/core/src/ai-native/execution/activity.js';
 import type { ExecutionRecord } from '../../../../packages/core/src/ai-native/execution/types.js';
 import type { RequestContext } from '../middleware/auth.js';
 
@@ -111,6 +112,12 @@ export async function handleExecutionRoutes(
   if (!record || record.tenantId !== context.tenantId) {
     throw new NotFoundError(`Exécution ${executionId}`, requestId);
   }
-  sendJson(res, 200, { execution: record, requestId });
+  // LOT B — les deux vues partent ensemble : raw (traçabilité) + activities
+  // (vue normalisée pour le renderer unique du Live Activity Stream).
+  sendJson(res, 200, {
+    execution: record,
+    activities: normalizeExecutionRecord(record.events),
+    requestId
+  });
   return true;
 }
