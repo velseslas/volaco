@@ -53,6 +53,34 @@ const planGenerator = new PlanGenerator();
 const executionTimelineEnabled = process.env.VOLACO_EXECUTION_TIMELINE !== 'off';
 
 /**
+ * T7 (CDC §24-§25) — synthèse finale de l'exécution, construite UNIQUEMENT
+ * à partir de mesures réelles : comptes de sections, delta de lignes,
+ * score du gate s'il a tourné, durée mesurée. Aucun chiffre inventé.
+ */
+export function buildFinalSynthesis(input: {
+  sections: Array<{ name: string; mode: string }>;
+  sectionDiffs: Array<{ added: number; removed: number }>;
+  gateScore: number | null;
+  durationSec: number;
+}): string {
+  const created = input.sections.filter((s) => s.mode === 'create' || s.mode === 'add').length;
+  const modified = input.sections.filter((s) => s.mode === 'modify').length;
+  const deleted = input.sections.filter((s) => s.mode === 'delete').length;
+  const added = input.sectionDiffs.reduce((acc, d) => acc + d.added, 0);
+  const removed = input.sectionDiffs.reduce((acc, d) => acc + d.removed, 0);
+  const bits: string[] = [];
+  const actions: string[] = [];
+  if (created) actions.push(`${created} section${created > 1 ? 's' : ''} construite${created > 1 ? 's' : ''}`);
+  if (modified) actions.push(`${modified} modifiée${modified > 1 ? 's' : ''}`);
+  if (deleted) actions.push(`${deleted} supprimée${deleted > 1 ? 's' : ''}`);
+  bits.push(actions.length ? actions.join(' · ') : 'page assemblée');
+  if (added || removed) bits.push(`+${added} −${removed} lignes`);
+  if (input.gateScore !== null) bits.push(`Quality Gate ${input.gateScore}/100`);
+  bits.push(`${Math.max(1, input.durationSec)}s`);
+  return bits.join(' · ');
+}
+
+/**
  * Classification d'intention déterministe (mêmes heuristiques que la route
  * /decide) — utilisée quand aucun intent classifié n'est fourni au flux.
  */
@@ -477,6 +505,8 @@ export async function handleConversationRoutes(
     // et les événements correspondants sont persistés dans executionStore.
     const executionId = requestId;
     let recorder: ExecutionRecorder | null = null;
+    // Durée réelle de l'exécution (CDC §26 : jamais de durée inventée)
+    const streamStartedAt = Date.now();
     // T5 (CDC §20) — annulation utilisateur réelle : la route cancel retourne
     // ce drapeau ; la boucle LLM le vérifie à chaque chunk et s'arrête net.
     const cancelFlag = { cancelled: false };
@@ -949,6 +979,17 @@ export async function handleConversationRoutes(
               const idAfterRegex = new RegExp(`(<section[^>]*id="${sec.after}"[^>]*>[\\s\\S]*?<\\/section>)`, 'g');
               modifiedHtml = modifiedHtml.replace(idAfterRegex, `$1\n${sec.html}`);
             }
+            if (modifiedHtml === before) {
+              // T4/T7 — l'ancre est la DERNIÈRE section : insertion avant
+              // </body> (même convention que le client), sinon la section
+              // générée serait perdue (applied:false pour rien).
+              const bodyClose = modifiedHtml.lastIndexOf('</body>');
+              if (bodyClose !== -1) {
+                modifiedHtml = modifiedHtml.slice(0, bodyClose)
+                  + `\n<div class="vibe-stitched" data-section="${sec.name}">${cleanAddHtml}</div>\n`
+                  + modifiedHtml.slice(bodyClose);
+              }
+            }
           } else if (sec.mode === 'create' && sec.html) {
             // En mode modification, une section "create" = ajout à la fin
             // Nettoie aussi le wrapper si présent
@@ -1117,11 +1158,27 @@ export async function handleConversationRoutes(
         });
       }
 
+      // T7 — synthèse finale : une phrase honnête, des chiffres réels
+      const synthesisText = buildFinalSynthesis({
+        sections: serverSections.map((s) => ({ name: s.name, mode: s.mode })),
+        sectionDiffs,
+        gateScore: gateResult ? gateResult.score : null,
+        durationSec: Math.round((Date.now() - streamStartedAt) / 1000)
+      });
+      recordOnly({
+        type: 'SUMMARY_GENERATED',
+        phase: 'COMPLETE',
+        status: 'COMPLETED',
+        title: 'Synthèse de l\u2019exécution',
+        detail: { text: synthesisText }
+      });
+
       emit({
         type: 'done',
         updated: true,
         html: assembledHtml,
         thinking: fullText.replace(/<SECTION[^>]*>[\s\S]*?<\/SECTION>/g, '').trim(),
+        synthesis: { text: synthesisText },
         ...(gateResult ? { gate: gateResult } : {})
       });
     } catch (err) {

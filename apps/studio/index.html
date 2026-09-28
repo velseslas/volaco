@@ -3822,6 +3822,16 @@ ${sections}
                     fileRow.classList.add('cursor-pointer', 'hover:text-violet-300');
                     fileRow.onclick = () => { requestWorkspaceSubTab('code'); selectCodeFile('index.html'); };
                   }
+                  // T7 — synthèse finale compacte : chiffres réels du serveur
+                  if (event.synthesis && event.synthesis.text) {
+                    const box = agentStepsBox();
+                    if (box) {
+                      const line = document.createElement('div');
+                      line.className = 'text-[10px] text-slate-300 pt-1 border-t border-[#161c2e] mt-1';
+                      line.innerHTML = '<i class="fa-solid fa-flag-checkered text-emerald-400 text-[9px]"></i> ' + canonicalEscape(event.synthesis.text);
+                      box.appendChild(line);
+                    }
+                  }
                 }
               } else if (event.type === 'plan' && event.plan) {
                 // LOT 4 — carte de plan réelle (Plan Engine, §17 CDC)
