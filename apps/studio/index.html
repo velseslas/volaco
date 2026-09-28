@@ -3251,6 +3251,7 @@
           buffer: '',
           queue: [],
           pump: null,
+          pendingCommit: null,   // section_end reçu mais révélation en cours
           shellLoaded: false,    // le shell de construction a-t-il été posé ?
           htmlBeforeGen: ''      // état sain à restaurer en cas d'annulation/erreur
         };
@@ -3286,6 +3287,15 @@
           if (!frame || !frame.contentDocument || !frame.contentDocument.body) { stitch.fallbackRender = true; return; }
           const doc = frame.contentDocument;
           stitchInjectCss(doc);
+          // Une section précédente encore en révélation ? On la termine
+          // immédiatement (flush + commit) avant d'ouvrir la nouvelle zone —
+          // le délai reste borné et la page ne garde jamais deux zones vives.
+          if (stitch.pendingCommit) {
+            while (stitch.queue.length) { const p = stitch.queue.shift(); stitchInsert(p); }
+            const pending = stitch.pendingCommit;
+            stitch.pendingCommit = null;
+            stitchCommit(pending);
+          }
           // Ré-entrée : une zone de build non commitée est nettoyée d'abord
           // (sinon le squelette orphelin reste visible à l'écran)
           if (stitch.buildEl && stitch.buildEl.parentNode) stitch.buildEl.remove();
@@ -3448,24 +3458,25 @@
         }
 
         /**
-         * Met un élément en file d'injection. Si c'est un bloc conteneur unique
-         * et volumineux (le LLM enveloppe presque toujours la section dans
-         * <section><div class="container">…</div></section>), on DESCEND dans
-         * les conteneurs (max 3 niveaux) jusqu'à trouver plusieurs enfants :
-         * ce sont eux qui arrivent un par un — l'effet Stitch survit aux
-         * wrappers et au conteneur principal.
+         * Met un élément en file d'injection — DESCENTE RÉCURSIVE : le LLM
+         * enveloppe presque toujours la section dans
+         * <section><div class="container"><div class="grid">…cartes…</div></div></section>.
+         * Un seul niveau de descente laisserait la grille entière apparaître
+         * d'un bloc. Chaque enfant volumineux est donc décomposé à son tour :
+         * bannière → carte 1 (icône, titre, texte, bouton) → carte 2 → …
          */
-        function stitchQueueElement(el) {
-          let node = el;
-          for (let depth = 0; depth < 3; depth++) {
-            if (node.length <= 600) break;
-            const children = stitchSplitChildren(node);
-            if (!children || children.length === 0) break;
-            if (children.length === 1) { node = children[0]; continue; }
-            for (const child of children) stitch.queue.push(child);
-            return;
+        function stitchQueueElement(el, depth) {
+          if (stitch.queue.length > 60) { stitch.queue.push(el); return; } // garde-fou
+          const d = depth || 0;
+          if (el.length > 600 && d < 5) {
+            const children = stitchSplitChildren(el);
+            if (children && children.length > 1) {
+              for (const child of children) stitchQueueElement(child, d + 1);
+              return;
+            }
+            if (children && children.length === 1) { stitchQueueElement(children[0], d + 1); return; }
           }
-          stitch.queue.push(node);
+          stitch.queue.push(el);
         }
 
         function stitchStopPump() {
@@ -3474,15 +3485,41 @@
 
         function stitchStartPump() {
           if (stitch.pump) return;
+          // CADENCE STITCH : un élément toutes les ~300 ms, INDÉPENDAMMENT de
+          // la vitesse du LLM. Le stream remplit la file, la révélation la
+          // déroule à un rythme perceptible — c'est ce découplage qui donne
+          // l'effet « je vois chaque bloc apparaître ». Accélération seulement
+          // si la file devient énorme (plafond de temps total).
           stitch.pump = setInterval(() => {
-            if (stitch.queue.length === 0) { stitchStopPump(); return; }
-            // Rattrapage adaptatif : on ne finit jamais en retard sur le stream
-            const burst = stitch.queue.length > 14 ? stitch.queue.length : stitch.queue.length > 6 ? 2 : 1;
+            if (stitch.queue.length === 0) {
+              stitchStopPump();
+              // La révélation est terminée : applique le commit différé
+              // (remplacement in-place par le HTML final, invisible à l'œil).
+              if (stitch.pendingCommit) {
+                const info = stitch.pendingCommit;
+                stitch.pendingCommit = null;
+                stitchCommit(info);
+              }
+              return;
+            }
+            const burst = stitch.queue.length > 30 ? 3 : 1;
             for (let i = 0; i < burst; i++) {
               const el = stitch.queue.shift();
               if (el) stitchInsert(el);
             }
-          }, 260);
+          }, 300);
+        }
+
+        /**
+         * Commit DIFFÉRÉ (le cœur de l'effet Stitch) : au section_end, on ne
+         * remplace RIEN immédiatement — la révélation continue à son rythme,
+         * et le remplacement in-place par le HTML final n'a lieu que lorsque
+         * la file est vidée. (L'ancien commit immédiat purgeait la file :
+         * tout apparaissait d'un bloc.)
+         */
+        function stitchCommitDeferred(info) {
+          if (stitch.queue.length === 0 && !stitch.pump) { stitchCommit(info); return; }
+          stitch.pendingCommit = info;
         }
 
         function stitchInsert(el) {
@@ -3517,8 +3554,10 @@
         function stitchCommit(info) {
           const frame = document.getElementById('wsLiveIframe');
           stitchStopPump();
-          // Rattrapage : ce qui est encore en file est injecté immédiatement —
-          // rien de ce qui a été streamé ne disparait au moment du commit.
+          stitch.pendingCommit = null;
+          // Rattrapage de sécurité : si appelé avec une file non vide, on
+          // l'injecte avant le swap (le chemin normal passe par le commit
+          // différé, qui n'arrive ici que file vide).
           while (stitch.queue.length) {
             const pending = stitch.queue.shift();
             stitchInsert(pending);
@@ -3553,6 +3592,7 @@
           stitchStopPump();
           stitch.queue = [];
           stitch.buffer = '';
+          stitch.pendingCommit = null;
           const frame = document.getElementById('wsLiveIframe');
           const doc = frame && frame.contentDocument;
           if (doc && stitch.buildEl && stitch.buildEl.parentNode) stitch.buildEl.remove();
@@ -3569,6 +3609,7 @@
           stitchStopPump();
           stitch.queue = [];
           stitch.buffer = '';
+          stitch.pendingCommit = null;
           stitch.buildEl = null;
           stitch.targetEl = null;
           stitch.skeleton = null;
@@ -3939,7 +3980,7 @@ ${sections}
                     updateEditorContent(currentAppHtml);
                     if (!lastModifiedSections.includes(event.name)) lastModifiedSections.push(event.name);
                     if (stitch.fallbackRender) renderDebounced(currentAppHtml);
-                    else stitchCommit({ name: event.name, mode: event.mode, html: cleanHtml });
+                    else stitchCommitDeferred({ name: event.name, mode: event.mode, html: cleanHtml });
                 vibeTickStep();
                     setTimeout(() => focusPreviewSection(event.name, true), 400);
                 agentStepClose('✓ Section ' + event.name + ' posée');
@@ -3956,7 +3997,7 @@ ${sections}
                   currentAppHtml = buildHtmlDoc(assembledHtml);
                   updateEditorContent(currentAppHtml);
                   if (stitch.fallbackRender) renderDebounced(currentAppHtml);
-                  else stitchCommit({ name: event.name, mode: event.mode || 'create', html: cleanHtml });
+                  else stitchCommitDeferred({ name: event.name, mode: event.mode || 'create', html: cleanHtml });
                 }
                 if (statusEl) statusEl.innerHTML = '<span style="color:#4ade80;">✓ Section ' + event.name + ' assemblée</span>';
                 if (textEl && event.text) {
@@ -3996,6 +4037,21 @@ ${sections}
                   // demande, puis corruption propagée à chaque sauvegarde.
                   const isFullDoc = /<!DOCTYPE|<html[\s>]/i.test(assembledHtml);
                   currentAppHtml = isFullDoc ? assembledHtml : buildHtmlDoc(assembledHtml);
+                  // STITCH — laisse la dernière révélation se terminer (max 6 s)
+                  // avant le rendu final : la construction reste visible jusqu'au
+                  // bout au lieu d'être coupée par le re-rendu exact.
+                  try {
+                    const deadline = Date.now() + 6000;
+                    while ((stitch.queue.length || stitch.pendingCommit || stitch.pump) && Date.now() < deadline) {
+                      await new Promise((r) => setTimeout(r, 150));
+                    }
+                    if (stitch.pendingCommit) {
+                      while (stitch.queue.length) { const p = stitch.queue.shift(); stitchInsert(p); }
+                      const pending = stitch.pendingCommit;
+                      stitch.pendingCommit = null;
+                      stitchCommit(pending);
+                    }
+                  } catch (_) { /* le spectacle ne doit jamais bloquer le done */ }
                   renderNow(currentAppHtml);
                   // STITCH v2 — le document reconstruit en direct est remplacé
                   // par LE rendu final exact (scripts, images) une seule fois ;
