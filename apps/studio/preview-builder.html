@@ -108,6 +108,43 @@
     .tree-row .type { font-size: 9px; color: #475569; margin-left: auto; }
     .tree-row.focus-row { background: rgba(139,92,246,.12); }
 
+    /* ===== ÉTAPE 05 — VISUAL COMPONENT SYSTEM (registry → CSS) ===== */
+    /* Les visuels sont produits par visuals.js (HTML sémantique + classes
+       pvz-*) ; cette feuille décide uniquement de leur apparence. */
+    .pvz-anim { animation: pvzIn .5s ease both; }
+    @keyframes pvzIn { 0% { opacity: 0; transform: translateY(4px); } 100% { opacity: 1; transform: none; } }
+    .pvz-ghosts { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+
+    .pvz-header { display: flex; align-items: center; gap: 18px; padding: 12px 16px; border-radius: 10px; background: #0f1526; border: 1px solid #223052; }
+    .pvz-brand { font-weight: 700; font-size: 13px; color: #e2e8f0; }
+    .pvz-nav { display: flex; gap: 14px; margin-left: auto; }
+    .pvz-nav-item { font-size: 11px; color: #94a3b8; }
+    .pvz-cta { font-size: 11px; font-weight: 600; color: #fff; background: #7c3aed; padding: 6px 12px; border-radius: 8px; }
+
+    .pvz-sidebar { display: flex; flex-direction: column; gap: 8px; }
+    .pvz-side-item { font-size: 11px; color: #94a3b8; padding: 7px 10px; border-radius: 8px; background: #0f1526; border: 1px solid #1a2238; }
+
+    .pvz-content { padding: 6px 0; }
+    .pvz-zone-label { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: #475569; }
+
+    .pvz-card { border: 1px solid #1e293b; border-radius: 12px; padding: 14px 16px; background: #0f1526; }
+    .pvz-card-title { font-size: 11px; color: #94a3b8; }
+    .pvz-card-value { font-size: 20px; font-weight: 700; color: #f1f5f9; margin-top: 6px; }
+    .pvz-card-delta { font-size: 11px; color: #34d399; margin-top: 4px; }
+
+    .pvz-chart { padding: 8px 0; }
+    .pvz-bars { display: flex; align-items: flex-end; gap: 8px; height: 90px; }
+    .pvz-bar { flex: 1; background: linear-gradient(180deg, #8b5cf6, #4c1d95); border-radius: 6px 6px 2px 2px; min-height: 8px; }
+
+    .pvz-table { display: flex; flex-direction: column; gap: 6px; }
+    .pvz-table-row { display: flex; justify-content: space-between; font-size: 11px; color: #94a3b8; padding: 8px 10px; background: #0f1526; border-radius: 8px; border: 1px solid #1a2238; }
+
+    .pvz-generic { font-size: 12px; color: #94a3b8; display: flex; justify-content: space-between; align-items: center; }
+    .pvz-type-tag { font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: #475569; border: 1px solid #1e293b; padding: 2px 8px; border-radius: 999px; }
+
+    /* Ghosts propres au registry : mêmes keyframes que le moteur visuel */
+    .pvz-ghosts .pv-ghost { height: 12px; }
+
     /* STATUSBAR */
     .statusbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 20px; border-top: 1px solid #1a2238; background: #0a0e1c; font-size: 12px; color: #94a3b8; }
     .statusbar .err { color: #fb7185; }
@@ -157,6 +194,7 @@
   <script type="module">
     import { applyBuildEvent, createPreviewBuildState, BUILD_STAGES } from '/preview-builder/engine.js';
     import { renderPreview, buildTimeline } from '/preview-builder/renderer.js';
+    import { renderComponentVisual } from '/preview-builder/visuals.js';
     import { demoBuildScript, scriptToEvents } from '/preview-builder/mocks.js';
 
     const el = (id) => document.getElementById(id);
@@ -170,17 +208,17 @@
        conséquence du state, jamais sa source (aucun timer ne décide d'un état). */
 
     function nodeInner(n) {
-      if (n.status === 'building') {
-        // Structure en construction : label révélé tôt, zones de contenu qui
-        // se remplissent ensuite (générique — aucune mention Card/Header/…).
-        return '<div><span class="pv-label">' + n.label + '</span><span class="pv-building-tag"></span></div>'
-          + '<div class="pv-ghost g1"></div><div class="pv-ghost g2"></div>';
-      }
+      // ÉTAPE 05 — le VISUEL vient du registry (type → représentation), au
+      // statut réel du state : building = titre + zones ghost, completed =
+      // contenu final révélé. Type inconnu → visuel générique.
       if (n.status === 'error') {
         return '<div><span class="pv-label">' + n.label + '</span></div><div class="pv-error">' + (n.error || 'generation failed') + '</div>';
       }
-      // completed : élément stable (label + type)
-      return '<div><span class="pv-label">' + n.label + '</span></div><div class="pv-type">' + n.type + '</div>';
+      const visual = renderComponentVisual({ id: n.id, type: n.type, label: n.label, metadata: n.metadata }, n.status === 'building' ? 'building' : 'completed');
+      if (n.status === 'building') {
+        return '<div><span class="pv-label">' + n.label + '</span><span class="pv-building-tag"></span></div>' + visual;
+      }
+      return visual;
     }
 
     function upsertNode(parentEl, n) {

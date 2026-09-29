@@ -13,6 +13,8 @@ export interface MockComponentSpec {
   type: string;
   label: string;
   parentId?: string;
+  /** Données de démonstration (sans HTML/CSS) — consommées par le registry visuel. */
+  metadata?: Record<string, unknown>;
 }
 
 export interface MockBuildScript {
@@ -35,6 +37,10 @@ export interface MockBuildScript {
  * 400 ms) : c'est LE MOCK qui définit le rythme de la démonstration — le
  * temps nécessaire pour que la construction progressive interne (squelette →
  * label → contenu) soit visible avant la stabilisation.
+ *
+ * ÉTAPE 05 — les metadata portent les DONNÉES DE DÉMONSTRATION de chaque
+ * composant (titre, valeur, delta, liens…) : définition sans HTML/CSS —
+ * la représentation visuelle reste du ressort du registry (visuals.ts).
  */
 export function demoBuildScript(): MockBuildScript {
   return {
@@ -42,17 +48,17 @@ export function demoBuildScript(): MockBuildScript {
       { at: 0, kind: 'stage', stage: 'structure' },
       { at: 500, kind: 'stage', stage: 'sections' },
       { at: 1000, kind: 'stage', stage: 'components' },
-      { at: 1100, kind: 'component', component: { id: 'comp-header', type: 'header', label: 'Header' } },
+      { at: 1100, kind: 'component', component: { id: 'comp-header', type: 'header', label: 'Header', metadata: { title: 'Fleurs & Co', links: 4 } } },
       { at: 2800, kind: 'ready', componentId: 'comp-header' },
-      { at: 3000, kind: 'component', component: { id: 'comp-sidebar', type: 'sidebar', label: 'Side Bar' } },
+      { at: 3000, kind: 'component', component: { id: 'comp-sidebar', type: 'sidebar', label: 'Side Bar', metadata: { items: 4 } } },
       { at: 4700, kind: 'ready', componentId: 'comp-sidebar' },
       { at: 4900, kind: 'component', component: { id: 'comp-content', type: 'content', label: 'Content', parentId: 'comp-sidebar' } },
       { at: 6600, kind: 'ready', componentId: 'comp-content' },
-      { at: 6800, kind: 'component', component: { id: 'comp-card-1', type: 'card', label: 'Card 1', parentId: 'comp-content' } },
+      { at: 6800, kind: 'component', component: { id: 'comp-card-1', type: 'card', label: 'Card 1', parentId: 'comp-content', metadata: { title: 'Revenue', value: '$124,500', delta: '↑ 18.4%' } } },
       { at: 8500, kind: 'ready', componentId: 'comp-card-1' },
-      { at: 8700, kind: 'component', component: { id: 'comp-card-2', type: 'card', label: 'Card 2', parentId: 'comp-content' } },
+      { at: 8700, kind: 'component', component: { id: 'comp-card-2', type: 'card', label: 'Card 2', parentId: 'comp-content', metadata: { title: 'Commandes', value: '1 284', delta: '↑ 6.2%' } } },
       { at: 10400, kind: 'ready', componentId: 'comp-card-2' },
-      { at: 10600, kind: 'component', component: { id: 'comp-chart', type: 'chart', label: 'Chart', parentId: 'comp-content' } },
+      { at: 10600, kind: 'component', component: { id: 'comp-chart', type: 'chart', label: 'Chart', parentId: 'comp-content', metadata: { bars: [40, 65, 50, 85, 60, 95, 70] } } },
       { at: 12300, kind: 'ready', componentId: 'comp-chart' },
       { at: 12500, kind: 'stage', stage: 'content' },
       { at: 12900, kind: 'sectionCompleted', sectionId: 'comp-content' },
@@ -82,7 +88,8 @@ export function scriptToEvents(script: MockBuildScript, baseTimestamp = Date.now
             id: step.component.id,
             type: step.component.type,
             ...(step.component.label !== undefined ? { label: step.component.label } : {}),
-            ...(step.component.parentId !== undefined ? { parentId: step.component.parentId } : {})
+            ...(step.component.parentId !== undefined ? { parentId: step.component.parentId } : {}),
+            ...(step.component.metadata !== undefined ? { metadata: step.component.metadata } : {})
           },
           timestamp: ts
         });

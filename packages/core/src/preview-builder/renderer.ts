@@ -34,6 +34,8 @@ export interface RenderNode {
   canvasVisible: boolean;
   /** LOT 03 — vrai pour l'unique composant `building` actif (dérivé du state). */
   isBuildFocus: boolean;
+  /** ÉTAPE 05 — données de démonstration transportées telles quelles. */
+  metadata?: Record<string, unknown>;
 }
 
 /** Modèle d'affichage complet — la seule chose que la page consomme. */
@@ -137,7 +139,8 @@ function buildNode(
     ...(component.error !== undefined ? { error: component.error } : {}),
     children,
     canvasVisible: component.status !== 'pending',
-    isBuildFocus: focusId !== undefined && component.id === focusId
+    isBuildFocus: focusId !== undefined && component.id === focusId,
+    ...(component.metadata !== undefined ? { metadata: component.metadata } : {})
   };
 }
 

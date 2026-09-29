@@ -58,7 +58,7 @@ export type PreviewBuildEvent =
   | { kind: 'STAGE_ENTERED'; stage: BuildStage; timestamp: number }
   | {
       kind: 'COMPONENT_CREATED';
-      component: { id: string; type: string; label?: string; parentId?: string; stage?: BuildStage };
+      component: { id: string; type: string; label?: string; parentId?: string; stage?: BuildStage; metadata?: Record<string, unknown> };
       timestamp: number;
     }
   | { kind: 'COMPONENT_BUILDING'; componentId: string; timestamp: number }
@@ -144,7 +144,7 @@ export function applyBuildEvent(state: PreviewBuildState, event: PreviewBuildEve
 
     case 'COMPONENT_CREATED': {
       if (withLog.status !== 'building') return ignore();
-      const { id, type, label, parentId, stage } = event.component;
+      const { id, type, label, parentId, stage, metadata } = event.component;
       if (!id || !type) return ignore();
       const previous = withLog.components.get(id);
       const component: ComponentState = {
@@ -155,7 +155,7 @@ export function applyBuildEvent(state: PreviewBuildState, event: PreviewBuildEve
         status: 'pending',
         stage: stage ?? withLog.stage,
         order: previous ? previous.order : withLog.components.size,
-        ...(previous && previous.metadata ? { metadata: previous.metadata } : {})
+        ...(metadata !== undefined ? { metadata } : previous && previous.metadata ? { metadata: previous.metadata } : {})
       };
       return { ...withLog, components: new Map(withLog.components).set(id, component) };
     }
