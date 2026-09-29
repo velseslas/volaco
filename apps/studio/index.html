@@ -2927,7 +2927,20 @@
       // disparu (store réinitialisé, redémarrage avec données nettoyées) : si
       // la synchronisation échoue, on recrée le projet proprement au lieu de
       // laisser le Studio bloqué pour toujours.
-      const syncInto = async (pid) => {
+      // COHÉRENCE (audit preview) : le fichier serveur est la SOURCE DE VÉRITÉ
+      // des générations — on ne l'écrase PLUS avec la copie locale (potentiellement
+      // stale) à chaque submit. Le code local n'est poussé que si le serveur
+      // n'a AUCUN contenu (première création du projet). Les modifications
+      // volontaires passent par les flux de sauvegarde explicites.
+      const seedIfEmpty = async (pid) => {
+        try {
+          const res = await fetch(`/api/v1/projects/${pid}/files/content?path=index.html`, { headers: studioApiHeaders() });
+          if (res.ok) {
+            const data = await res.json();
+            const existing = (data.file && data.file.content) || '';
+            if (existing.trim().length > 0) return; // le serveur fait foi
+          }
+        } catch (_) { /* lecture impossible : on tente le seed */ }
         const res = await fetch(`/api/v1/projects/${pid}/files/content`, {
           method: 'PUT',
           headers: studioApiHeaders(),
@@ -2957,16 +2970,16 @@
         await createServerProject();
       } else {
         try {
-          await syncInto(proj.serverProjectId);
+          await seedIfEmpty(proj.serverProjectId);
         } catch (syncErr) {
           // Projet serveur introuvable (404) → recréation + nouvelle sync
           await createServerProject();
-          await syncInto(proj.serverProjectId);
+          await seedIfEmpty(proj.serverProjectId);
         }
         return proj.serverProjectId;
       }
 
-      await syncInto(proj.serverProjectId);
+      await seedIfEmpty(proj.serverProjectId);
       return proj.serverProjectId;
     }
 
@@ -3106,6 +3119,7 @@
               </div>
             </div>
             <div id="${msgId}-trace" class="space-y-2"></div>
+            <div id="${msgId}-activity" class="mt-2 hidden"></div>
             <div class="text-[10px] text-slate-500" id="${msgId}-status">en cours...</div>
             <div id="agentSteps-${msgId}" class="mt-2 border border-[#1a2238] rounded-xl p-2 bg-[#0a0e1c] hidden"><div class="text-[9px] font-bold text-slate-500 uppercase tracking-wide mb-1">Étapes de l'agent</div><div id="agentStepsPhases-${msgId}" class="space-y-1"></div></div>
           </div>
@@ -3113,6 +3127,25 @@
         let textEl = null;
         let thoughtStart = Date.now();
         const traceEl = document.getElementById(msgId + '-trace');
+
+        // LOT C+D — ACTIVITY STREAM : quand actif, ce renderer UNIQUE rend les
+        // ActivityEvent normalisés (serveur) et l'ancien moteur (timeline par
+        // phases + rows) devient INERT dans ce message — code conservé pour un
+        // rollback instantané (localStorage 'vibe_activity_stream' = '0').
+        let activityFeed = null;
+        if (activityStreamEnabled) {
+          const actContainer = document.getElementById(msgId + '-activity');
+          if (actContainer) {
+            actContainer.classList.remove('hidden');
+            activityFeed = createActivityStream(actContainer, { autoScroll: true });
+            const inert = function () { return null; };
+            timelineEnterPhase = inert;
+            timelineCancelCurrent = inert;
+            timelineFailCurrent = inert;
+            agentStepAdd = inert;
+            agentStepClose = inert;
+          }
+        }
 
         // Trace de l'agent : cartes Thought / Write / Terminal (style ZCode)
         function traceCard(kind, title) {
@@ -3171,19 +3204,21 @@
           };
           headerRow.appendChild(stopBtn);
         })();
-        // LOT 5 — capture la version AVANT pour la comparaison A/B
+        // LOT 5 — capture la version AVANT pour la comparaison A/B.
+        // Comptage en NOMS UNIQUES : la déduplication serveur (footer ×3 → ×1)
+        // n'est pas une perte de contenu — seul un nom qui DISPARAÎT en est un.
         if (typeof currentAppHtml === 'string' && currentAppHtml.length > 100) {
           window._preGenerationHtml = currentAppHtml;
-          preSectionCount = (currentAppHtml.match(/data-section="/g) || []).length;
+          preSectionCount = new Set([...currentAppHtml.matchAll(/data-section="([^"]+)"/g)].map((m) => m[1].toLowerCase())).size;
         }
-        // STITCH v2 + cohérence des données — avant une MODIFICATION, le
-        // preview et le document de travail sont ALIGNÉS sur le fichier
-        // serveur réel : c'est LUI que l'IA va modifier. Sans cette
-        // hydratation, une divergence local/serveur (autre session, autre
-        // machine) faisait construire l'effet Stitch sur une page obsolète,
-        // et le résultat final « sautait » d'un contenu à l'autre au done.
+        // STITCH v2 + cohérence des données — le preview et le document de
+        // travail sont ALIGNÉS sur le fichier serveur réel : c'est LUI que
+        // l'IA va modifier. Sans cette hydratation, une divergence
+        // local/serveur (autre session, autre machine) faisait construire
+        // l'effet Stitch sur une page obsolète, et le résultat final
+        // « sautait » d'un contenu à l'autre au done.
         try {
-          if (isModification && serverProjectId) {
+          if (serverProjectId) {
             const syncRes = await fetch('/api/v1/projects/' + serverProjectId + '/files/content?path=index.html', { headers: studioApiHeaders() });
             if (syncRes.ok) {
               const syncData = await syncRes.json();
@@ -3191,7 +3226,7 @@
               if (typeof serverHtml === 'string' && serverHtml.length > 100 && serverHtml !== currentAppHtml) {
                 currentAppHtml = serverHtml;
                 window._preGenerationHtml = currentAppHtml;
-                preSectionCount = (currentAppHtml.match(/data-section="/g) || []).length;
+                preSectionCount = new Set([...currentAppHtml.matchAll(/data-section="([^"]+)"/g)].map((m) => m[1].toLowerCase())).size;
                 renderWorkspaceIframe(currentAppHtml);
                 updateEditorContent(currentAppHtml);
               }
@@ -3886,6 +3921,11 @@
     @keyframes shimmer { 0% { background-position: -1000px 0; } 100% { background-position: 1000px 0; } }
     .vibe-skeleton { background: linear-gradient(90deg, rgba(30,41,59,.5) 0%, rgba(51,65,85,.8) 50%, rgba(30,41,59,.5) 100%); background-size: 1000px 100%; animation: shimmer 1.5s infinite linear; border-radius: 8px; }
     @keyframes stitchReveal { 0% { opacity: 0; transform: translateY(8px); filter: blur(4px); } 50% { opacity: 0.8; filter: blur(2px); } 100% { opacity: 1; transform: translateY(0); filter: blur(0); } }
+    /* LOT C — pulse subtil de l'activité RUNNING : halo discret, jamais de
+       déplacement du composant ; désactivé si prefers-reduced-motion (spec §6/§25). */
+    .vibe-pulse { animation: vibePulse 1.8s ease-in-out infinite; }
+    @keyframes vibePulse { 0%, 100% { opacity: 1; text-shadow: none; } 50% { opacity: .55; text-shadow: 0 0 6px rgba(167,139,250,.45); } }
+    @media (prefers-reduced-motion: reduce) { .vibe-pulse { animation: none; } }
     .vibe-stitched { animation: stitchReveal 0.6s ease-out forwards; }
   </style>
 </head>
@@ -3933,13 +3973,19 @@ ${sections}
             try {
               const event = JSON.parse(dataStr);
 
+              // LOT D — point d'alimentation UNIQUE de l'ActivityStream : toute
+              // frame milestone porte sa vue normalisée `activity` (serveur).
+              if (event.activity && activityFeed) activityFeed.append([event.activity]);
+
               if (event.type === 'start') {
                 if (statusEl) statusEl.textContent = 'Connexion au LLM...';
                 thoughtStart = Date.now();
                 currentExecutionId = event.executionId || currentExecutionId;
                 window._lastExecutionId = currentExecutionId;
                 serverIsModification = event.isModification === true;
-                textEl = traceCard('thought', 'Thought · en cours');
+                // LOT C — plus de « Thought » (spec §14) : narration
+                // opérationnelle présentée comme Analyse, dans les deux modes.
+                textEl = traceCard('thought', activityFeed ? '✦ Analyse' : 'Thought · en cours');
                 textEl.innerHTML = '<span class="animate-pulse text-violet-300 tracking-widest">● ● ●</span>';
                 timelineEnterPhase('UNDERSTAND');
                 agentStepAdd('fa-solid fa-brain', 'Réflexion sur ta demande…');
@@ -4101,19 +4147,22 @@ ${sections}
                     }
                     verifyStepRow = null;
                   }
-                  const termBody = traceCard('terminal', 'Terminal — vibe render index.html');
-                  if (termBody) {
-                    const lines = gate
-                      ? ['$ render index.html (Chromium headless)', '✓ Quality Gate : ' + gate.score + '/100']
-                      : ['$ render index.html (Chromium headless)', '✗ Vérification non exécutée (gate serveur indisponible)'];
-                    if (gate) (gate.findings || []).slice(0, 6).forEach((f) => lines.push('• [' + f.severity + '] ' + f.title));
-                    termBody.textContent = lines.join(String.fromCharCode(10));
-                  }
+                  if (!activityFeed) {
+                    const termBody = traceCard('terminal', 'Terminal — vibe render index.html');
+                    if (termBody) {
+                      const lines = gate
+                        ? ['$ render index.html (Chromium headless)', '✓ Quality Gate : ' + gate.score + '/100']
+                        : ['$ render index.html (Chromium headless)', '✗ Vérification non exécutée (gate serveur indisponible)'];
+                      if (gate) (gate.findings || []).slice(0, 6).forEach((f) => lines.push('• [' + f.severity + '] ' + f.title));
+                      termBody.textContent = lines.join(String.fromCharCode(10));
+                    }
+                  } // sinon : le score vit DANS le flux (VALIDATION_COMPLETED), une seule fois
                   if (gate) showQualityGateBanner(gate);
                   if (titleEl) titleEl.innerHTML = '<i class="fa-solid fa-circle-check text-sm" style="color:#4ade80;"></i><span style="color:#4ade80;">Application générée</span>';
                   if (statusEl) {
                     const dur = ((Date.now() - startTime) / 1000).toFixed(1);
-                    statusEl.innerHTML = '<span style="color:#4ade80;">✓ ' + tokenCount + ' tokens · ' + dur + 's</span>';
+                    // LOT C — plus de tokens dans la surface principale (spec §47)
+                    statusEl.innerHTML = '<span style="color:#4ade80;">✓ ' + (activityFeed ? '' : tokenCount + ' tokens · ') + dur + 's</span>';
                   }
                   const durThought = ((Date.now() - thoughtStart) / 1000).toFixed(0);
                   flushNarration(textEl);
@@ -4124,11 +4173,11 @@ ${sections}
                     const bodyEl = thoughtCard.querySelector('[data-body]');
                     if (bodyEl) bodyEl.classList.add('hidden');
                     const th = thoughtCard.querySelector('span');
-                    if (th) th.textContent = 'Thought · ' + durThought + 's';
+                    th.textContent = (activityFeed ? '✓ Analyse · ' : 'Thought · ') + durThought + 's';
                   }
                   // LOT 3 — diff-guard : des sections ont disparu sans demande
                   // de suppression -> rollback au HTML d'avant modification.
-                  const postSectionCount = (currentAppHtml.match(/data-section="/g) || []).length;
+                  const postSectionCount = new Set([...currentAppHtml.matchAll(/data-section="([^"]+)"/g)].map((m) => m[1].toLowerCase())).size;
                   if (isModification && preSectionCount > 0 && postSectionCount < preSectionCount - serverDeletes && window._preGenerationHtml) {
                     currentAppHtml = window._preGenerationHtml;
                     renderNow(currentAppHtml);
@@ -4138,20 +4187,23 @@ ${sections}
                     if (statusEl) statusEl.innerHTML = '<span style="color:#fbbf24;">⚠ Modification rejetée : des sections ont disparu sans demande.</span>';
                   }
                   setTimeout(() => sendCanvasState('ready'), 350);
-                  // Cartes Write + Terminal — le fichier écrit et la vérification,
-                  // visibles dans la conversation comme des tool calls.
-                  const writeBody = traceCard('write', 'Write — index.html · ' + (currentAppHtml.length / 1024).toFixed(1) + ' Ko');
-                  if (writeBody) {
-                    const diffTotal = diffRows.reduce((a, d) => a + (d.added || 0), 0);
-                    const remTotal = diffRows.reduce((a, d) => a + (d.removed || 0), 0);
-                    writeBody.innerHTML = "index.html — " + currentAppHtml.split(String.fromCharCode(10)).length + " lignes enregistrées dans le projet."
-                      + (diffTotal || remTotal ? " <span class='text-emerald-400 font-bold'>+" + diffTotal + "</span> <span class='text-rose-400 font-bold'>−" + remTotal + "</span>" : "")
-                      + " <span class='text-violet-300 cursor-pointer underline' data-open-code>Ouvrir l'éditeur</span>"
-                      + (diffTotal || remTotal ? " · <span class='text-violet-300 cursor-pointer underline' data-open-diff>Voir le diff</span>" : "");
-                    const openCode = writeBody.querySelector('[data-open-code]');
-                    if (openCode) openCode.addEventListener('click', () => { requestWorkspaceSubTab('code'); selectCodeFile('index.html'); });
-                    const openDiff = writeBody.querySelector('[data-open-diff]');
-                    if (openDiff) openDiff.addEventListener('click', () => openTextDiffModal(window._preGenerationHtml || '', currentAppHtml || ''));
+                  // Carte Write — UNIQUEMENT en mode legacy ; en mode Activity
+                  // Stream, le diff vit dans les items du flux (une seule fois)
+                  // et les actions sont portées par la synthèse ci-dessous.
+                  if (!activityFeed) {
+                    const writeBody = traceCard('write', 'Write — index.html · ' + (currentAppHtml.length / 1024).toFixed(1) + ' Ko');
+                    if (writeBody) {
+                      const diffTotal = diffRows.reduce((a, d) => a + (d.added || 0), 0);
+                      const remTotal = diffRows.reduce((a, d) => a + (d.removed || 0), 0);
+                      writeBody.innerHTML = "index.html — " + currentAppHtml.split(String.fromCharCode(10)).length + " lignes enregistrées dans le projet."
+                        + (diffTotal || remTotal ? " <span class='text-emerald-400 font-bold'>+" + diffTotal + "</span> <span class='text-rose-400 font-bold'>−" + remTotal + "</span>" : "")
+                        + " <span class='text-violet-300 cursor-pointer underline' data-open-code>Ouvrir l'éditeur</span>"
+                        + (diffTotal || remTotal ? " · <span class='text-violet-300 cursor-pointer underline' data-open-diff>Voir le diff</span>" : "");
+                      const openCode = writeBody.querySelector('[data-open-code]');
+                      if (openCode) openCode.addEventListener('click', () => { requestWorkspaceSubTab('code'); selectCodeFile('index.html'); });
+                      const openDiff = writeBody.querySelector('[data-open-diff]');
+                      if (openDiff) openDiff.addEventListener('click', () => openTextDiffModal(window._preGenerationHtml || '', currentAppHtml || ''));
+                    }
                   }
                   // La ligne « Vérification » reste ouverte : c'est le résultat
                   // RÉEL du gate ci-dessous qui la clôturera (✓ score, ou ⚠ si le
@@ -4162,14 +4214,32 @@ ${sections}
                     fileRow.classList.add('cursor-pointer', 'hover:text-violet-300');
                     fileRow.onclick = () => { requestWorkspaceSubTab('code'); selectCodeFile('index.html'); };
                   }
-                  // T7 — synthèse finale compacte : chiffres réels du serveur
+                  // T7 — synthèse finale : chiffres réels du serveur. En mode
+                  // Activity Stream, elle porte les ACTIONS (spéc LOT 17) et
+                  // vit dans le flux ; en legacy, dans la boîte Étapes.
                   if (event.synthesis && event.synthesis.text) {
-                    const box = agentStepsBox();
-                    if (box) {
-                      const line = document.createElement('div');
-                      line.className = 'text-[10px] text-slate-300 pt-1 border-t border-[#161c2e] mt-1';
-                      line.innerHTML = '<i class="fa-solid fa-flag-checkered text-emerald-400 text-[9px]"></i> ' + canonicalEscape(event.synthesis.text);
-                      box.appendChild(line);
+                    if (activityFeed) {
+                      const act = document.getElementById(msgId + '-activity');
+                      if (act) {
+                        const line = document.createElement('div');
+                        line.className = 'text-[10px] text-slate-300 pt-1.5 mt-1 border-t border-[#161c2e]';
+                        line.innerHTML = '<span class="text-emerald-400 font-bold mr-1">✓</span>' + canonicalEscape(event.synthesis.text)
+                          + " <span class='text-violet-300 cursor-pointer underline ml-2' data-open-code>Ouvrir l'éditeur</span>"
+                          + " · <span class='text-violet-300 cursor-pointer underline' data-open-diff>Voir le diff</span>";
+                        act.appendChild(line);
+                        const oc = line.querySelector('[data-open-code]');
+                        if (oc) oc.addEventListener('click', () => { requestWorkspaceSubTab('code'); selectCodeFile('index.html'); });
+                        const od = line.querySelector('[data-open-diff]');
+                        if (od) od.addEventListener('click', () => openTextDiffModal(window._preGenerationHtml || '', currentAppHtml || ''));
+                      }
+                    } else {
+                      const box = agentStepsBox();
+                      if (box) {
+                        const line = document.createElement('div');
+                        line.className = 'text-[10px] text-slate-300 pt-1 border-t border-[#161c2e] mt-1';
+                        line.innerHTML = '<i class="fa-solid fa-flag-checkered text-emerald-400 text-[9px]"></i> ' + canonicalEscape(event.synthesis.text);
+                        box.appendChild(line);
+                      }
                     }
                   }
                 }
@@ -10488,6 +10558,110 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
       // Chat initial 100% propre et épuré : aucune bulle d'accueil superflue
       const history = document.getElementById('wsChatHistory');
       if (history) history.innerHTML = '';
+    }
+
+    // ==================== LOT C — ACTIVITY STREAM (Live Agent Activity Stream) ====
+    // Renderer UNIQUE pour le live ET le replay (spec §19). Il ne connaît PAS de
+    // liste fixe de phases : il rend des ActivityEvent normalisés (serveur) —
+    // type/action/status ouverts, tout nouvel événement futur s'affiche sans
+    // refonte. Coexiste avec l'ancien renderer derrière un sous-flag : la
+    // bascule est instantanée (localStorage 'vibe_activity_stream' = '1').
+    const activityStreamEnabled = (() => {
+      try { return localStorage.getItem('vibe_activity_stream') !== '0'; } catch (_) { return true; }
+    })();
+
+    const ACTIVITY_VERBS = {
+      read: 'Lecture', create: 'Création', modify: 'Modification', delete: 'Suppression',
+      diff: 'Diff', validate: 'Vérification', repair: 'Réparation', retry: 'Nouvelle tentative',
+      start: 'Démarrage', complete: 'Terminé', fail: 'Échec', cancel: 'Annulé',
+      summary: 'Synthèse', approve: 'Approuvé', phase: 'Étape', plan: 'Plan'
+    };
+    const ACTIVITY_ICONS = {
+      file: 'fa-regular fa-file-code', plan: 'fa-solid fa-list-check', validation: 'fa-solid fa-shield-halved',
+      repair: 'fa-solid fa-wrench', execution: 'fa-solid fa-bolt', agent: 'fa-solid fa-sparkles', event: 'fa-solid fa-circle-dot'
+    };
+
+    /**
+     * Fabrique un conteneur ActivityStream dans un message. Retourne l'API
+     * d'alimentation : append(activities) — idempotent par id (anti-doublon,
+     * spec §35) et ordre par sequence.
+     */
+    function createActivityStream(container, opts) {
+      const root = document.createElement('div');
+      root.className = 'space-y-0.5 font-mono';
+      root.setAttribute('role', 'log');
+      root.setAttribute('aria-live', 'polite');
+      container.appendChild(root);
+      const seen = new Set();
+
+      function marker(status) {
+        const map = {
+          RUNNING: ['◉', 'text-violet-300 vibe-pulse'],
+          PENDING: ['○', 'text-slate-500'],
+          COMPLETED: ['✓', 'text-emerald-400'],
+          FAILED: ['!', 'text-rose-400'],
+          CANCELLED: ['—', 'text-slate-400'],
+          SKIPPED: ['–', 'text-slate-600'],
+          WAITING_USER: ['◔', 'text-amber-400']
+        };
+        return map[status] || map.COMPLETED;
+      }
+
+      function renderFileMeta(a) {
+        if (!a.file) return '';
+        const meta = [];
+        if (a.action === 'diff' && a.metadata) {
+          const add = a.metadata.addedLines, rem = a.metadata.removedLines;
+          if (typeof add === 'number' || typeof rem === 'number') {
+            meta.push('<span class="text-emerald-500">+' + (add || 0) + '</span> <span class="text-rose-400">−' + (rem || 0) + '</span>');
+          }
+          if (a.metadata.applied === false) meta.push('<span class="text-amber-400">non appliqué</span>');
+        }
+        return '<span class="text-slate-300">' + canonicalEscape(String(a.file)) + '</span>' + (meta.length ? ' <span class="text-[10px]">' + meta.join(' ') + '</span>' : '');
+      }
+
+      function itemHtml(a) {
+        const [glyph, glyphCls] = marker(a.status);
+        const icon = ACTIVITY_ICONS[a.type] || ACTIVITY_ICONS.event;
+        const verb = ACTIVITY_VERBS[a.action] || a.action;
+        const fileMeta = renderFileMeta(a);
+        const extra = (a.error ? ' <span class="text-rose-300">— ' + canonicalEscape(String(a.error).slice(0, 80)) + '</span>' : '');
+        const score = (a.metadata && typeof a.metadata.score === 'number') ? ' <span class="text-emerald-400">' + a.metadata.score + '/100</span>' : '';
+        return '<div class="flex items-start space-x-2 py-0.5 leading-relaxed" data-activity-id="' + canonicalEscape(a.id) + '">'
+          + '<span class="w-3 text-center ' + glyphCls + ' select-none">' + glyph + '</span>'
+          + '<i class="' + icon + ' text-[10px] mt-1 text-slate-500 w-3.5"></i>'
+          + '<span class="text-[11px] text-slate-400 min-w-0">'
+          + '<span class="text-slate-200 font-semibold">' + canonicalEscape(verb) + '</span>'
+          + (fileMeta ? ' ' + fileMeta : (a.title && a.action !== 'phase' ? ' <span class="text-slate-400">' + canonicalEscape(a.title) + '</span>' : ''))
+          + score + extra
+          + '</span></div>';
+      }
+
+      /** Remplace un item existant (transition RUNNING → terminé). */
+      function replaceItem(a) {
+        const existing = root.querySelector('[data-activity-id="' + a.id + '"]');
+        if (existing) {
+          existing.outerHTML = itemHtml(a);
+          return true;
+        }
+        return false;
+      }
+
+      function append(activities) {
+        for (const a of (activities || [])) {
+          if (!a || !a.id || seen.has(a.id)) continue;
+          // Transition d'un même id (RUNNING → COMPLETED) : remplace en place
+          if (replaceItem(a)) { continue; }
+          seen.add(a.id);
+          root.insertAdjacentHTML('beforeend', itemHtml(a));
+        }
+        // Le dernier item running reste visible (scroll léger du conteneur)
+        if (opts && opts.autoScroll && root.lastElementChild) {
+          try { root.lastElementChild.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+        }
+      }
+
+      return { root, append };
     }
 
     // ==================== T2 — REPLAY DE LA DERNIÈRE EXÉCUTION (CDC §17) ====
