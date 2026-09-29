@@ -571,8 +571,9 @@ export async function handleConversationRoutes(
       detail: { mode: isModification ? 'modify' : 'create' }
     });
     // INSPECT : la lecture réelle du fichier existant est traçable (CDC §9-§10)
+    // — ET visible en live dans le flux (frame + activity, LOT E).
     if (currentHtml.trim().length > 0) {
-      recordOnly({
+      emit({ type: 'file_read' }, {
         type: 'FILE_READ',
         phase: 'INSPECT',
         status: 'COMPLETED',
@@ -1195,6 +1196,8 @@ export async function handleConversationRoutes(
       const totalAdded = sectionDiffs.reduce((acc, d) => acc + d.added, 0);
       const totalRemoved = sectionDiffs.reduce((acc, d) => acc + d.removed, 0);
       for (const diff of sectionDiffs) {
+        // LOT E — frame + activité en UN seul passage (la frame porte la vue
+        // normalisée : le flux live montre le diff sans second canal).
         emit({
           type: 'diff',
           section: diff.name,
@@ -1202,8 +1205,7 @@ export async function handleConversationRoutes(
           applied: diff.applied,
           added: diff.added,
           removed: diff.removed
-        });
-        recordOnly({
+        }, {
           type: 'DIFF_GENERATED',
           phase: 'IMPLEMENT',
           status: diff.applied ? 'COMPLETED' : 'FAILED',

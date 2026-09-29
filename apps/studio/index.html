@@ -3133,11 +3133,14 @@
         // phases + rows) devient INERT dans ce message — code conservé pour un
         // rollback instantané (localStorage 'vibe_activity_stream' = '0').
         let activityFeed = null;
+        let planCtl = null;
         if (activityStreamEnabled) {
           const actContainer = document.getElementById(msgId + '-activity');
           if (actContainer) {
             actContainer.classList.remove('hidden');
             activityFeed = createActivityStream(actContainer, { autoScroll: true });
+            planCtl = attachPlanItem(activityFeed);
+            window.__lastActivityFeed = activityFeed;
             const inert = function () { return null; };
             timelineEnterPhase = inert;
             timelineCancelCurrent = inert;
@@ -3988,6 +3991,7 @@ ${sections}
                 textEl = traceCard('thought', activityFeed ? '✦ Analyse' : 'Thought · en cours');
                 textEl.innerHTML = '<span class="animate-pulse text-violet-300 tracking-widest">● ● ●</span>';
                 timelineEnterPhase('UNDERSTAND');
+                if (planCtl) planCtl.step('Comprendre la demande', 'RUNNING');
                 agentStepAdd('fa-solid fa-brain', 'Réflexion sur ta demande…');
                 // Conversation vivante — indicateur de frappe vivant pendant la
                 // réflexion (remplacé par la narration dès qu'elle arrive)
@@ -4006,6 +4010,7 @@ ${sections}
                 // en construction et l'entoure d'un halo.
                 focusPreviewSection(event.name);
                 agentStepAdd('fa-solid fa-pen-ruler', 'Construction de ' + event.name + '…');
+                if (planCtl) { planCtl.countConstruction(); planCtl.step('Construire ' + event.name, 'RUNNING'); }
                 vibeBuildingStep();
                 // STITCH v2 — le document vivant reste affiché : une zone de
                 // construction s'ouvre à l'emplacement réel (squelette compris),
@@ -4042,6 +4047,7 @@ ${sections}
                 vibeTickStep();
                     setTimeout(() => focusPreviewSection(event.name, true), 400);
                 agentStepClose('✓ Section ' + event.name + ' posée');
+                if (planCtl) planCtl.step('Construire ' + event.name, 'COMPLETED');
                   }
                   // Conversation vivante v2 — le badge « modifié » marque la
                   // section remplacée, après le re-rendu (400ms).
@@ -4246,6 +4252,7 @@ ${sections}
               } else if (event.type === 'plan' && event.plan) {
                 // LOT 4 — carte de plan réelle (Plan Engine, §17 CDC)
                 timelineEnterPhase('PLAN');
+                if (planCtl) planCtl.step('Comprendre la demande', 'COMPLETED');
                 agentStepClose("Plan validé — " + (event.plan.steps || []).length + " étapes");
               } else if (event.type === 'compass' && event.state) {
                 // LOT 3 — les 9 états du Conversation Compass (§11 CDC)
@@ -4275,9 +4282,11 @@ ${sections}
                   timelineEnterPhase('REPAIR');
                 } else if (event.state === 'VALIDATING') {
                   timelineEnterPhase('VALIDATE');
+                  if (planCtl) planCtl.step('Vérifier le rendu', 'RUNNING');
                   verifyStepRow = agentStepAdd('fa-solid fa-magnifying-glass-chart', 'Vérification du rendu réel…');
                 } else if (event.state === 'COMPLETED') {
                   timelineEnterPhase('COMPLETE');
+                  if (planCtl) planCtl.step('Vérifier le rendu', 'COMPLETED');
                 }
               } else if (event.type === 'diff') {
                 // T4 (CDC §11) — diff RÉEL calculé par le serveur au merge :
@@ -6557,6 +6566,19 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
             updateEditorContent(currentAppHtml);
           }
           await runQualityGate();
+          // LOT G — le cycle de réparation RÉEL (persisté côté serveur) rejoint
+          // le flux de la génération d'origine : événements du store, jamais
+          // de récit inventé (spec §13/§30).
+          try {
+            if (window.__lastActivityFeed && window._lastExecutionId) {
+              const exRes = await fetch('/api/v1/projects/' + pid + '/executions/' + window._lastExecutionId, { headers: studioApiHeaders() });
+              if (exRes.ok) {
+                const exData = await exRes.json();
+                const repairs = (exData.activities || []).filter((a) => a.type === 'repair');
+                if (repairs.length) window.__lastActivityFeed.append(repairs);
+              }
+            }
+          } catch (_) { /* best-effort : la timeline de réparation reste au replay */ }
         } else {
           showCaptureToast(`Auto-réparation indisponible : ${data.message || 'HTTP ' + res.status}`);
         }
@@ -10664,7 +10686,77 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
       return { root, append };
     }
 
-    // ==================== T2 — REPLAY DE LA DERNIÈRE EXÉCUTION (CDC §17) ====
+    /**
+     * LOT F — PLAN DYNAMIQUE (spec §11/§12) : un item OPTIONNEL du flux, vivant,
+     * alimenté par les événements RÉELS (plan créé, sections annoncées,
+     * vérification). Replié par défaut — une petite tâche n'exhibe pas de plan
+     * (spec LOT 21) ; il s'ouvre tout seul quand une étape passe RUNNING et
+     * se referme à la fin si la tâche était simple.
+     */
+    function attachPlanItem(feed) {
+      if (!feed || feed.__plan) return feed.__plan;
+      const plan = { el: null, detail: null, steps: new Map(), constructionCount: 0 };
+
+      function ensureEl() {
+        if (plan.el) return;
+        plan.el = document.createElement('div');
+        plan.el.className = 'rounded-lg border border-[#161c2e] bg-[#0d1222] overflow-hidden';
+        plan.el.innerHTML =
+          '<div class="flex items-center justify-between px-2 py-1 cursor-pointer select-none plan-head">' +
+            '<div class="flex items-center space-x-2 text-[10px] font-bold text-slate-400">' +
+              '<i class="fa-solid fa-list-check text-[10px]"></i><span>Plan</span>' +
+              '<span class="plan-count text-[9px] font-normal text-slate-500"></span>' +
+            '</div>' +
+            '<i class="plan-chev fa-solid fa-chevron-down text-[8px] text-slate-600"></i>' +
+          '</div>' +
+          '<div class="px-2 pb-1 pt-0.5 space-y-0.5 hidden plan-detail"></div>';
+        feed.root.insertBefore(plan.el, feed.root.firstChild);
+        plan.detail = plan.el.querySelector('.plan-detail');
+        plan.el.querySelector('.plan-head').addEventListener('click', () => {
+          plan.detail.classList.toggle('hidden');
+          const ch = plan.el.querySelector('.plan-chev');
+          if (ch) ch.className = 'plan-chev fa-solid ' + (plan.detail.classList.contains('hidden') ? 'fa-chevron-down' : 'fa-chevron-up') + ' text-[8px] text-slate-600';
+        });
+      }
+
+      function renderCount() {
+        const cnt = plan.el.querySelector('.plan-count');
+        if (cnt) {
+          const total = plan.steps.size;
+          const doneSteps = [...plan.steps.values()].filter((s) => s === 'COMPLETED').length;
+          cnt.textContent = doneSteps + '/' + total;
+        }
+      }
+
+      /** Ajoute ou met à jour une étape par son libellé. */
+      function step(label, status) {
+        ensureEl();
+        let row = plan.el.querySelector('[data-plan-step="' + canonicalEscape(label) + '"]');
+        if (!row) {
+          row = document.createElement('div');
+          row.setAttribute('data-plan-step', label);
+          plan.detail.appendChild(row);
+        }
+        plan.steps.set(label, status);
+        const glyphs = { RUNNING: ['◉', 'text-violet-300 vibe-pulse'], COMPLETED: ['☑', 'text-emerald-400'], PENDING: ['☐', 'text-slate-500'] };
+        const g = glyphs[status] || glyphs.PENDING;
+        row.className = 'flex items-center space-x-2 text-[10px] ' + (status === 'COMPLETED' ? 'text-slate-400' : 'text-slate-300');
+        row.innerHTML = '<span class="w-3 ' + g[1] + '">' + g[0] + '</span><span>' + canonicalEscape(label) + '</span>';
+        renderCount();
+        // Visible pendant le travail réel ; compact pour une tâche simple
+        if (status === 'RUNNING') {
+          plan.detail.classList.remove('hidden');
+          plan.el.querySelector('.plan-chev').className = 'plan-chev fa-solid fa-chevron-up text-[8px] text-slate-600';
+        }
+        if (status === 'COMPLETED' && label.indexOf('Vérifier') === 0 && plan.constructionCount <= 1) {
+          plan.detail.classList.add('hidden');
+          plan.el.querySelector('.plan-chev').className = 'plan-chev fa-solid fa-chevron-down text-[8px] text-slate-600';
+        }
+      }
+
+      feed.__plan = { step, countConstruction: () => ++plan.constructionCount, constructionCount: () => plan.constructionCount };
+      return feed.__plan;
+    }
     // Après un refresh ou un changement de projet, la dernière génération
     // réapparaît sous forme d'une carte compacte — données RÉELLES du backend
     // (ExecutionEventStore), jamais reconstruites de tête côté client.
@@ -10693,66 +10785,6 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
         RUNNING: ['fa-solid fa-circle-notch fa-spin text-violet-400', 'En cours…']
       };
       return map[ex.status] || ['fa-solid fa-circle-question text-slate-400', ex.status];
-    }
-
-    // Timeline de replay : mêmes phases que le direct, reconstruites depuis
-    // les événements RÉELS persistés (ts serveur) — durées calculées sur les
-    // timestamps serveur, statut de la dernière phase = statut de l'exécution.
-    const REPLAY_PHASES = ['UNDERSTAND', 'PLAN', 'IMPLEMENT', 'VALIDATE', 'REPAIR', 'COMPLETE'];
-    const REPLAY_PHASE_META = {
-      UNDERSTAND: ['fa-solid fa-brain', 'Analyse'],
-      PLAN: ['fa-solid fa-list-check', 'Plan'],
-      IMPLEMENT: ['fa-solid fa-hammer', 'Construction'],
-      VALIDATE: ['fa-solid fa-magnifying-glass-chart', 'Vérification'],
-      REPAIR: ['fa-solid fa-wrench', 'Réparation'],
-      COMPLETE: ['fa-solid fa-flag-checkered', 'Terminé']
-    };
-
-    function buildReplayTimelineHtml(events, recordStatus) {
-      const byPhase = {};
-      const order = [];
-      for (const ev of events || []) {
-        const p = ev && ev.phase;
-        if (!REPLAY_PHASE_META[p]) continue;
-        if (!byPhase[p]) { byPhase[p] = []; order.push(p); }
-        byPhase[p].push(ev);
-      }
-      if (!order.length) return '';
-      const lastPhase = order[order.length - 1];
-      const statusIcon = {
-        done: 'fa-solid fa-circle-check text-emerald-400',
-        failed: 'fa-solid fa-circle-xmark text-rose-400',
-        cancelled: 'fa-solid fa-circle-stop text-slate-400',
-        waiting: 'fa-solid fa-circle-half-stroke text-amber-400'
-      };
-      const finalStatusMap = { COMPLETED: 'done', FAILED: 'failed', CANCELLED: 'cancelled', WAITING_USER: 'waiting', RUNNING: 'waiting' };
-      let html = '<div class="space-y-1 replay-timeline">';
-      for (const phase of order) {
-        const evs = byPhase[phase];
-        const isLast = phase === lastPhase;
-        const st = isLast ? (finalStatusMap[recordStatus] || 'done') : 'done';
-        const first = evs[0];
-        const lastE = evs[evs.length - 1];
-        let durTxt = '';
-        if (lastE.ts && first.ts && lastE.ts > first.ts) {
-          const d = Math.max(1, Math.round((lastE.ts - first.ts) / 1000));
-          durTxt = '· ' + (d >= 60 ? Math.floor(d / 60) + 'm ' + (d % 60) + 's' : d + 's');
-        }
-        html += '<div class="rounded-lg border border-[#161c2e] bg-[#0d1222] overflow-hidden">' +
-          '<div class="flex items-center justify-between px-2 py-1 cursor-pointer select-none replay-phase-head">' +
-            '<div class="flex items-center space-x-2 text-[10px] font-bold text-slate-400">' +
-              '<i class="' + (statusIcon[st] || statusIcon.done) + ' text-[10px] w-3.5"></i>' +
-              '<span>' + REPLAY_PHASE_META[phase][1] + '</span>' +
-              '<span class="text-[9px] font-normal text-slate-500">' + durTxt + '</span>' +
-            '</div>' +
-            '<i class="replay-chev fa-solid fa-chevron-down text-[8px] text-slate-600"></i>' +
-          '</div>' +
-          '<div class="px-2 pb-1 pt-0.5 space-y-1 hidden replay-phase-detail">' +
-            evs.map((ev) => '<div class="flex items-start space-x-2 text-[10px] text-slate-400"><span class="text-slate-600">•</span><span>' + canonicalEscape(ev.title || ev.type) + '</span></div>').join('') +
-          '</div></div>';
-      }
-      html += '</div>';
-      return html;
     }
 
     async function renderLastExecutionReplay() {
@@ -10784,11 +10816,12 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
         if (s.error) rows.push('<div class="text-rose-300">' + canonicalEscape(String(s.error).slice(0, 140)) + '</div>');
         if (ex.prompt) rows.push('<div class="text-slate-500 italic">&laquo; ' + canonicalEscape(ex.prompt.slice(0, 110)) + ' &raquo;</div>');
 
-        // T3 — déroulé complet dépliable : les événements réels groupés par phase
-        const events = ex.events || [];
-        const timelineHtml = buildReplayTimelineHtml(events, ex.status);
-        const toggleHtml = timelineHtml
-          ? '<div class="text-[10px] text-violet-300 cursor-pointer select-none w-fit replay-toggle"><i class="fa-solid fa-list-ul"></i> Déroulé (' + events.length + ' événements)</div>'
+        // LOT H — REPLAY UNIFIÉ : le MÊME renderer ActivityStream que le live
+        // (spec §19), alimenté par les activités normalisées du serveur.
+        // L'ancien buildReplayTimelineHtml (second renderer) est supprimé.
+        const activities = data.activities || [];
+        const streamWrap = activities.length
+          ? '<div class="replay-stream mt-1 pt-1 border-t border-[#161c2e]"></div>'
           : '';
 
         const card = appendChatMessage('assistant',
@@ -10796,28 +10829,14 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
           '<div class="flex items-center justify-between text-[10px] font-bold text-slate-300">' +
           '<span class="flex items-center space-x-2"><i class="fa-solid fa-clock-rotate-left text-violet-400"></i><span>Dernière génération</span></span>' +
           '<span class="text-slate-500 font-normal">' + executionRelativeTime(ex.updatedAt || ex.startedAt) + '</span></div>' +
-          rows.join('') + toggleHtml +
-          '<div class="hidden replay-timeline-wrap">' + timelineHtml + '</div>' +
+          rows.join('') + streamWrap +
           '</div>');
         if (card) {
-          const toggle = card.querySelector('.replay-toggle');
-          const wrap = card.querySelector('.replay-timeline-wrap');
-          if (toggle && wrap) {
-            toggle.addEventListener('click', () => {
-              wrap.classList.toggle('hidden');
-              toggle.innerHTML = wrap.classList.contains('hidden')
-                ? '<i class="fa-solid fa-list-ul"></i> Déroulé (' + events.length + ' événements)'
-                : '<i class="fa-solid fa-chevron-up"></i> Replier le déroulé';
-            });
+          const streamRoot = card.querySelector('.replay-stream');
+          if (streamRoot) {
+            const feed = createActivityStream(streamRoot, { autoScroll: false });
+            feed.append(activities);
           }
-          card.querySelectorAll('.replay-phase-head').forEach((head) => {
-            head.addEventListener('click', () => {
-              const detail = head.parentElement ? head.parentElement.querySelector('.replay-phase-detail') : null;
-              const chev = head.querySelector('.replay-chev');
-              if (detail) detail.classList.toggle('hidden');
-              if (chev && detail) chev.className = 'replay-chev fa-solid ' + (detail.classList.contains('hidden') ? 'fa-chevron-down' : 'fa-chevron-up') + ' text-[8px] text-slate-600';
-            });
-          });
         }
       } catch (_) { /* replay best-effort : ne casse jamais le chargement */ }
     }
