@@ -115,3 +115,35 @@ export function scriptToEvents(script: MockBuildScript, baseTimestamp = Date.now
   }
   return events;
 }
+
+/**
+ * ÉTAPE 08 — TRANSPORT SSE SIMULÉ (isolé du pipeline) : émet des frames SSE
+ * dans le VOCABULAIRE DU GÉNÉRATEUR RÉEL (type: start/section_start/
+ * section_end/done — le même que routes/conversation.ts) et y mêle du bruit
+ * hostile (JSON invalide, événement inconnu, keepalive, done Plan First)
+ * pour éprouver l'adaptateur de bout en bout. Ces chunks alimentent
+ * SSEBuildEventSource → adapter → moteur — jamais le moteur directement.
+ */
+export function demoSseChunks(baseTimestamp = Date.now()): string[] {
+  const ts = (i: number) => baseTimestamp + i * 100;
+  const EOL = String.fromCharCode(10);
+  const frame = (payload: Record<string, unknown>): string => 'data: ' + JSON.stringify(payload) + '\n\n';
+  const raw = (text: string): string => text + "\n\n";
+  const frames: string[] = [
+    frame({ type: 'start', isModification: false, timestamp: ts(0) }),
+    frame({ type: 'section_start', name: 'header', mode: 'create', timestamp: ts(1) }),
+    frame({ type: 'section_end', name: 'header', html: '<header><h1>Fleurs & Co</h1></header>', timestamp: ts(2) }),
+    frame({ type: 'section_start', name: 'content', mode: 'add', after: 'header', timestamp: ts(3) }),
+    frame({ type: 'section_end', name: 'content', html: '<div class="content"><p>Zone generee</p></div>', timestamp: ts(4) }),
+    // BRUIT hostile : le panneau gauche reste net, l adaptateur ignore tout
+    raw('data: {invalid json'),
+    frame({ type: 'AI_THINKING', timestamp: ts(5) }),
+    frame({ type: 'token', token: '<p>frag</p>', timestamp: ts(6) }),
+    raw('event: ping' + EOL + 'data: keepalive'),
+    frame({ type: 'compass', state: 'EXECUTING', timestamp: ts(7) }),
+    frame({ type: 'chat', text: 'Je construis la section.', timestamp: ts(8) }),
+    frame({ type: 'done', awaitingConfirmation: true, timestamp: ts(9) }),
+    frame({ type: 'done', updated: true, html: '<html><body><h1>OK</h1></body></html>', timestamp: ts(10) })
+  ];
+  return frames;
+}

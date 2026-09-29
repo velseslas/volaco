@@ -207,10 +207,11 @@
     <div class="layout">
       <aside class="panel-build">
         <h2>Build</h2>
-        <div class="controls">
-          <button id="btnStart">START BUILD</button>
-          <button id="btnReset" class="secondary">RESET</button>
-        </div>
+  <div class="controls">
+    <button id="btnStart">START BUILD</button>
+    <button id="btnSse">START (SSE simulée)</button>
+    <button id="btnReset" class="secondary">RESET</button>
+  </div>
         <div id="stageLadder"></div>
 
         <h2 style="margin-top:18px;">Progress</h2>
@@ -241,6 +242,9 @@
     import { layoutTree } from '/preview-builder/layout.js';
     import { renderComponentVisual } from '/preview-builder/visuals.js';
     import { demoBuildScript, scriptToEvents } from '/preview-builder/mocks.js';
+    import { MockBuildEventSource, SSEBuildEventSource } from '/preview-builder/adapter.js';
+    import { demoSseChunks } from '/preview-builder/mocks.js';
+    const btnSse = document.getElementById('btnSse');
 
     const el = (id) => document.getElementById(id);
     let state = createPreviewBuildState();
@@ -417,21 +421,47 @@
       render(renderPreview(state));
     }
 
-    btnStart.addEventListener('click', () => {
+    // ÉTAPE 08 — DEUX SOURCES interchangeables, le moteur ne voit que des
+    // PreviewBuildEvents (BuildEventSource, spec §problème 2) :
+    //   - MockBuildEventSource    : scénario démo (par défaut)
+    //   - SSEBuildEventSource     : transport SSE simulé → adapter → moteur
+    // La bascule se fait par le bouton ; aucune logique du moteur ne change.
+    let activeSource = null;
+
+    function startWith(source) {
       if (timer) { clearInterval(timer); timer = null; }
+      if (activeSource) { activeSource.stop(); activeSource = null; }
       state = createPreviewBuildState();
-      const events = scriptToEvents(demoBuildScript());
-      let i = 0;
+      lastFocusId = null;
       btnStart.disabled = true;
-      timer = setInterval(() => {
-        if (i >= events.length) { clearInterval(timer); timer = null; btnStart.disabled = false; return; }
-        consume(events[i]);
-        i++;
-      }, 300);
+      activeSource = source.subscribe(
+        (event) => consume(event),
+        () => { btnStart.disabled = false; }
+      );
+    }
+
+    btnStart.addEventListener('click', () => {
+      const events = scriptToEvents(demoBuildScript());
+      startWith(new MockBuildEventSource({ events, intervalMs: 300 }));
+    });
+
+    // SSE simulée : le transport produit du TEXTE SSE brut (avec bruit) —
+    // l'adaptateur parse/valide/normalise, le moteur ne sait rien du SSE.
+    btnSse.addEventListener('click', () => {
+      const chunks = demoSseChunks();
+      let i = 0;
+      const encoder = new TextEncoder();
+      const fakeStream = {
+        getReader: () => ({
+          read: async () => (i < chunks.length ? { done: false, value: encoder.encode(chunks[i++]) } : { done: true, value: undefined })
+        })
+      };
+      startWith(new SSEBuildEventSource({ url: 'sse://demo', fetchImpl: function () { return Promise.resolve({ ok: true, body: fakeStream }); } }));
     });
 
     btnReset.addEventListener('click', () => {
       if (timer) { clearInterval(timer); timer = null; btnStart.disabled = false; }
+      if (activeSource) { activeSource.stop(); activeSource = null; }
       consume({ kind: 'BUILD_RESET', timestamp: Date.now() });
     });
 

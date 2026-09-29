@@ -69,9 +69,11 @@ export type PreviewBuildEvent =
   | { kind: 'SECTION_COMPLETED'; sectionId: string; timestamp: number }
   | { kind: 'BUILD_COMPLETED'; timestamp: number }
   | { kind: 'BUILD_FAILED'; error: string; timestamp: number }
+  /** ÉTAPE 08 — extension additive : annulation du générateur réel (⏹ ≠ ❌). */
+  | { kind: 'BUILD_CANCELLED'; reason?: string; timestamp: number }
   | { kind: 'BUILD_RESET'; timestamp: number };
 
-export type PreviewBuildStatus = 'idle' | 'building' | 'completed' | 'error';
+export type PreviewBuildStatus = 'idle' | 'building' | 'completed' | 'error' | 'cancelled';
 
 /** État complet d'une construction — immuable : chaque événement produit un nouvel état. */
 export interface PreviewBuildState {
@@ -223,6 +225,11 @@ export function applyBuildEvent(state: PreviewBuildState, event: PreviewBuildEve
 
     case 'BUILD_FAILED':
       return { ...withLog, status: 'error', stage: ERROR_STAGE, error: event.error, completedAt: event.timestamp };
+
+    case 'BUILD_CANCELLED':
+      // ⏹ ≠ ❌ (spec LOT 31/32) : l'annulation n'est pas un échec — l'état
+      // final conserve les composants déjà construits, sans label d'erreur.
+      return { ...withLog, status: 'cancelled', completedAt: event.timestamp };
 
     default:
       return ignore();

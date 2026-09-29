@@ -24,6 +24,7 @@ const rendererJsPath = join(repoRoot, 'dist', 'packages', 'core', 'src', 'previe
 const layoutJsPath = join(repoRoot, 'dist', 'packages', 'core', 'src', 'preview-builder', 'layout.js');
 const visualsJsPath = join(repoRoot, 'dist', 'packages', 'core', 'src', 'preview-builder', 'visuals.js');
 const mocksJsPath = join(repoRoot, 'dist', 'packages', 'core', 'src', 'preview-builder', 'mocks.js');
+const adapterJsPath = join(repoRoot, 'dist', 'packages', 'core', 'src', 'preview-builder', 'adapter.js');
 
 function serveFile(res: ServerResponse, filePath: string, contentType: string, notFound: string): boolean {
   if (!existsSync(filePath)) {
@@ -62,6 +63,9 @@ export async function handlePreviewBuilderRoutes(
   }
   if (pathname === '/preview-builder/mocks.js') {
     return serveFile(res, mocksJsPath, 'text/javascript; charset=utf-8', 'Mocks Preview Builder non compilés (npm run build)');
+  }
+  if (pathname === '/preview-builder/adapter.js') {
+    return serveFile(res, adapterJsPath, 'text/javascript; charset=utf-8', 'Adaptateur Preview Builder non compilé (npm run build)');
   }
   return false;
 }
