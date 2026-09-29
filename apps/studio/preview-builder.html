@@ -79,6 +79,21 @@
     .pv-node.focus { border-color: #8b5cf6; box-shadow: 0 0 0 3px rgba(139,92,246,.18), 0 4px 22px rgba(124,58,237,.14); }
     .pv-node.focus .pv-building-tag::before { content: '◉ BUILDING…'; font-weight: 700; }
 
+    /* ===== LOT 06 — FOCUS RENFORCÉ + PASSAGE DE TÉMOIN ===== */
+    .pv-node { position: relative; }
+    .pv-node.focus .pv-focus-banner { display: inline-flex; position: absolute; top: -11px; left: 14px; z-index: 2;
+      align-items: center; gap: 5px; background: #7c3aed; color: #fff; font-size: 9px; font-weight: 700;
+      padding: 2px 9px; border-radius: 999px; letter-spacing: .07em; box-shadow: 0 2px 8px rgba(124,58,237,.35); }
+    /* Passage de témoin : highlight court sur le NOUVEAU focus — l'animation
+       retire une classe visuelle, elle ne décide jamais d'un état (spec LOT 06). */
+    .pv-node.focus-move { animation: pvFocusMove .7s ease; }
+    @keyframes pvFocusMove { 0% { background: rgba(139,92,246,.18); } 100% { background: rgba(124,58,237,.04); } }
+    .tree-row.focus-row { border-left: 2px solid #8b5cf6; }
+    @media (prefers-reduced-motion: reduce) {
+      .pv-node.focus-move { animation: none; }
+      .canvas-wrap { scroll-behavior: auto; }
+    }
+
     /* ===== STABILISATION à completed : courte et élégante ===== */
     .pv-node.completed { animation: pvStabilize .25s ease; }
     @keyframes pvStabilize { 0% { box-shadow: 0 0 0 3px rgba(5,150,105,.25); } 100% { box-shadow: none; } }
@@ -199,6 +214,7 @@
 
     const el = (id) => document.getElementById(id);
     let state = createPreviewBuildState();
+    let lastFocusId = null;
     let timer = null;
 
     /* ---------- LOT 03 — render DOM INCRÉMENTAL ---------- */
@@ -216,7 +232,10 @@
       }
       const visual = renderComponentVisual({ id: n.id, type: n.type, label: n.label, metadata: n.metadata }, n.status === 'building' ? 'building' : 'completed');
       if (n.status === 'building') {
-        return '<div><span class="pv-label">' + n.label + '</span><span class="pv-building-tag"></span></div>' + visual;
+        // LOT 06 — bandeau Build Focus (le nœud est position:relative) ; il vit
+        // dans le innerHTML building : présent pendant tout l'état, sans timer.
+        const banner = n.isBuildFocus ? '<div class="pv-focus-banner"><span>◉</span> BUILDING</div>' : '';
+        return banner + '<div><span class="pv-label">' + n.label + '</span><span class="pv-building-tag"></span></div>' + visual;
       }
       return visual;
     }
@@ -280,6 +299,21 @@
       badge.textContent = model.statusLabel;
       badge.style.color = model.status === 'building' ? '#c4b5fd' : model.status === 'completed' ? '#34d399' : model.status === 'error' ? '#fb7185' : '#94a3b8';
 
+      // LOT 06 — PASSAGE DE TÉMOIN : quand le focus CHANGE d'id, le nouveau
+      // nœud reçoit un highlight court (classe visuelle retirée par l'anim CSS
+      // — aucun état modifié, aucune décision venue de l'animation).
+      const reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      if (model.focusId && model.focusId !== lastFocusId && !reducedMotion) {
+        const newNode = el('canvas').querySelector('[data-pv-id="' + model.focusId + '"]');
+        if (newNode) {
+          newNode.classList.remove('focus-move');
+          void newNode.offsetWidth; // rejoue l'animation
+          newNode.classList.add('focus-move');
+          newNode.addEventListener('animationend', () => newNode.classList.remove('focus-move'), { once: true });
+        }
+      }
+      lastFocusId = model.focusId || null;
+
       // LOT 04 — BUILD TIMELINE : dérivée de buildTimeline(state) — l'échelle
       // et la ligne « error » viennent du même state que le canvas.
       const steps = buildTimeline(state);
@@ -306,12 +340,24 @@
 
       syncCanvas(model);
 
+      // LOT 06 — AUTO-SCROLL doux : uniquement si le focus est réellement hors
+      // de la zone visible ; 'nearest' = déplacement minimal, jamais forcé.
+      const focusEl = model.focusId ? el('canvas').querySelector('[data-pv-id="' + model.focusId + '"]') : null;
+      if (focusEl) {
+        const wrap = focusEl.closest('.canvas-wrap');
+        const fr = focusEl.getBoundingClientRect();
+        const wr = wrap ? wrap.getBoundingClientRect() : null;
+        if (wr && (fr.top < wr.top + 8 || fr.bottom > wr.bottom - 8)) {
+          focusEl.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'nearest' });
+        }
+      }
+
       el('progressLabel').textContent = model.progressLabel;
       const footer = el('footerStatus');
-      // LOT 04 — statusbar : « Building Card 02... » quand un focus existe
+      // LOT 06 — statusbar dérivée du même buildFocus : « ● Building Revenue... »
       const focusNode = model.focusId ? model.flat.find((n) => n.id === model.focusId) : null;
       if (model.status === 'error') { footer.textContent = model.statusLabel; footer.className = 'err'; }
-      else if (focusNode) { footer.textContent = 'Building ' + focusNode.label + '...'; footer.className = ''; }
+      else if (focusNode) { footer.innerHTML = '<span class="dot building" style="display:inline-block;margin-right:8px;"></span>Building ' + canonicalize(focusNode.label) + '...'; footer.className = ''; }
       else { footer.textContent = model.statusLabel; footer.className = ''; }
     }
 

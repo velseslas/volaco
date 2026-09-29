@@ -132,3 +132,31 @@ describe('LOT 03 : transitions visuelles + Build Focus', () => {
     assert.equal(model.statusLabel, 'idle');
   });
 });
+
+describe('LOT 06 : invariants du focus partagé (Canvas + Tree + Status)', () => {
+  it('9. focusId du modèle = l’unique nœud isBuildFocus, déterministe sur une séquence complète', () => {
+    let s = addBuilding(createPreviewBuildState(), 'h', 'header', 'Header');
+    let sequenceOk = true;
+    for (const next of ['sb', 'c1', 'c2', 'chart']) {
+      const model = renderPreview(s);
+      const focusNodes = model.flat.filter((n) => n.isBuildFocus);
+      if (focusNodes.length > 1 || (focusNodes[0] && focusNodes[0].id !== model.focusId)) sequenceOk = false;
+      if (model.focusId !== undefined && model.status !== 'building') sequenceOk = false;
+      s = applyBuildEvent(s, { kind: 'COMPONENT_READY', componentId: model.focusId || next, timestamp: 100 });
+      s = addBuilding(s, next, 'card', next.toUpperCase(), 50);
+    }
+    assert.ok(sequenceOk, 'focus unique et cohérent à chaque étape de la séquence');
+    assert.equal(renderPreview(s).flat.filter((n) => n.isBuildFocus).length <= 1, true);
+  });
+
+  it('10. un composant stabilisé ne redevient jamais focus (transition à sens unique)', () => {
+    let s = addBuilding(createPreviewBuildState(), 'h', 'header', 'Header');
+    s = applyBuildEvent(s, { kind: 'COMPONENT_READY', componentId: 'h', timestamp: 20 });
+    const afterReady = renderPreview(s).flat.find((n) => n.id === 'h')!;
+    s = addBuilding(s, 'c', 'card', 'Card', 10);
+    const model = renderPreview(s);
+    assert.equal(model.flat.find((n) => n.id === 'h')!.isBuildFocus, false, 'le completed ne reprend jamais le focus');
+    assert.equal(model.flat.find((n) => n.id === 'c')!.isBuildFocus, true);
+    assert.equal(afterReady.status, 'completed');
+  });
+});
