@@ -3,16 +3,33 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Preview Builder — nouveau preview (démo)</title>
+  <title>Preview Builder — Progressive Preview Renderer</title>
   <style>
     :root { color-scheme: dark; }
     * { box-sizing: border-box; }
-    body { margin: 0; font-family: 'Segoe UI', system-ui, sans-serif; background: #070913; color: #e2e8f0; padding: 20px; }
-    h1 { font-size: 15px; margin: 0 0 4px; }
-    .sub { font-size: 11px; color: #64748b; margin-bottom: 16px; }
-    .layout { display: grid; grid-template-columns: 240px 1fr; gap: 16px; max-width: 1100px; }
-    .panel { border: 1px solid #1a2238; border-radius: 12px; background: #0a0e1c; padding: 12px; }
-    .panel h2 { font-size: 10px; text-transform: uppercase; letter-spacing: .1em; color: #64748b; margin: 0 0 8px; }
+    body { margin: 0; font-family: 'Segoe UI', system-ui, sans-serif; background: #070913; color: #e2e8f0; }
+    .app { display: flex; flex-direction: column; height: 100vh; }
+
+    /* HEADER */
+    header.app-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 20px; border-bottom: 1px solid #1a2238; background: #0a0e1c; }
+    header.app-header h1 { font-size: 14px; margin: 0; font-weight: 700; }
+    .build-badge { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: #475569; }
+    .dot.building { background: #a78bfa; box-shadow: 0 0 8px rgba(167,139,250,.5); }
+    .dot.completed { background: #34d399; }
+    .dot.error { background: #fb7185; }
+    a.back { color: #8b5cf6; font-size: 11px; text-decoration: none; margin-left: 16px; }
+
+    /* LAYOUT */
+    .layout { display: grid; grid-template-columns: 300px 1fr; gap: 0; flex: 1; min-height: 0; }
+    .panel-build { border-right: 1px solid #1a2238; background: #0a0e1c; padding: 16px; overflow-y: auto; }
+    .panel-build h2, .canvas-panel h2 { font-size: 10px; text-transform: uppercase; letter-spacing: .1em; color: #64748b; margin: 0 0 10px; }
+    .controls { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+    button { background: #7c3aed; border: none; color: #fff; padding: 8px 14px; border-radius: 10px; font-size: 12px; font-weight: 600; cursor: pointer; }
+    button.secondary { background: #1e293b; }
+    button:disabled { opacity: .4; cursor: not-allowed; }
+
+    /* ÉTAPES */
     .stage { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 8px; font-size: 12px; color: #475569; }
     .stage.current { background: rgba(139,92,246,.14); color: #c4b5fd; font-weight: 600; }
     .stage.done { color: #34d399; }
@@ -21,96 +38,133 @@
     .stage.done::before { content: '✓'; }
     .stage.error { color: #fb7185; }
     .stage.error::before { content: '!'; }
-    canvas-zone, .canvas { min-height: 420px; border: 1px dashed #253052; border-radius: 12px; padding: 14px; display: flex; flex-wrap: wrap; gap: 12px; align-content: flex-start; background: #0b0f1e; }
-    .controls { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
-    button { background: #7c3aed; border: none; color: #fff; padding: 8px 16px; border-radius: 10px; font-size: 12px; font-weight: 600; cursor: pointer; }
-    button.secondary { background: #1e293b; }
-    button:disabled { opacity: .4; cursor: not-allowed; }
-    .component { border: 1px solid #334155; border-radius: 10px; padding: 12px 16px; font-size: 12px; min-width: 130px; }
-    .component .type { font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: #64748b; margin-top: 4px; }
-    .component.completed { border-color: #059669; background: rgba(5,150,105,.08); }
-    .component.building { border-style: dashed; border-color: #7c3aed; color: #a78bfa; }
-    .component.building::after { content: 'construction…'; display: block; font-size: 10px; color: #7c3aed; margin-top: 6px; }
-    .statusline { font-size: 11px; color: #94a3b8; margin-top: 10px; }
-    .err { color: #fb7185; }
-    a.back { color: #8b5cf6; font-size: 11px; text-decoration: none; }
+
+    /* LISTE DES COMPOSANTS (tous statuts, comme le brief : ◉ construction… / ○ attente) */
+    .comp-list { margin-top: 18px; }
+    .comp-row { display: flex; align-items: center; justify-content: space-between; padding: 5px 8px; border-radius: 8px; font-size: 11px; color: #64748b; }
+    .comp-row .glyph { width: 16px; }
+    .comp-row.building { color: #c4b5fd; background: rgba(139,92,246,.08); }
+    .comp-row.completed { color: #94a3b8; }
+    .comp-row.completed .glyph { color: #34d399; }
+    .comp-row.error { color: #fb7185; }
+
+    /* CANVAS */
+    .canvas-panel { display: flex; flex-direction: column; min-width: 0; }
+    .canvas-wrap { flex: 1; overflow: auto; padding: 24px; display: flex; justify-content: center; align-items: flex-start; background: #080b16; }
+    .canvas { width: min(820px, 100%); min-height: 60%; border: 1px solid #223052; border-radius: 14px; background: #0b0f1e; padding: 20px; }
+    .canvas .placeholder { color: #334155; font-size: 13px; text-align: center; padding: 40px 0; }
+
+    /* NŒUDS DU RENDERER */
+    .pv-node { border: 1px solid #334155; border-radius: 12px; padding: 14px 18px; margin-bottom: 12px; background: #0d1222; }
+    .pv-node .pv-label { font-size: 13px; font-weight: 600; color: #cbd5e1; }
+    .pv-node .pv-type { font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: #64748b; margin-top: 4px; }
+    .pv-node.completed { border-color: #059669; }
+    .pv-node.error { border-color: #e11d48; }
+    .pv-node.error .pv-label { color: #fb7185; }
+    .pv-node.building { border-style: dashed; border-color: #7c3aed; background: rgba(124,58,237,.07); }
+    .pv-node.building .pv-label { color: #a78bfa; }
+    .pv-node.building .pv-building-tag { display: inline-block; font-size: 10px; color: #a78bfa; margin-left: 10px; }
+    .pv-node .pv-error { font-size: 10px; color: #fb7185; margin-top: 6px; }
+    .pv-children { margin-top: 12px; padding-left: 16px; border-left: 1px solid #223052; display: flex; flex-direction: column; gap: 10px; }
+
+    /* STATUSBAR */
+    .statusbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 20px; border-top: 1px solid #1a2238; background: #0a0e1c; font-size: 12px; color: #94a3b8; }
+    .statusbar .err { color: #fb7185; }
   </style>
 </head>
 <body>
-  <h1>Preview Builder — nouveau preview (indépendant)</h1>
-  <div class="sub">Moteur d'état de construction progressive · les événements de démo sont des mocks isolés · l'ancien preview n'est pas concerné — <a class="back" href="/">← retour au Studio</a></div>
-
-  <div class="controls">
-    <button id="btnStart">START BUILD (démo mockée)</button>
-    <button id="btnReset" class="secondary">RESET</button>
-  </div>
-
-  <div class="layout">
-    <div class="panel">
-      <h2>Étapes de construction</h2>
-      <div id="stageLadder"></div>
-      <div class="statusline" id="statusLine">idle</div>
-    </div>
-    <div class="panel">
-      <h2>Canvas</h2>
-      <div class="canvas" id="canvas">
-        <div style="color:#334155; font-size:12px; padding:24px;">construction…</div>
+  <div class="app">
+    <header class="app-header">
+      <h1>Preview Builder</h1>
+      <div style="display:flex; align-items:center;">
+        <div class="build-badge"><span class="dot" id="statusDot"></span><span id="statusBadge">Idle</span></div>
+        <a class="back" href="/">← Studio</a>
       </div>
+    </header>
+
+    <div class="layout">
+      <aside class="panel-build">
+        <h2>Build</h2>
+        <div class="controls">
+          <button id="btnStart">START BUILD</button>
+          <button id="btnReset" class="secondary">RESET</button>
+        </div>
+        <div id="stageLadder"></div>
+        <h2 style="margin-top:18px;">Components</h2>
+        <div id="compList"></div>
+      </aside>
+
+      <section class="canvas-panel">
+        <h2>Live Preview</h2>
+        <div class="canvas-wrap">
+          <div class="canvas" id="canvas"></div>
+        </div>
+      </section>
     </div>
+
+    <footer class="statusbar">
+      <span id="progressLabel">Components: 0/0</span>
+      <span id="footerStatus">Idle</span>
+    </footer>
   </div>
 
   <script type="module">
-    import { applyBuildEvent, createPreviewBuildState, visibleComponents, BUILD_STAGES, ERROR_STAGE } from '/preview-builder/engine.js';
+    import { applyBuildEvent, createPreviewBuildState, BUILD_STAGES, ERROR_STAGE } from '/preview-builder/engine.js';
+    import { renderPreview } from '/preview-builder/renderer.js';
     import { demoBuildScript, scriptToEvents } from '/preview-builder/mocks.js';
 
-    const ladderEl = document.getElementById('stageLadder');
-    const canvasEl = document.getElementById('canvas');
-    const statusEl = document.getElementById('statusLine');
-    const btnStart = document.getElementById('btnStart');
-    const btnReset = document.getElementById('btnReset');
-
+    const el = (id) => document.getElementById(id);
     let state = createPreviewBuildState();
     let timer = null;
 
-    function renderStages() {
+    /* ---------- RENDERER DOM : model → DOM, sans logique métier ---------- */
+    function render(model) {
+      // 1. Badge d'état global
+      const dot = el('statusDot'), badge = el('statusBadge');
+      dot.className = 'dot ' + (model.status === 'building' ? 'building' : model.status === 'completed' ? 'completed' : model.status === 'error' ? 'error' : '');
+      badge.textContent = model.statusLabel;
+      badge.style.color = model.status === 'building' ? '#c4b5fd' : model.status === 'completed' ? '#34d399' : model.status === 'error' ? '#fb7185' : '#94a3b8';
+
+      // 2. Échelle des étapes
       const stages = [...BUILD_STAGES, ERROR_STAGE];
-      const idx = stages.indexOf(state.stage);
-      ladderEl.innerHTML = stages.map((s) => {
-        const cls = s === state.stage ? 'stage current' : (idx > stages.indexOf(s) && s !== ERROR_STAGE ? 'stage done' : (s === ERROR_STAGE && state.status === 'error' ? 'stage error' : 'stage'));
+      const idx = stages.indexOf(model.stage);
+      el('stageLadder').innerHTML = stages.map((s) => {
+        const cls = s === model.stage ? 'stage current' : (idx > stages.indexOf(s) && s !== ERROR_STAGE ? 'stage done' : (s === ERROR_STAGE && model.status === 'error' ? 'stage error' : 'stage'));
         return '<div class="' + cls + '">' + s + '</div>';
       }).join('');
+
+      // 3. Liste des composants — TOUS les statuts (◉ construction… / ✓ / ○ attente / !)
+      const glyphs = { building: ['◉', 'vibe-'], completed: ['✓', ''], pending: ['○', ''], error: ['!', ''] };
+      el('compList').innerHTML = model.flat.map((n) => {
+        const g = glyphs[n.status] || glyphs.pending;
+        const buildingTag = n.status === 'building' ? ' <span style="color:#a78bfa;">construction…</span>' : '';
+        return '<div class="comp-row ' + n.status + '"><span style="display:flex;align-items:center;gap:8px;"><span class="glyph">' + g[0] + '</span>' + n.label + buildingTag + '</span><span style="font-size:9px;">' + n.type + '</span></div>';
+      }).join('') || '<div class="comp-row">—</div>';
+
+      // 4. Canvas : SEULEMENT les nœuds canvasVisible (pending exclu), arbre via children
+      const nodeHtml = (n) =>
+        '<div class="pv-node ' + n.status + '" title="' + n.id + '">'
+        + '<span class="pv-label">' + n.label + '</span>'
+        + (n.status === 'building' ? '<span class="pv-building-tag">construction…</span>' : '')
+        + '<div class="pv-type">' + n.type + '</div>'
+        + (n.error ? '<div class="pv-error">⚠ ' + n.error + '</div>' : '')
+        + (n.children.length ? '<div class="pv-children">' + n.children.filter((c) => c.canvasVisible).map(nodeHtml).join('') + '</div>' : '')
+        + '</div>';
+      el('canvas').innerHTML = model.canvas.length
+        ? model.roots.filter((r) => r.canvasVisible).map(nodeHtml).join('')
+        : '<div class="placeholder">construction…</div>';
+
+      // 5. Statusbar
+      el('progressLabel').textContent = model.progressLabel;
+      const footer = el('footerStatus');
+      footer.textContent = model.statusLabel;
+      footer.className = model.status === 'error' ? 'err' : '';
     }
 
-    function renderCanvas() {
-      const visible = visibleComponents(state);
-      if (visible.length === 0) {
-        canvasEl.innerHTML = '<div style="color:#334155; font-size:12px; padding:24px;">construction…</div>';
-        return;
-      }
-      canvasEl.innerHTML = visible.map((c) =>
-        '<div class="component ' + c.status + '" title="' + c.type + (c.parentId ? ' · dans ' + c.parentId : '') + '">'
-        + (c.label || c.id)
-        + '<div class="type">' + c.type + (c.metadata && c.metadata.styleApplied ? ' · stylé' : '') + '</div>'
-        + '</div>'
-      ).join('');
-    }
-
-    function renderStatus() {
-      statusEl.textContent = state.status === 'error'
-        ? ('error — ' + (state.error || 'inconnue'))
-        : (state.status + ' · stage ' + state.stage + ' · ' + visibleComponents(state).length + ' élément(s) affiché(s) · ' + state.ignoredCount + ' ignoré(s)');
-      if (state.status === 'error') statusEl.classList.add('err'); else statusEl.classList.remove('err');
-    }
-
-    function render() {
-      renderStages();
-      renderCanvas();
-      renderStatus();
-    }
-
+    /* ---------- Pipeline : EVENT → ENGINE → STATE → RENDERER ---------- */
     function consume(event) {
       state = applyBuildEvent(state, event);
-      render();
+      render(renderPreview(state));
     }
 
     btnStart.addEventListener('click', () => {
@@ -123,7 +177,7 @@
         if (i >= events.length) { clearInterval(timer); timer = null; btnStart.disabled = false; return; }
         consume(events[i]);
         i++;
-      }, 350);
+      }, 300);
     });
 
     btnReset.addEventListener('click', () => {
@@ -131,7 +185,7 @@
       consume({ kind: 'BUILD_RESET', timestamp: Date.now() });
     });
 
-    render();
+    render(renderPreview(state));
   </script>
 </body>
 </html>

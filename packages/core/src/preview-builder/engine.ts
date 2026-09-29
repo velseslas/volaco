@@ -35,7 +35,7 @@ export const ERROR_STAGE = 'error' as const;
 
 export type AnyStage = BuildStage | typeof ERROR_STAGE;
 
-export type ComponentStatus = 'pending' | 'building' | 'completed';
+export type ComponentStatus = 'pending' | 'building' | 'completed' | 'error';
 
 /** Composant générique : identifiant + type libre (rien n'est hardcodé). */
 export interface ComponentState {
@@ -47,6 +47,8 @@ export interface ComponentState {
   /** Étape de construction à laquelle le composant appartient. */
   stage: AnyStage;
   order: number;
+  /** Raison de l'échec quand status = 'error' — le reste du build continue. */
+  error?: string | undefined;
   metadata?: Record<string, unknown>;
 }
 
@@ -61,6 +63,7 @@ export type PreviewBuildEvent =
     }
   | { kind: 'COMPONENT_BUILDING'; componentId: string; timestamp: number }
   | { kind: 'COMPONENT_READY'; componentId: string; timestamp: number }
+  | { kind: 'COMPONENT_FAILED'; componentId: string; error: string; timestamp: number }
   | { kind: 'COMPONENT_REMOVED'; componentId: string; timestamp: number }
   | { kind: 'STYLE_APPLIED'; componentId?: string; stage?: BuildStage; timestamp: number }
   | { kind: 'SECTION_COMPLETED'; sectionId: string; timestamp: number }
@@ -164,8 +167,19 @@ export function applyBuildEvent(state: PreviewBuildState, event: PreviewBuildEve
       if (!component) return ignore();
       const next: ComponentState = {
         ...component,
-        status: event.kind === 'COMPONENT_BUILDING' ? 'building' : 'completed'
+        status: event.kind === 'COMPONENT_BUILDING' ? 'building' : 'completed',
+        error: undefined
       };
+      return { ...withLog, components: new Map(withLog.components).set(event.componentId, next) };
+    }
+
+    case 'COMPONENT_FAILED': {
+      // Un composant en échec N'INTERROMPT PAS le build : le reste continue
+      // (exigence LOT 02 — l'état d'erreur est local au composant).
+      if (withLog.status !== 'building') return ignore();
+      const component = withLog.components.get(event.componentId);
+      if (!component) return ignore();
+      const next: ComponentState = { ...component, status: 'error', error: event.error };
       return { ...withLog, components: new Map(withLog.components).set(event.componentId, next) };
     }
 
