@@ -10,7 +10,6 @@
     body { margin: 0; font-family: 'Segoe UI', system-ui, sans-serif; background: #070913; color: #e2e8f0; }
     .app { display: flex; flex-direction: column; height: 100vh; }
 
-    /* HEADER */
     header.app-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 20px; border-bottom: 1px solid #1a2238; background: #0a0e1c; }
     header.app-header h1 { font-size: 14px; margin: 0; font-weight: 700; }
     .build-badge { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; }
@@ -20,7 +19,6 @@
     .dot.error { background: #fb7185; }
     a.back { color: #8b5cf6; font-size: 11px; text-decoration: none; margin-left: 16px; }
 
-    /* LAYOUT */
     .layout { display: grid; grid-template-columns: 300px 1fr; gap: 0; flex: 1; min-height: 0; }
     .panel-build { border-right: 1px solid #1a2238; background: #0a0e1c; padding: 16px; overflow-y: auto; }
     .panel-build h2, .canvas-panel h2 { font-size: 10px; text-transform: uppercase; letter-spacing: .1em; color: #64748b; margin: 0 0 10px; }
@@ -29,7 +27,6 @@
     button.secondary { background: #1e293b; }
     button:disabled { opacity: .4; cursor: not-allowed; }
 
-    /* ÉTAPES */
     .stage { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 8px; font-size: 12px; color: #475569; }
     .stage.current { background: rgba(139,92,246,.14); color: #c4b5fd; font-weight: 600; }
     .stage.done { color: #34d399; }
@@ -39,7 +36,6 @@
     .stage.error { color: #fb7185; }
     .stage.error::before { content: '!'; }
 
-    /* LISTE DES COMPOSANTS (tous statuts, comme le brief : ◉ construction… / ○ attente) */
     .comp-list { margin-top: 18px; }
     .comp-row { display: flex; align-items: center; justify-content: space-between; padding: 5px 8px; border-radius: 8px; font-size: 11px; color: #64748b; }
     .comp-row .glyph { width: 16px; }
@@ -48,24 +44,53 @@
     .comp-row.completed .glyph { color: #34d399; }
     .comp-row.error { color: #fb7185; }
 
-    /* CANVAS */
     .canvas-panel { display: flex; flex-direction: column; min-width: 0; }
     .canvas-wrap { flex: 1; overflow: auto; padding: 24px; display: flex; justify-content: center; align-items: flex-start; background: #080b16; }
     .canvas { width: min(820px, 100%); min-height: 60%; border: 1px solid #223052; border-radius: 14px; background: #0b0f1e; padding: 20px; }
     .canvas .placeholder { color: #334155; font-size: 13px; text-align: center; padding: 40px 0; }
 
-    /* NŒUDS DU RENDERER */
-    .pv-node { border: 1px solid #334155; border-radius: 12px; padding: 14px 18px; margin-bottom: 12px; background: #0d1222; }
+    /* ===== NŒUDS ===== */
+    .pv-node { border: 1px solid #334155; border-radius: 12px; padding: 14px 18px; margin-bottom: 12px; background: #0d1222; transition: border-color .25s ease, background-color .25s ease; }
     .pv-node .pv-label { font-size: 13px; font-weight: 600; color: #cbd5e1; }
     .pv-node .pv-type { font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: #64748b; margin-top: 4px; }
     .pv-node.completed { border-color: #059669; }
     .pv-node.error { border-color: #e11d48; }
     .pv-node.error .pv-label { color: #fb7185; }
-    .pv-node.building { border-style: dashed; border-color: #7c3aed; background: rgba(124,58,237,.07); }
-    .pv-node.building .pv-label { color: #a78bfa; }
-    .pv-node.building .pv-building-tag { display: inline-block; font-size: 10px; color: #a78bfa; margin-left: 10px; }
     .pv-node .pv-error { font-size: 10px; color: #fb7185; margin-top: 6px; }
     .pv-children { margin-top: 12px; padding-left: 16px; border-left: 1px solid #223052; display: flex; flex-direction: column; gap: 10px; }
+
+    /* ===== LOT 03 — CONSTRUCTION PROGRESSIVE (conséquence du state) ===== */
+    /* Squelette → label → contenu : 3 phases CSS enchaînées à l'insertion du
+       nœud building. Aucun timer JS : tout est keyframes + animation-delay. */
+    .pv-node.building { border-style: dashed; border-color: #7c3aed; background: rgba(124,58,237,.06); }
+    .pv-node.building .pv-label { color: #a78bfa; animation: pvLabelIn .5s ease .45s both; }
+    .pv-node.building .pv-building-tag { display: inline-block; font-size: 10px; color: #a78bfa; margin-left: 10px; animation: pvLabelIn .4s ease .2s both; }
+    .pv-node.building .pv-type { animation: pvLabelIn .4s ease 1.15s both; }
+    .pv-ghost { height: 10px; border-radius: 5px; margin-top: 9px;
+      background: linear-gradient(90deg, rgba(124,58,237,.12) 25%, rgba(139,92,246,.3) 50%, rgba(124,58,237,.12) 75%);
+      background-size: 400px 100%; animation: pvGhostShimmer 1.2s linear infinite, pvGhostFill .7s cubic-bezier(.22,.9,.34,1) both; }
+    .pv-ghost.g1 { animation-delay: 0s, .8s; }
+    .pv-ghost.g2 { animation-delay: 0s, 1.15s; width: 70%; }
+    @keyframes pvGhostShimmer { 0% { background-position: -400px 0; } 100% { background-position: 400px 0; } }
+    @keyframes pvGhostFill { 0% { opacity: 0; transform: scaleX(.4); transform-origin: left; } 100% { opacity: 1; transform: scaleX(1); } }
+    @keyframes pvLabelIn { 0% { opacity: 0; transform: translateY(3px); } 100% { opacity: 1; transform: none; } }
+
+    /* ===== LOT 03 — BUILD FOCUS (dérivé du state, sélecteur pur) ===== */
+    .pv-node.focus { border-color: #8b5cf6; box-shadow: 0 0 0 3px rgba(139,92,246,.18), 0 4px 22px rgba(124,58,237,.14); }
+    .pv-node.focus .pv-building-tag::before { content: '◉ BUILDING…'; font-weight: 700; }
+
+    /* ===== STABILISATION à completed : courte et élégante ===== */
+    .pv-node.completed { animation: pvStabilize .25s ease; }
+    @keyframes pvStabilize { 0% { box-shadow: 0 0 0 3px rgba(5,150,105,.25); } 100% { box-shadow: none; } }
+
+    /* ===== ERROR local, discret ===== */
+    .pv-node.error .pv-error::before { content: '⚠ Component generation failed — '; }
+
+    /* ===== ACCESSIBILITÉ : reduced-motion → les changements d'état restent,
+       les animations disparaissent ===== */
+    @media (prefers-reduced-motion: reduce) {
+      .pv-node, .pv-node *, .pv-ghost, .pv-label, .dot { animation: none !important; transition: none !important; }
+    }
 
     /* STATUSBAR */
     .statusbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 20px; border-top: 1px solid #1a2238; background: #0a0e1c; font-size: 12px; color: #94a3b8; }
@@ -117,15 +142,85 @@
     let state = createPreviewBuildState();
     let timer = null;
 
-    /* ---------- RENDERER DOM : model → DOM, sans logique métier ---------- */
+    /* ---------- LOT 03 — render DOM INCRÉMENTAL ---------- */
+    /* Le canvas est synchronisé par data-pv-id : un nœud n'est recréé QUE
+       lorsque son STATUT (ou son focus) change — c'est ce changement qui
+       déclenche les animations CSS de construction. Les animations sont une
+       conséquence du state, jamais sa source (aucun timer ne décide d'un état). */
+
+    function nodeInner(n) {
+      if (n.status === 'building') {
+        // Structure en construction : label révélé tôt, zones de contenu qui
+        // se remplissent ensuite (générique — aucune mention Card/Header/…).
+        return '<div><span class="pv-label">' + n.label + '</span><span class="pv-building-tag"></span></div>'
+          + '<div class="pv-ghost g1"></div><div class="pv-ghost g2"></div>';
+      }
+      if (n.status === 'error') {
+        return '<div><span class="pv-label">' + n.label + '</span></div><div class="pv-error">' + (n.error || 'generation failed') + '</div>';
+      }
+      // completed : élément stable (label + type)
+      return '<div><span class="pv-label">' + n.label + '</span></div><div class="pv-type">' + n.type + '</div>';
+    }
+
+    function upsertNode(parentEl, n) {
+      let nodeEl = parentEl.querySelector(':scope > [data-pv-id="' + n.id + '"]');
+      if (!nodeEl) {
+        nodeEl = document.createElement('div');
+        nodeEl.dataset.pvId = n.id;
+        nodeEl.dataset.pvStatus = '';
+        nodeEl.dataset.pvFocus = '';
+        parentEl.appendChild(nodeEl);
+      }
+      const statusChanged = nodeEl.dataset.pvStatus !== n.status;
+      const focusChanged = nodeEl.dataset.pvFocus !== String(n.isBuildFocus);
+      if (statusChanged) {
+        // Transition : le contenu interne est régénéré → les animations CSS de
+        // construction (ou la stabilisation) démarrent à CE moment précis.
+        nodeEl.className = 'pv-node ' + n.status + (n.isBuildFocus ? ' focus' : '');
+        nodeEl.innerHTML = nodeInner(n);
+        nodeEl.dataset.pvStatus = n.status;
+        nodeEl.dataset.pvFocus = String(n.isBuildFocus);
+      } else if (focusChanged) {
+        // Seul le focus change : classes ajustées, contenu et animations intacts
+        nodeEl.classList.toggle('focus', n.isBuildFocus);
+        nodeEl.dataset.pvFocus = String(n.isBuildFocus);
+      }
+      // Enfants visibles (arbre parentId)
+      const visibleChildren = n.children.filter((c) => c.canvasVisible);
+      let childWrap = nodeEl.querySelector(':scope > .pv-children');
+      if (visibleChildren.length) {
+        if (!childWrap) {
+          childWrap = document.createElement('div');
+          childWrap.className = 'pv-children';
+          nodeEl.appendChild(childWrap);
+        }
+        for (const child of visibleChildren) upsertNode(childWrap, child);
+      } else if (childWrap) {
+        childWrap.remove();
+      }
+    }
+
+    function syncCanvas(model) {
+      const canvas = el('canvas');
+      // Retire les nœuds disparus (COMPONENT_REMOVED / reset)
+      [...canvas.querySelectorAll('[data-pv-id]')].forEach((nodeEl) => {
+        if (!model.canvas.some((n) => n.id === nodeEl.dataset.pvId)) nodeEl.remove();
+      });
+      for (const root of model.roots.filter((r) => r.canvasVisible)) upsertNode(canvas, root);
+      // Placeholder quand rien n'est visible
+      const empty = model.canvas.length === 0;
+      let ph = canvas.querySelector('.placeholder');
+      if (empty && !ph) canvas.innerHTML = '<div class="placeholder">construction…</div>';
+      if (!empty && ph) ph.remove();
+    }
+
+    /* ---------- RENDU GLOBAL (state → model → DOM) ---------- */
     function render(model) {
-      // 1. Badge d'état global
       const dot = el('statusDot'), badge = el('statusBadge');
       dot.className = 'dot ' + (model.status === 'building' ? 'building' : model.status === 'completed' ? 'completed' : model.status === 'error' ? 'error' : '');
       badge.textContent = model.statusLabel;
       badge.style.color = model.status === 'building' ? '#c4b5fd' : model.status === 'completed' ? '#34d399' : model.status === 'error' ? '#fb7185' : '#94a3b8';
 
-      // 2. Échelle des étapes
       const stages = [...BUILD_STAGES, ERROR_STAGE];
       const idx = stages.indexOf(model.stage);
       el('stageLadder').innerHTML = stages.map((s) => {
@@ -133,35 +228,21 @@
         return '<div class="' + cls + '">' + s + '</div>';
       }).join('');
 
-      // 3. Liste des composants — TOUS les statuts (◉ construction… / ✓ / ○ attente / !)
-      const glyphs = { building: ['◉', 'vibe-'], completed: ['✓', ''], pending: ['○', ''], error: ['!', ''] };
+      const glyphs = { building: '◉', completed: '✓', pending: '○', error: '!' };
       el('compList').innerHTML = model.flat.map((n) => {
-        const g = glyphs[n.status] || glyphs.pending;
         const buildingTag = n.status === 'building' ? ' <span style="color:#a78bfa;">construction…</span>' : '';
-        return '<div class="comp-row ' + n.status + '"><span style="display:flex;align-items:center;gap:8px;"><span class="glyph">' + g[0] + '</span>' + n.label + buildingTag + '</span><span style="font-size:9px;">' + n.type + '</span></div>';
+        return '<div class="comp-row ' + n.status + '"><span style="display:flex;align-items:center;gap:8px;"><span class="glyph">' + (glyphs[n.status] || '○') + '</span>' + n.label + buildingTag + '</span><span style="font-size:9px;">' + n.type + '</span></div>';
       }).join('') || '<div class="comp-row">—</div>';
 
-      // 4. Canvas : SEULEMENT les nœuds canvasVisible (pending exclu), arbre via children
-      const nodeHtml = (n) =>
-        '<div class="pv-node ' + n.status + '" title="' + n.id + '">'
-        + '<span class="pv-label">' + n.label + '</span>'
-        + (n.status === 'building' ? '<span class="pv-building-tag">construction…</span>' : '')
-        + '<div class="pv-type">' + n.type + '</div>'
-        + (n.error ? '<div class="pv-error">⚠ ' + n.error + '</div>' : '')
-        + (n.children.length ? '<div class="pv-children">' + n.children.filter((c) => c.canvasVisible).map(nodeHtml).join('') + '</div>' : '')
-        + '</div>';
-      el('canvas').innerHTML = model.canvas.length
-        ? model.roots.filter((r) => r.canvasVisible).map(nodeHtml).join('')
-        : '<div class="placeholder">construction…</div>';
+      syncCanvas(model);
 
-      // 5. Statusbar
       el('progressLabel').textContent = model.progressLabel;
       const footer = el('footerStatus');
       footer.textContent = model.statusLabel;
       footer.className = model.status === 'error' ? 'err' : '';
     }
 
-    /* ---------- Pipeline : EVENT → ENGINE → STATE → RENDERER ---------- */
+    /* ---------- Pipeline : EVENT → ENGINE → STATE → RENDERER → CANVAS ---------- */
     function consume(event) {
       state = applyBuildEvent(state, event);
       render(renderPreview(state));

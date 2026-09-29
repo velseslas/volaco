@@ -31,6 +31,8 @@ export interface RenderNode {
   children: RenderNode[];
   /** false = pending : le canvas ne doit PAS l'afficher. */
   canvasVisible: boolean;
+  /** LOT 03 — vrai pour l'unique composant `building` actif (dérivé du state). */
+  isBuildFocus: boolean;
 }
 
 /** Modèle d'affichage complet — la seule chose que la page consomme. */
@@ -54,16 +56,36 @@ export interface PreviewRenderModel {
   progressLabel: string;
   /** Libellé de la barre d'état basse. */
   statusLabel: string;
+  /**
+   * LOT 03 — BUILD FOCUS : id du composant `building` ACTIF, déterministe
+   * (le premier annoncé en construction). DÉRIVÉ du state par un sélecteur
+   * pur — le moteur n'est pas modifié, l'animation ne modifie jamais l'état.
+   */
+  focusId?: string | undefined;
   buildError?: string | undefined;
+}
+
+/**
+ * LOT 03 — Build Focus : parmi les composants `building`, le focus principal
+ * est le premier annoncé (order minimal, id pour départager). Sélecteur PUR :
+ * aucun effet de bord, l'état reste la seule vérité. Plusieurs composants
+ * peuvent être `building` simultanément — un seul porte le focus.
+ */
+export function buildFocus(state: PreviewBuildState): ComponentState | null {
+  const building = [...state.components.values()]
+    .filter((c) => c.status === 'building')
+    .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+  return building[0] || null;
 }
 
 function buildNode(
   component: ComponentState,
   childrenByParent: Map<string, ComponentState[]>,
-  depth: number
+  depth: number,
+  focusId?: string
 ): RenderNode {
   const children = (childrenByParent.get(component.id) || []).map((child) =>
-    buildNode(child, childrenByParent, depth + 1)
+    buildNode(child, childrenByParent, depth + 1, focusId)
   );
   return {
     id: component.id,
@@ -73,7 +95,8 @@ function buildNode(
     depth,
     ...(component.error !== undefined ? { error: component.error } : {}),
     children,
-    canvasVisible: component.status !== 'pending'
+    canvasVisible: component.status !== 'pending',
+    isBuildFocus: focusId !== undefined && component.id === focusId
   };
 }
 
@@ -103,7 +126,7 @@ export function renderPreview(state: PreviewBuildState): PreviewRenderModel {
       byParent.set(component.parentId, list);
     }
   }
-  const tree = roots.map((root) => buildNode(root, byParent, 0));
+  const tree = roots.map((root) => buildNode(root, byParent, 0, buildFocus(state)?.id));
   const flat = collectFlat(tree, []);
 
   const counts = {
@@ -113,6 +136,7 @@ export function renderPreview(state: PreviewBuildState): PreviewRenderModel {
     pending: flat.filter((n) => n.status === 'pending').length,
     error: flat.filter((n) => n.status === 'error').length
   };
+  const focusId = buildFocus(state)?.id;
 
   return {
     status: state.status,
@@ -129,6 +153,7 @@ export function renderPreview(state: PreviewBuildState): PreviewRenderModel {
         : state.status === 'building'
           ? 'Building…'
           : 'idle',
+    ...(focusId !== undefined ? { focusId } : {}),
     ...(state.error !== undefined ? { buildError: state.error } : {})
   };
 }

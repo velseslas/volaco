@@ -30,33 +30,38 @@ export interface MockBuildScript {
 /**
  * Scénario de démonstration : START → structure → sections → composants
  * (1, 2, 3) → styling → responsive → completed.
+ *
+ * ÉTAPE 03 — la phase `building` de chaque composant dure 1,6 s (au lieu de
+ * 400 ms) : c'est LE MOCK qui définit le rythme de la démonstration — le
+ * temps nécessaire pour que la construction progressive interne (squelette →
+ * label → contenu) soit visible avant la stabilisation.
  */
 export function demoBuildScript(): MockBuildScript {
   return {
     steps: [
       { at: 0, kind: 'stage', stage: 'structure' },
-      { at: 400, kind: 'stage', stage: 'sections' },
-      { at: 800, kind: 'stage', stage: 'components' },
-      { at: 900, kind: 'component', component: { id: 'comp-header', type: 'header', label: 'Header' } },
-      { at: 1300, kind: 'ready', componentId: 'comp-header' },
-      { at: 1500, kind: 'component', component: { id: 'comp-sidebar', type: 'sidebar', label: 'Side Bar' } },
-      { at: 1900, kind: 'ready', componentId: 'comp-sidebar' },
-      { at: 2100, kind: 'component', component: { id: 'comp-content', type: 'content', label: 'Content', parentId: 'comp-sidebar' } },
-      { at: 2500, kind: 'ready', componentId: 'comp-content' },
-      { at: 2700, kind: 'component', component: { id: 'comp-card-1', type: 'card', label: 'Card 1', parentId: 'comp-content' } },
-      { at: 3100, kind: 'ready', componentId: 'comp-card-1' },
-      { at: 3300, kind: 'component', component: { id: 'comp-card-2', type: 'card', label: 'Card 2', parentId: 'comp-content' } },
-      { at: 3700, kind: 'ready', componentId: 'comp-card-2' },
-      { at: 3900, kind: 'component', component: { id: 'comp-chart', type: 'chart', label: 'Chart', parentId: 'comp-content' } },
-      { at: 4300, kind: 'ready', componentId: 'comp-chart' },
-      { at: 4500, kind: 'stage', stage: 'content' },
-      { at: 4900, kind: 'sectionCompleted', sectionId: 'comp-content' },
-      { at: 5100, kind: 'stage', stage: 'styling' },
-      { at: 5300, kind: 'style', componentId: 'comp-card-1' },
-      { at: 5500, kind: 'style', componentId: 'comp-card-2' },
-      { at: 5700, kind: 'stage', stage: 'responsive' },
-      { at: 6100, kind: 'stage', stage: 'finalizing' },
-      { at: 6500, kind: 'completed' }
+      { at: 500, kind: 'stage', stage: 'sections' },
+      { at: 1000, kind: 'stage', stage: 'components' },
+      { at: 1100, kind: 'component', component: { id: 'comp-header', type: 'header', label: 'Header' } },
+      { at: 2800, kind: 'ready', componentId: 'comp-header' },
+      { at: 3000, kind: 'component', component: { id: 'comp-sidebar', type: 'sidebar', label: 'Side Bar' } },
+      { at: 4700, kind: 'ready', componentId: 'comp-sidebar' },
+      { at: 4900, kind: 'component', component: { id: 'comp-content', type: 'content', label: 'Content', parentId: 'comp-sidebar' } },
+      { at: 6600, kind: 'ready', componentId: 'comp-content' },
+      { at: 6800, kind: 'component', component: { id: 'comp-card-1', type: 'card', label: 'Card 1', parentId: 'comp-content' } },
+      { at: 8500, kind: 'ready', componentId: 'comp-card-1' },
+      { at: 8700, kind: 'component', component: { id: 'comp-card-2', type: 'card', label: 'Card 2', parentId: 'comp-content' } },
+      { at: 10400, kind: 'ready', componentId: 'comp-card-2' },
+      { at: 10600, kind: 'component', component: { id: 'comp-chart', type: 'chart', label: 'Chart', parentId: 'comp-content' } },
+      { at: 12300, kind: 'ready', componentId: 'comp-chart' },
+      { at: 12500, kind: 'stage', stage: 'content' },
+      { at: 12900, kind: 'sectionCompleted', sectionId: 'comp-content' },
+      { at: 13100, kind: 'stage', stage: 'styling' },
+      { at: 13300, kind: 'style', componentId: 'comp-card-1' },
+      { at: 13500, kind: 'style', componentId: 'comp-card-2' },
+      { at: 13700, kind: 'stage', stage: 'responsive' },
+      { at: 14100, kind: 'stage', stage: 'finalizing' },
+      { at: 14500, kind: 'completed' }
     ]
   };
 }
