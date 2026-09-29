@@ -21,8 +21,9 @@ const repoRoot = join(here, '..', '..', '..', '..', '..');
 const demoPagePath = join(repoRoot, 'apps', 'studio', 'preview-builder.html');
 const engineJsPath = join(repoRoot, 'dist', 'packages', 'core', 'src', 'preview-builder', 'engine.js');
 const rendererJsPath = join(repoRoot, 'dist', 'packages', 'core', 'src', 'preview-builder', 'renderer.js');
-const mocksJsPath = join(repoRoot, 'dist', 'packages', 'core', 'src', 'preview-builder', 'mocks.js');
+const layoutJsPath = join(repoRoot, 'dist', 'packages', 'core', 'src', 'preview-builder', 'layout.js');
 const visualsJsPath = join(repoRoot, 'dist', 'packages', 'core', 'src', 'preview-builder', 'visuals.js');
+const mocksJsPath = join(repoRoot, 'dist', 'packages', 'core', 'src', 'preview-builder', 'mocks.js');
 
 function serveFile(res: ServerResponse, filePath: string, contentType: string, notFound: string): boolean {
   if (!existsSync(filePath)) {
@@ -52,6 +53,9 @@ export async function handlePreviewBuilderRoutes(
   }
   if (pathname === '/preview-builder/renderer.js') {
     return serveFile(res, rendererJsPath, 'text/javascript; charset=utf-8', 'Renderer Preview Builder non compilé (npm run build)');
+  }
+  if (pathname === '/preview-builder/layout.js') {
+    return serveFile(res, layoutJsPath, 'text/javascript; charset=utf-8', 'Layout Preview Builder non compilé (npm run build)');
   }
   if (pathname === '/preview-builder/visuals.js') {
     return serveFile(res, visualsJsPath, 'text/javascript; charset=utf-8', 'Visuals Preview Builder non compilés (npm run build)');

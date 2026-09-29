@@ -160,6 +160,28 @@
     /* Ghosts propres au registry : mêmes keyframes que le moteur visuel */
     .pvz-ghosts .pv-ghost { height: 12px; }
 
+    /* ===== ÉTAPE 07 — COMPOSITIONS + VIEWPORTS (mode d'affichage pur) ===== */
+    .vp-switch { display: flex; gap: 6px; margin-right: 18px; }
+    .vp-btn { padding: 5px 12px; font-size: 11px; background: #1e293b; color: #94a3b8; }
+    .vp-btn.active { background: #7c3aed; color: #fff; }
+
+    .pv-root-col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+    .pv-root-row { display: flex; gap: 14px; align-items: stretch; flex: 1; min-width: 0; }
+    .pv-root-row > .pv-node, .pv-root-row > .pv-comp-col, .pv-root-row > .pv-comp-grid { flex: 1; min-width: 0; }
+    .pv-comp-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; flex: 1; }
+    .pv-comp-row { display: flex; gap: 12px; min-width: 0; }
+    .pv-comp-row > * { flex: 1; min-width: 0; }
+    .pv-comp-grid { display: grid; grid-template-columns: repeat(var(--pv-cols, 2), 1fr); gap: 12px; min-width: 0; }
+    .pv-comp-stack { display: grid; }
+    .pv-comp-stack > * { grid-area: 1 / 1; }
+
+    .canvas.vp-tablet { max-width: 640px; margin: 0 auto; width: 100%; }
+    .canvas.vp-mobile { max-width: 390px; margin: 0 auto; width: 100%; }
+    .canvas.vp-tablet .pv-root-row { flex-direction: column; }
+    .canvas.vp-mobile .pv-root-row { flex-direction: column; }
+    .canvas.vp-mobile .pv-comp-row { flex-direction: column; }
+    .canvas.vp-mobile .pv-comp-grid { grid-template-columns: 1fr; }
+
     /* STATUSBAR */
     .statusbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 20px; border-top: 1px solid #1a2238; background: #0a0e1c; font-size: 12px; color: #94a3b8; }
     .statusbar .err { color: #fb7185; }
@@ -170,7 +192,14 @@
     <header class="app-header">
       <h1>Preview Builder</h1>
       <div style="display:flex; align-items:center;">
-        <div class="build-badge"><span class="dot" id="statusDot"></span><span id="statusBadge">Idle</span></div>
+        <div class="build-badge">
+          <div class="vp-switch">
+            <button class="secondary vp-btn active" data-vp="desktop">Desktop</button>
+            <button class="secondary vp-btn" data-vp="tablet">Tablet</button>
+            <button class="secondary vp-btn" data-vp="mobile">Mobile</button>
+          </div>
+          <span class="dot" id="statusDot"></span><span id="statusBadge">Idle</span>
+        </div>
         <a class="back" href="/">← Studio</a>
       </div>
     </header>
@@ -209,6 +238,7 @@
   <script type="module">
     import { applyBuildEvent, createPreviewBuildState, BUILD_STAGES } from '/preview-builder/engine.js';
     import { renderPreview, buildTimeline } from '/preview-builder/renderer.js';
+    import { layoutTree } from '/preview-builder/layout.js';
     import { renderComponentVisual } from '/preview-builder/visuals.js';
     import { demoBuildScript, scriptToEvents } from '/preview-builder/mocks.js';
 
@@ -223,73 +253,91 @@
        déclenche les animations CSS de construction. Les animations sont une
        conséquence du state, jamais sa source (aucun timer ne décide d'un état). */
 
-    function nodeInner(n) {
+    /* ===== ÉTAPE 07 — SYNC PAR COMPOSITION (layoutTree(state) → DOM) =====
+       Les conteneurs racines (pv-root-col / pv-root-row) et les wrappers de
+       composition (pv-comp-col/row/grid/stack) sont upsertés par identité ;
+       le DOM incrémental data-pv-id reste la règle pour les nœuds. */
+    function syncLayout(focusId) {
+      const canvas = el('canvas');
+      const { groups } = layoutTree(state);
+
+      // Retire les nœuds et conteneurs disparus
+      [...canvas.querySelectorAll('[data-pv-id]')].forEach((nodeEl) => {
+        const stillVisible = groups.some((g) => g.nodes.some((ln) => ln.component.id === nodeEl.dataset.pvId));
+        if (!stillVisible) nodeEl.remove();
+      });
+      [...canvas.querySelectorAll(':scope > [data-root-group]')].forEach((wrap) => {
+        const i = Number(wrap.dataset.rootGroup);
+        const g = groups[i];
+        if (i >= groups.length || !g || g.kind !== wrap.dataset.rootKind) wrap.remove();
+      });
+
+      // Placeholder quand aucune construction visible
+      const totalVisible = groups.reduce((acc, g) => acc + g.nodes.length, 0);
+      let ph = canvas.querySelector('.placeholder');
+      if (totalVisible === 0 && !ph) canvas.innerHTML = '<div class="placeholder">construction…</div>';
+      if (totalVisible > 0 && ph) ph.remove();
+
+      groups.forEach((group, i) => {
+        let wrap = canvas.querySelector(':scope > [data-root-group="' + i + '"]');
+        if (!wrap) {
+          wrap = document.createElement('div');
+          wrap.dataset.rootGroup = String(i);
+          wrap.dataset.rootKind = group.kind;
+          wrap.className = 'pv-root-' + group.kind;
+          canvas.appendChild(wrap);
+        }
+        for (const ln of group.nodes) upsertLayoutNode(wrap, ln, focusId);
+      });
+    }
+
+    function upsertLayoutNode(parentEl, ln, focusId) {
+      const c = ln.component;
+      const isFocus = focusId === c.id;
+      let nodeEl = parentEl.querySelector(':scope > [data-pv-id="' + c.id + '"]');
+      if (!nodeEl) {
+        nodeEl = document.createElement('div');
+        nodeEl.dataset.pvId = c.id;
+        nodeEl.dataset.pvStatus = '';
+        parentEl.appendChild(nodeEl);
+      }
+      if (nodeEl.dataset.pvStatus !== c.status || nodeEl.classList.contains('focus') !== isFocus) {
+        nodeEl.className = 'pv-node ' + c.status + (isFocus ? ' focus' : '');
+        nodeEl.innerHTML = nodeInner(c, isFocus);
+        nodeEl.dataset.pvStatus = c.status;
+      }
+      // Wrapper de composition des enfants (kind dérivé du state)
+      let wrap = nodeEl.querySelector(':scope > .pv-children');
+      const kind = ln.layout.kind;
+      if (ln.children.length) {
+        if (!wrap) {
+          wrap = document.createElement('div');
+          wrap.className = 'pv-children pv-comp-' + kind;
+          if (kind === 'grid') wrap.style.setProperty('--pv-cols', String(ln.layout.columns));
+          nodeEl.appendChild(wrap);
+        } else {
+          wrap.className = 'pv-children pv-comp-' + kind;
+          if (kind === 'grid') wrap.style.setProperty('--pv-cols', String(ln.layout.columns));
+        }
+        for (const child of ln.children) upsertLayoutNode(wrap, child, focusId);
+      } else if (wrap) {
+        wrap.remove();
+      }
+    }
+
+    function nodeInner(c, isFocus) {
       // ÉTAPE 05 — le VISUEL vient du registry (type → représentation), au
       // statut réel du state : building = titre + zones ghost, completed =
       // contenu final révélé. Type inconnu → visuel générique.
-      if (n.status === 'error') {
-        return '<div><span class="pv-label">' + n.label + '</span></div><div class="pv-error">' + (n.error || 'generation failed') + '</div>';
+      if (c.status === 'error') {
+        return '<div><span class="pv-label">' + c.label + '</span></div><div class="pv-error">' + (c.error || 'generation failed') + '</div>';
       }
-      const visual = renderComponentVisual({ id: n.id, type: n.type, label: n.label, metadata: n.metadata }, n.status === 'building' ? 'building' : 'completed');
-      if (n.status === 'building') {
-        // LOT 06 — bandeau Build Focus (le nœud est position:relative) ; il vit
-        // dans le innerHTML building : présent pendant tout l'état, sans timer.
-        const banner = n.isBuildFocus ? '<div class="pv-focus-banner"><span>◉</span> BUILDING</div>' : '';
-        return banner + '<div><span class="pv-label">' + n.label + '</span><span class="pv-building-tag"></span></div>' + visual;
+      const visual = renderComponentVisual({ id: c.id, type: c.type, label: c.label, metadata: c.metadata }, c.status === 'building' ? 'building' : 'completed');
+      if (c.status === 'building') {
+        const banner = isFocus ? '<div class="pv-focus-banner"><span>◉</span> BUILDING</div>' : '';
+        return banner + '<div><span class="pv-label">' + c.label + '</span><span class="pv-building-tag"></span></div>' + visual;
       }
       return visual;
-    }
-
-    function upsertNode(parentEl, n) {
-      let nodeEl = parentEl.querySelector(':scope > [data-pv-id="' + n.id + '"]');
-      if (!nodeEl) {
-        nodeEl = document.createElement('div');
-        nodeEl.dataset.pvId = n.id;
-        nodeEl.dataset.pvStatus = '';
-        nodeEl.dataset.pvFocus = '';
-        parentEl.appendChild(nodeEl);
-      }
-      const statusChanged = nodeEl.dataset.pvStatus !== n.status;
-      const focusChanged = nodeEl.dataset.pvFocus !== String(n.isBuildFocus);
-      if (statusChanged) {
-        // Transition : le contenu interne est régénéré → les animations CSS de
-        // construction (ou la stabilisation) démarrent à CE moment précis.
-        nodeEl.className = 'pv-node ' + n.status + (n.isBuildFocus ? ' focus' : '');
-        nodeEl.innerHTML = nodeInner(n);
-        nodeEl.dataset.pvStatus = n.status;
-        nodeEl.dataset.pvFocus = String(n.isBuildFocus);
-      } else if (focusChanged) {
-        // Seul le focus change : classes ajustées, contenu et animations intacts
-        nodeEl.classList.toggle('focus', n.isBuildFocus);
-        nodeEl.dataset.pvFocus = String(n.isBuildFocus);
-      }
-      // Enfants visibles (arbre parentId)
-      const visibleChildren = n.children.filter((c) => c.canvasVisible);
-      let childWrap = nodeEl.querySelector(':scope > .pv-children');
-      if (visibleChildren.length) {
-        if (!childWrap) {
-          childWrap = document.createElement('div');
-          childWrap.className = 'pv-children';
-          nodeEl.appendChild(childWrap);
-        }
-        for (const child of visibleChildren) upsertNode(childWrap, child);
-      } else if (childWrap) {
-        childWrap.remove();
-      }
-    }
-
-    function syncCanvas(model) {
-      const canvas = el('canvas');
-      // Retire les nœuds disparus (COMPONENT_REMOVED / reset)
-      [...canvas.querySelectorAll('[data-pv-id]')].forEach((nodeEl) => {
-        if (!model.canvas.some((n) => n.id === nodeEl.dataset.pvId)) nodeEl.remove();
-      });
-      for (const root of model.roots.filter((r) => r.canvasVisible)) upsertNode(canvas, root);
-      // Placeholder quand rien n'est visible
-      const empty = model.canvas.length === 0;
-      let ph = canvas.querySelector('.placeholder');
-      if (empty && !ph) canvas.innerHTML = '<div class="placeholder">construction…</div>';
-      if (!empty && ph) ph.remove();
     }
 
     /* ---------- RENDU GLOBAL (state → model → DOM) ---------- */
@@ -338,7 +386,7 @@
           + '<span class="type">' + n.type + '</span></div>';
       }).join('') || '<div class="tree-row">—</div>';
 
-      syncCanvas(model);
+      syncLayout(model.focusId);
 
       // LOT 06 — AUTO-SCROLL doux : uniquement si le focus est réellement hors
       // de la zone visible ; 'nearest' = déplacement minimal, jamais forcé.
@@ -385,6 +433,18 @@
     btnReset.addEventListener('click', () => {
       if (timer) { clearInterval(timer); timer = null; btnStart.disabled = false; }
       consume({ kind: 'BUILD_RESET', timestamp: Date.now() });
+    });
+
+    // ÉTAPE 07 — VIEWPORTS : mode d'affichage pur (classList sur le canvas).
+    // Aucun re-render, aucun état modifié, la construction continue telle quelle.
+    document.querySelectorAll('.vp-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.vp-btn').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+        const canvas = el('canvas');
+        canvas.classList.remove('vp-desktop', 'vp-tablet', 'vp-mobile');
+        canvas.classList.add('vp-' + btn.dataset.vp);
+      });
     });
 
     render(renderPreview(state));
