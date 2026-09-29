@@ -17,7 +17,8 @@
  * PreviewRenderModel → DOM (mapping trivial, sans logique métier).
  */
 
-import type { AnyStage, PreviewBuildState } from './engine.js';
+import { BUILD_STAGES } from './engine.js';
+import type { AnyStage, BuildStage, PreviewBuildState } from './engine.js';
 import type { ComponentState } from './engine.js';
 
 /** Nœud d'affichage : un composant et ses enfants (arbre via parentId). */
@@ -76,6 +77,46 @@ export function buildFocus(state: PreviewBuildState): ComponentState | null {
     .filter((c) => c.status === 'building')
     .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
   return building[0] || null;
+}
+
+/* =====================================================================
+ * LOT 04 — BUILD TIMELINE : les étapes du pipeline dérivées du state.
+ * Aucun état parallèle : active/completed/pending sont calculés depuis
+ * status + stage, à chaque rendu.
+ * ===================================================================== */
+
+export type TimelineStepStatus = 'pending' | 'active' | 'completed';
+
+export interface TimelineStep {
+  stage: BuildStage;
+  status: TimelineStepStatus;
+}
+
+/**
+ * Dérive l'échelle des étapes depuis l'état du moteur :
+ * - idle      : « idle » actif, tout le pipeline en attente ;
+ * - building  : idle + étapes franchies = completed, l'étape courante =
+ *               active, les suivantes = pending ;
+ * - completed : tout le pipeline = completed ;
+ * - error     : le pipeline repasse en attente — l'échec est porté par
+ *               l'étape « error » que la page affiche à part.
+ */
+export function buildTimeline(state: PreviewBuildState): TimelineStep[] {
+  return BUILD_STAGES.map((stage) => {
+    let status: TimelineStepStatus;
+    if (state.status === 'error') {
+      status = 'pending';
+    } else if (state.status === 'idle') {
+      status = stage === 'idle' ? 'active' : 'pending';
+    } else if (state.status === 'completed') {
+      status = 'completed';
+    } else {
+      const current = BUILD_STAGES.indexOf(state.stage as BuildStage);
+      const index = BUILD_STAGES.indexOf(stage);
+      status = index < current ? 'completed' : index === current ? 'active' : 'pending';
+    }
+    return { stage, status };
+  });
 }
 
 function buildNode(

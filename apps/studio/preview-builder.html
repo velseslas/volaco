@@ -92,6 +92,22 @@
       .pv-node, .pv-node *, .pv-ghost, .pv-label, .dot { animation: none !important; transition: none !important; }
     }
 
+    /* ===== LOT 04 — PROGRESSION (dérivée du state, pas de compteur) ===== */
+    .progress-wrap { height: 6px; border-radius: 3px; background: #161c2e; overflow: hidden; margin-bottom: 6px; }
+    .progress-bar { height: 100%; width: 0%; background: linear-gradient(90deg, #7c3aed, #34d399); transition: width .3s ease; }
+
+    /* ===== LOT 04 — CONSTRUCTION TREE (arbre indenté dérivé du state) ===== */
+    .tree-row { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 8px; font-size: 11px; color: #64748b; }
+    .tree-row .glyph { width: 14px; text-align: center; }
+    .tree-row.completed { color: #94a3b8; }
+    .tree-row.completed .glyph { color: #34d399; }
+    .tree-row.building { color: #c4b5fd; background: rgba(139,92,246,.08); }
+    .tree-row.building .glyph { color: #a78bfa; }
+    .tree-row.pending { color: #475569; }
+    .tree-row.error { color: #fb7185; }
+    .tree-row .type { font-size: 9px; color: #475569; margin-left: auto; }
+    .tree-row.focus-row { background: rgba(139,92,246,.12); }
+
     /* STATUSBAR */
     .statusbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 20px; border-top: 1px solid #1a2238; background: #0a0e1c; font-size: 12px; color: #94a3b8; }
     .statusbar .err { color: #fb7185; }
@@ -115,8 +131,13 @@
           <button id="btnReset" class="secondary">RESET</button>
         </div>
         <div id="stageLadder"></div>
-        <h2 style="margin-top:18px;">Components</h2>
-        <div id="compList"></div>
+
+        <h2 style="margin-top:18px;">Progress</h2>
+        <div class="progress-wrap"><div class="progress-bar" id="progressBar"></div></div>
+        <div id="progressText" style="font-size:11px; color:#94a3b8;">Components: 0/0</div>
+
+        <h2 style="margin-top:18px;">Component Tree</h2>
+        <div id="compTree"></div>
       </aside>
 
       <section class="canvas-panel">
@@ -134,8 +155,8 @@
   </div>
 
   <script type="module">
-    import { applyBuildEvent, createPreviewBuildState, BUILD_STAGES, ERROR_STAGE } from '/preview-builder/engine.js';
-    import { renderPreview } from '/preview-builder/renderer.js';
+    import { applyBuildEvent, createPreviewBuildState, BUILD_STAGES } from '/preview-builder/engine.js';
+    import { renderPreview, buildTimeline } from '/preview-builder/renderer.js';
     import { demoBuildScript, scriptToEvents } from '/preview-builder/mocks.js';
 
     const el = (id) => document.getElementById(id);
@@ -221,26 +242,42 @@
       badge.textContent = model.statusLabel;
       badge.style.color = model.status === 'building' ? '#c4b5fd' : model.status === 'completed' ? '#34d399' : model.status === 'error' ? '#fb7185' : '#94a3b8';
 
-      const stages = [...BUILD_STAGES, ERROR_STAGE];
-      const idx = stages.indexOf(model.stage);
-      el('stageLadder').innerHTML = stages.map((s) => {
-        const cls = s === model.stage ? 'stage current' : (idx > stages.indexOf(s) && s !== ERROR_STAGE ? 'stage done' : (s === ERROR_STAGE && model.status === 'error' ? 'stage error' : 'stage'));
-        return '<div class="' + cls + '">' + s + '</div>';
-      }).join('');
+      // LOT 04 — BUILD TIMELINE : dérivée de buildTimeline(state) — l'échelle
+      // et la ligne « error » viennent du même state que le canvas.
+      const steps = buildTimeline(state);
+      el('stageLadder').innerHTML = steps.map((s) => {
+        const cls = s.status === 'active' ? 'stage current' : s.status === 'completed' ? 'stage done' : 'stage';
+        return '<div class="' + cls + '">' + s.stage + '</div>';
+      }).join('') + (model.status === 'error' ? '<div class="stage error">error — ' + canonicalize(model.buildError || 'échec') + '</div>' : '');
 
-      const glyphs = { building: '◉', completed: '✓', pending: '○', error: '!' };
-      el('compList').innerHTML = model.flat.map((n) => {
-        const buildingTag = n.status === 'building' ? ' <span style="color:#a78bfa;">construction…</span>' : '';
-        return '<div class="comp-row ' + n.status + '"><span style="display:flex;align-items:center;gap:8px;"><span class="glyph">' + (glyphs[n.status] || '○') + '</span>' + n.label + buildingTag + '</span><span style="font-size:9px;">' + n.type + '</span></div>';
-      }).join('') || '<div class="comp-row">—</div>';
+      // LOT 04 — PROGRESSION : fraction réelle des composants terminés
+      const pct = model.counts.total > 0 ? Math.round((model.counts.completed / model.counts.total) * 100) : 0;
+      el('progressBar').style.width = pct + '%';
+      el('progressText').textContent = model.progressLabel;
+
+      // LOT 04 — CONSTRUCTION TREE : arbre indenté dérivé du model (pré-ordre
+      // + depth), glyphes par statut, focus identifié (même state que le canvas)
+      const glyphs = { building: '◉', completed: '✓', pending: '○', error: '⚠' };
+      el('compTree').innerHTML = model.flat.map((n) => {
+        const focusTag = n.isBuildFocus ? ' <span style="color:#a78bfa;">construction…</span>' : '';
+        return '<div class="tree-row ' + n.status + (n.isBuildFocus ? ' focus-row' : '') + '" style="margin-left:' + (n.depth * 16) + 'px;">'
+          + '<span class="glyph">' + (glyphs[n.status] || '○') + '</span>'
+          + '<span>' + n.label + focusTag + '</span>'
+          + '<span class="type">' + n.type + '</span></div>';
+      }).join('') || '<div class="tree-row">—</div>';
 
       syncCanvas(model);
 
       el('progressLabel').textContent = model.progressLabel;
       const footer = el('footerStatus');
-      footer.textContent = model.statusLabel;
-      footer.className = model.status === 'error' ? 'err' : '';
+      // LOT 04 — statusbar : « Building Card 02... » quand un focus existe
+      const focusNode = model.focusId ? model.flat.find((n) => n.id === model.focusId) : null;
+      if (model.status === 'error') { footer.textContent = model.statusLabel; footer.className = 'err'; }
+      else if (focusNode) { footer.textContent = 'Building ' + focusNode.label + '...'; footer.className = ''; }
+      else { footer.textContent = model.statusLabel; footer.className = ''; }
     }
+
+    function canonicalize(text) { return String(text).replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
     /* ---------- Pipeline : EVENT → ENGINE → STATE → RENDERER → CANVAS ---------- */
     function consume(event) {
