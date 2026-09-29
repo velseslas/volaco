@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Preview Builder — nouveau preview (démo)</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: 'Segoe UI', system-ui, sans-serif; background: #070913; color: #e2e8f0; padding: 20px; }
+    h1 { font-size: 15px; margin: 0 0 4px; }
+    .sub { font-size: 11px; color: #64748b; margin-bottom: 16px; }
+    .layout { display: grid; grid-template-columns: 240px 1fr; gap: 16px; max-width: 1100px; }
+    .panel { border: 1px solid #1a2238; border-radius: 12px; background: #0a0e1c; padding: 12px; }
+    .panel h2 { font-size: 10px; text-transform: uppercase; letter-spacing: .1em; color: #64748b; margin: 0 0 8px; }
+    .stage { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 8px; font-size: 12px; color: #475569; }
+    .stage.current { background: rgba(139,92,246,.14); color: #c4b5fd; font-weight: 600; }
+    .stage.done { color: #34d399; }
+    .stage::before { content: '○'; }
+    .stage.current::before { content: '◉'; }
+    .stage.done::before { content: '✓'; }
+    .stage.error { color: #fb7185; }
+    .stage.error::before { content: '!'; }
+    canvas-zone, .canvas { min-height: 420px; border: 1px dashed #253052; border-radius: 12px; padding: 14px; display: flex; flex-wrap: wrap; gap: 12px; align-content: flex-start; background: #0b0f1e; }
+    .controls { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+    button { background: #7c3aed; border: none; color: #fff; padding: 8px 16px; border-radius: 10px; font-size: 12px; font-weight: 600; cursor: pointer; }
+    button.secondary { background: #1e293b; }
+    button:disabled { opacity: .4; cursor: not-allowed; }
+    .component { border: 1px solid #334155; border-radius: 10px; padding: 12px 16px; font-size: 12px; min-width: 130px; }
+    .component .type { font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: #64748b; margin-top: 4px; }
+    .component.completed { border-color: #059669; background: rgba(5,150,105,.08); }
+    .component.building { border-style: dashed; border-color: #7c3aed; color: #a78bfa; }
+    .component.building::after { content: 'construction…'; display: block; font-size: 10px; color: #7c3aed; margin-top: 6px; }
+    .statusline { font-size: 11px; color: #94a3b8; margin-top: 10px; }
+    .err { color: #fb7185; }
+    a.back { color: #8b5cf6; font-size: 11px; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <h1>Preview Builder — nouveau preview (indépendant)</h1>
+  <div class="sub">Moteur d'état de construction progressive · les événements de démo sont des mocks isolés · l'ancien preview n'est pas concerné — <a class="back" href="/">← retour au Studio</a></div>
+
+  <div class="controls">
+    <button id="btnStart">START BUILD (démo mockée)</button>
+    <button id="btnReset" class="secondary">RESET</button>
+  </div>
+
+  <div class="layout">
+    <div class="panel">
+      <h2>Étapes de construction</h2>
+      <div id="stageLadder"></div>
+      <div class="statusline" id="statusLine">idle</div>
+    </div>
+    <div class="panel">
+      <h2>Canvas</h2>
+      <div class="canvas" id="canvas">
+        <div style="color:#334155; font-size:12px; padding:24px;">construction…</div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { applyBuildEvent, createPreviewBuildState, visibleComponents, BUILD_STAGES, ERROR_STAGE } from '/preview-builder/engine.js';
+    import { demoBuildScript, scriptToEvents } from '/preview-builder/mocks.js';
+
+    const ladderEl = document.getElementById('stageLadder');
+    const canvasEl = document.getElementById('canvas');
+    const statusEl = document.getElementById('statusLine');
+    const btnStart = document.getElementById('btnStart');
+    const btnReset = document.getElementById('btnReset');
+
+    let state = createPreviewBuildState();
+    let timer = null;
+
+    function renderStages() {
+      const stages = [...BUILD_STAGES, ERROR_STAGE];
+      const idx = stages.indexOf(state.stage);
+      ladderEl.innerHTML = stages.map((s) => {
+        const cls = s === state.stage ? 'stage current' : (idx > stages.indexOf(s) && s !== ERROR_STAGE ? 'stage done' : (s === ERROR_STAGE && state.status === 'error' ? 'stage error' : 'stage'));
+        return '<div class="' + cls + '">' + s + '</div>';
+      }).join('');
+    }
+
+    function renderCanvas() {
+      const visible = visibleComponents(state);
+      if (visible.length === 0) {
+        canvasEl.innerHTML = '<div style="color:#334155; font-size:12px; padding:24px;">construction…</div>';
+        return;
+      }
+      canvasEl.innerHTML = visible.map((c) =>
+        '<div class="component ' + c.status + '" title="' + c.type + (c.parentId ? ' · dans ' + c.parentId : '') + '">'
+        + (c.label || c.id)
+        + '<div class="type">' + c.type + (c.metadata && c.metadata.styleApplied ? ' · stylé' : '') + '</div>'
+        + '</div>'
+      ).join('');
+    }
+
+    function renderStatus() {
+      statusEl.textContent = state.status === 'error'
+        ? ('error — ' + (state.error || 'inconnue'))
+        : (state.status + ' · stage ' + state.stage + ' · ' + visibleComponents(state).length + ' élément(s) affiché(s) · ' + state.ignoredCount + ' ignoré(s)');
+      if (state.status === 'error') statusEl.classList.add('err'); else statusEl.classList.remove('err');
+    }
+
+    function render() {
+      renderStages();
+      renderCanvas();
+      renderStatus();
+    }
+
+    function consume(event) {
+      state = applyBuildEvent(state, event);
+      render();
+    }
+
+    btnStart.addEventListener('click', () => {
+      if (timer) { clearInterval(timer); timer = null; }
+      state = createPreviewBuildState();
+      const events = scriptToEvents(demoBuildScript());
+      let i = 0;
+      btnStart.disabled = true;
+      timer = setInterval(() => {
+        if (i >= events.length) { clearInterval(timer); timer = null; btnStart.disabled = false; return; }
+        consume(events[i]);
+        i++;
+      }, 350);
+    });
+
+    btnReset.addEventListener('click', () => {
+      if (timer) { clearInterval(timer); timer = null; btnStart.disabled = false; }
+      consume({ kind: 'BUILD_RESET', timestamp: Date.now() });
+    });
+
+    render();
+  </script>
+</body>
+</html>
