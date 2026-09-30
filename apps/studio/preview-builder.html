@@ -212,6 +212,18 @@
     <button id="btnSse">START (SSE simulée)</button>
     <button id="btnReset" class="secondary">RESET</button>
   </div>
+  <!-- ÉTAPE 09 — VRAI flux, exclusivement derrière le feature flag
+       PREVIEW_BUILDER_V2 (?v2=1 ou localStorage). Hors flag : caché,
+       l'ancien chemin du Studio reste le comportement par défaut. -->
+  <div id="v2Panel" class="hidden" style="border-top:1px solid #1a2238; padding-top:12px; margin-top:14px;">
+    <h2 style="margin-top:0;">Real AI Generation <span style="color:#34d399;">● V2 ON</span></h2>
+    <input id="v2Prompt" type="text" placeholder="Décris l'interface à générer…" style="width:100%; background:#0d1222; border:1px solid #223052; color:#e2e8f0; border-radius:8px; padding:8px 10px; font-size:12px; margin-bottom:8px;">
+    <div class="controls" style="margin-bottom:0;">
+      <button id="btnReal" style="background:#059669;">GÉNÉRER (flux réel)</button>
+      <button id="btnStopReal" class="secondary">STOP</button>
+    </div>
+    <div id="v2Status" style="font-size:10px; color:#64748b; margin-top:8px;">sessionId: —</div>
+  </div>
         <div id="stageLadder"></div>
 
         <h2 style="margin-top:18px;">Progress</h2>
@@ -244,7 +256,9 @@
     import { demoBuildScript, scriptToEvents } from '/preview-builder/mocks.js';
     import { MockBuildEventSource, SSEBuildEventSource } from '/preview-builder/adapter.js';
     import { demoSseChunks } from '/preview-builder/mocks.js';
+    import { resolvePreviewBuilderV2 } from '/preview-builder/flags.js';
     const btnSse = document.getElementById('btnSse');
+    const H = { 'Content-Type': 'application/json', 'x-tenant-id': 'studio-local', 'x-user-role': 'ENGINEER' };
 
     const el = (id) => document.getElementById(id);
     let state = createPreviewBuildState();
@@ -440,10 +454,59 @@
       );
     }
 
+    // ÉTAPE 09 — VRAI FLUX derrière le flag centralisé PREVIEW_BUILDER_V2.
+    // Le flag est résolu UNE fois (query ?v2 > localStorage > OFF) et le
+    // panneau Real AI Generation n'apparaît qu'en ON — jamais d'activation
+    // implicite. Le chemin mock/SSE simulée reste disponible pour la démo.
+    const v2Flag = resolvePreviewBuilderV2({ search: location.search, storageGet: (k) => localStorage.getItem(k) });
+    const v2Panel = document.getElementById('v2Panel');
+    const v2Status = document.getElementById('v2Status');
+    if (v2Flag === 'on' && v2Panel) v2Panel.classList.remove('hidden');
+
+    let realSource = null;
+
+    // LOT 06/08 — le bouton MOCK reste le chemin de démonstration par défaut
     btnStart.addEventListener('click', () => {
       const events = scriptToEvents(demoBuildScript());
       startWith(new MockBuildEventSource({ events, intervalMs: 300 }));
     });
+
+    async function startRealGeneration() {
+      const promptInput = document.getElementById('v2Prompt');
+      const message = promptInput ? promptInput.value.trim() : '';
+      if (!message) { if (v2Status) v2Status.textContent = 'Décris d’abord l’interface à générer.'; return; }
+      // 1. Projet serveur (même convention que le Studio : premier projet)
+      const pres = await fetch('/api/v1/projects', { headers: H });
+      const pdata = await pres.json();
+      const proj = (pdata.projects || pdata)[0];
+      if (!proj) { if (v2Status) v2Status.textContent = 'Aucun projet serveur.'; return; }
+      // 2. Session de conversation réelle
+      const sres = await fetch('/api/v1/projects/' + proj.id + '/conversation/sessions', { method: 'POST', headers: H });
+      const sdata = await sres.json();
+      const sid = sdata.session.sessionId;
+      if (v2Status) v2Status.textContent = 'sessionId: ' + sid;
+      // 3. Flux SSE RÉEL — le MÊME endpoint que le Studio, consommé par V2
+      if (realSource) realSource.stop();
+      state = createPreviewBuildState();
+      lastFocusId = null;
+      render(renderPreview(state));
+      realSource = new SSEBuildEventSource({
+        url: '/api/v1/projects/' + proj.id + '/conversation/sessions/' + sid + '/stream',
+        body: { message, isModification: false, planFirst: false },
+        headers: H
+      });
+      realSource.subscribe(
+        (event) => consume(event),
+        (m) => { if (v2Status) v2Status.textContent = 'Erreur: ' + m; }
+      );
+    }
+
+    document.getElementById('btnReal').addEventListener('click', () => { startRealGeneration(); });
+    document.getElementById('btnStopReal').addEventListener('click', () => {
+      if (realSource) { realSource.stop(); realSource = null; }
+      if (v2Status) v2Status.textContent = '⏹ Flux réel interrompu (les composants construits restent affichés)';
+    });
+
 
     // SSE simulée : le transport produit du TEXTE SSE brut (avec bruit) —
     // l'adaptateur parse/valide/normalise, le moteur ne sait rien du SSE.
