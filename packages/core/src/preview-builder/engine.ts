@@ -62,7 +62,8 @@ export type PreviewBuildEvent =
       timestamp: number;
     }
   | { kind: 'COMPONENT_BUILDING'; componentId: string; timestamp: number }
-  | { kind: 'COMPONENT_READY'; componentId: string; timestamp: number }
+  /** ÉTAPE 10 — COMPONENT_READY transporte les données réelles (ex. metadata.html généré par l'IA). */
+  | { kind: 'COMPONENT_READY'; componentId: string; timestamp: number; metadata?: Record<string, unknown> }
   | { kind: 'COMPONENT_FAILED'; componentId: string; error: string; timestamp: number }
   | { kind: 'COMPONENT_REMOVED'; componentId: string; timestamp: number }
   | { kind: 'STYLE_APPLIED'; componentId?: string; stage?: BuildStage; timestamp: number }
@@ -167,10 +168,17 @@ export function applyBuildEvent(state: PreviewBuildState, event: PreviewBuildEve
       if (withLog.status !== 'building') return ignore();
       const component = withLog.components.get(event.componentId);
       if (!component) return ignore();
+      // Les données réelles (metadata.html…) arrivent à READY : fusionnées
+      // avec celles éventuellement posées à CREATED, jamais écrasées.
+      const readyMetadata =
+        event.kind === 'COMPONENT_READY' && event.metadata !== undefined
+          ? { ...component.metadata, ...event.metadata }
+          : component.metadata;
       const next: ComponentState = {
         ...component,
         status: event.kind === 'COMPONENT_BUILDING' ? 'building' : 'completed',
-        error: undefined
+        error: undefined,
+        ...(readyMetadata !== undefined ? { metadata: readyMetadata } : {})
       };
       return { ...withLog, components: new Map(withLog.components).set(event.componentId, next) };
     }

@@ -118,6 +118,32 @@ describe('Preview Builder : moteur de construction progressive', () => {
     assert.equal(s.stage, 'styling');
   });
 
+  it('7b. ÉTAPE 10 : COMPONENT_READY transporte les données réelles (metadata.html) jusqu au composant', () => {
+    let s = applyBuildEvent(createPreviewBuildState(), { kind: 'BUILD_STARTED', timestamp: 1 });
+    s = applyBuildEvent(s, { kind: 'COMPONENT_CREATED', component: { id: 'sec', type: 'temoignages', label: 'Témoignages' }, timestamp: 2 });
+    // Le HTML réel généré par l'IA n'arrive QU'À READY (section_end du flux réel)
+    s = applyBuildEvent(s, {
+      kind: 'COMPONENT_READY',
+      componentId: 'sec',
+      timestamp: 3,
+      metadata: { html: '<section class="temoignages"><blockquote>Citation cliente</blockquote></section>' }
+    });
+    const c = s.components.get('sec')!;
+    assert.equal(c.status, 'completed');
+    assert.equal(c.metadata?.html, '<section class="temoignages"><blockquote>Citation cliente</blockquote></section>');
+
+    // Fusion : le metadata posé à CREATED n'est pas écrasé par READY
+    let s2 = applyBuildEvent(createPreviewBuildState(), { kind: 'BUILD_STARTED', timestamp: 1 });
+    s2 = applyBuildEvent(s2, { kind: 'COMPONENT_CREATED', component: { id: 'x', type: 'card', metadata: { title: 'Revenus' } }, timestamp: 2 });
+    s2 = applyBuildEvent(s2, { kind: 'COMPONENT_READY', componentId: 'x', timestamp: 3, metadata: { html: '<div>réel</div>' } });
+    assert.equal(s2.components.get('x')!.metadata?.title, 'Revenus');
+    assert.equal(s2.components.get('x')!.metadata?.html, '<div>réel</div>');
+
+    // READY sans metadata : l'existant est préservé, jamais effacé
+    s2 = applyBuildEvent(s2, { kind: 'COMPONENT_READY', componentId: 'x', timestamp: 4 });
+    assert.equal(s2.components.get('x')!.metadata?.html, '<div>réel</div>');
+  });
+
   it('8. SECTION_COMPLETED : la section est marquée terminée', () => {
     let s = applyBuildEvent(createPreviewBuildState(), { kind: 'BUILD_STARTED', timestamp: 1 });
     s = applyBuildEvent(s, { kind: 'SECTION_COMPLETED', sectionId: 'sec-main', timestamp: 2 });
