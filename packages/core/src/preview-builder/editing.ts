@@ -314,3 +314,116 @@ export function resizeComponent(
   components.set(componentId, updated);
   return { state: { ...state, components }, applied: true };
 }
+
+/* =====================================================================
+ * ÉTAPE 22 — updateTextContent : éditer le TEXTE du contenu réel IA.
+ *
+ * targetPath = chemin d'ÉLÉMENTS dans metadata.html (ex. [0,1] = 2e enfant
+ * du 1er élément racine) — dérivé du contenu réel, jamais d'une position
+ * DOM globale. La cible valide est un élément NE contenant QUE du texte
+ * (aucun élément enfant) : son texte est remplacé, la structure et les
+ * attributs sont intacts. Le texte est TOUJOURS échappé (&, <, >) — jamais
+ * injecté comme HTML. Parseur HTML minimal sans dépendance (tokens ouvrant/
+ * fermant/commentaire/doctype, éléments vides) — suffisant pour le HTML
+ * bien formé produit par le générateur.
+ * ===================================================================== */
+
+const VOID_TAGS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
+
+/** Échappement texte : &, < et > uniquement (jamais d'injection HTML). */
+function escapeHtmlText(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+export interface TextEditResult {
+  /** Nouvel état (ou la MÊME référence si rien n'a changé). */
+  state: PreviewBuildState;
+  /** Vrai uniquement quand un nouveau state a été produit. */
+  applied: boolean;
+  reason?: 'unknown-component' | 'missing-content' | 'invalid-path' | 'not-textual' | 'empty-text' | 'unchanged' | undefined;
+}
+
+/** Remplace le texte de l'élément situé à `path` dans `html`. */
+function editHtmlText(html: string, path: number[], text: string): { ok: true; html: string } | { ok: false; reason: 'invalid-path' | 'not-textual' } {
+  // Frames : isOnPath = tous les ancêtres correspondent à path ; isTarget =
+  // l'élément au sommet est exactement l'élément visé (profondeur path.length).
+  const stack: { childCount: number; isOnPath: boolean; isTarget: boolean }[] = [{ childCount: 0, isOnPath: true, isTarget: false }];
+  let targetStart = -1;
+  let targetEnd = -1;
+  const targetDepth = path.length;
+  let i = 0;
+  while (i < html.length) {
+    const lt = html.indexOf('<', i);
+    if (lt < 0) break; // texte final
+    if (html.startsWith('<!--', lt) || html.startsWith('<!', lt)) {
+      const closeSeq = html.startsWith('<!--', lt) ? '-->' : '>';
+      const end = html.indexOf(closeSeq, lt);
+      i = end < 0 ? html.length : end + closeSeq.length;
+      continue;
+    }
+    const gt = html.indexOf('>', lt);
+    if (gt < 0) break;
+    const body = html.slice(lt + 1, gt);
+    if (body.startsWith('/')) {
+      // Fermeture : si c'est la fin de la cible, on capture l'intérieur.
+      const frame = stack.pop();
+      if (frame && frame.isTarget && targetEnd < 0) targetEnd = lt;
+      i = gt + 1;
+      continue;
+    }
+    const tagName = (body.match(/^[a-zA-Z0-9-]+/) || ['div'])[0].toLowerCase();
+    const selfClosing = body.endsWith('/');
+    const voidEl = VOID_TAGS.has(tagName);
+    const parent = stack[stack.length - 1];
+    if (!parent) return { ok: false, reason: 'invalid-path' };
+    const depth = stack.length; // profondeur du nouvel élément
+    const isOnPath = parent.isOnPath && depth <= targetDepth && parent.childCount === path[depth - 1];
+    const isTarget = !found(targetStart) && isOnPath && depth === targetDepth;
+    parent.childCount += 1;
+    if (!voidEl && !selfClosing) {
+      stack.push({ childCount: 0, isOnPath: isOnPath, isTarget: isTarget });
+      if (isTarget) targetStart = gt + 1;
+    }
+    i = gt + 1;
+  }
+  function found(v: number) { return v >= 0; }
+  if (targetStart < 0 || targetEnd < 0) return { ok: false, reason: 'invalid-path' };
+  const inner = html.slice(targetStart, targetEnd);
+  // Cible NON textuelle : tout '<' interne = élément ou commentaire enfant.
+  if (inner.includes('<')) return { ok: false, reason: 'not-textual' };
+  const escaped = escapeHtmlText(text);
+  if (inner === escaped) return { ok: true, html: html };
+  return { ok: true, html: html.slice(0, targetStart) + escaped + html.slice(targetEnd) };
+}
+
+export function updateTextContent(
+  state: PreviewBuildState,
+  componentId: string,
+  targetPath: number[],
+  newText: string
+): TextEditResult {
+  const component = state.components.get(componentId);
+  if (!component) return { state, applied: false, reason: 'unknown-component' };
+  const html = component.metadata?.html;
+  if (typeof html !== 'string' || html.length === 0) {
+    return { state, applied: false, reason: 'missing-content' };
+  }
+  if (!Array.isArray(targetPath) || targetPath.length === 0 || !targetPath.every((k) => Number.isInteger(k) && k >= 0)) {
+    return { state, applied: false, reason: 'invalid-path' };
+  }
+  if (newText.trim().length === 0) {
+    return { state, applied: false, reason: 'empty-text' };
+  }
+  const outcome = editHtmlText(html, targetPath, newText);
+  if (!outcome.ok) return { state, applied: false, reason: outcome.reason };
+  if (outcome.html === html) return { state, applied: false, reason: 'unchanged' };
+  // metadata.html reconstruit UNIQUEMENT par la transformation contrôlée du
+  // texte ciblé : les autres clés de metadata et le reste du HTML intacts.
+  const updated: ComponentState = {
+    ...component,
+    metadata: { ...component.metadata, html: outcome.html }
+  };
+  const components = new Map(state.components);
+  components.set(componentId, updated);
+  return { state: { ...state, components }, applied: true };
+}

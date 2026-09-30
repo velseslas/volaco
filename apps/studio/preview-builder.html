@@ -359,8 +359,8 @@
 
     /* ===== É16 — ÉDITION DU LABEL : l'unique champ éditable + Apply ===== */
     .insp-editrow { display: flex; gap: 8px; align-items: center; padding: 10px 14px; border-bottom: 1px solid rgba(28,39,67,.5); background: rgba(34,211,238,.05); }
-    #inspLabelInput { flex: 1; min-width: 0; background: #090d1a; border: 1px solid #223052; color: #e8edf9; border-radius: 8px; padding: 7px 10px; font-size: 11px; font-weight: 600; }
-    #inspLabelInput:focus { outline: none; border-color: #22d3ee; box-shadow: 0 0 0 2px rgba(34,211,238,.15); }
+    #inspLabelInput, #inspContentInput { flex: 1; min-width: 0; background: #090d1a; border: 1px solid #223052; color: #e8edf9; border-radius: 8px; padding: 7px 10px; font-size: 11px; font-weight: 600; }
+    #inspLabelInput:focus, #inspContentInput:focus { outline: none; border-color: #22d3ee; box-shadow: 0 0 0 2px rgba(34,211,238,.15); }
     #inspApplyLabel { flex: none; background: linear-gradient(135deg, #0891b2, #0e7490); padding: 7px 14px; font-size: 10px; letter-spacing: .06em; }
     #inspApplyLabel:hover { filter: brightness(1.12); }
     #inspLabelMsg { font-size: 9px; color: #fb7185; text-align: right; flex: 1; }
@@ -484,7 +484,7 @@
   <script type="module">
     import { applyBuildEvent, createPreviewBuildState, BUILD_STAGES, PRESENTATION_VARIANTS, RESIZE_BOUNDS } from '/preview-builder/engine.js';
     import { renderPreview, buildTimeline, shouldRefreshNode, previewNodeId, resolvePreviewTarget, buildInspector, resolveDropTarget } from '/preview-builder/renderer.js';
-    import { updateComponentLabel, updateComponentVariant, moveComponent, computeDropTarget, applyDragIntent, resizeComponent } from '/preview-builder/editing.js';
+    import { updateComponentLabel, updateComponentVariant, moveComponent, computeDropTarget, applyDragIntent, resizeComponent, updateTextContent } from '/preview-builder/editing.js';
     import { layoutTree } from '/preview-builder/layout.js';
     import { renderComponentVisual } from '/preview-builder/visuals.js';
     import { demoBuildScript, scriptToEvents } from '/preview-builder/mocks.js';
@@ -590,11 +590,14 @@
       // le modèle justifie la SEULE réécriture hors cycle (politique É11
       // inchangée sinon). Ce livre de rendu reste de la comptabilité page.
       const labelChanged = nodeEl.dataset.pvLabel !== (c.label || '');
+      // É22 — le HTML réel édité (updateTextContent) passe par le même canal
+      // que le label : une seule réécriture de contenu, puis stabilité.
+      const realChanged = dirtyReal.has(c.id);
       // ÉTAPE 11 — la politique de rafraîchissement est PURE (renderer.js) :
       // un composant completed n'est JAMAIS re-rendu pour un simple passage
       // de focus — son contenu ne scintille pas, ses animations ne repartent
       // pas. La classe focus reste un simple toggle.
-      if (shouldRefreshNode({ statusChanged: statusChanged, focusChanged: focusChanged, nextStatus: c.status, contentChanged: labelChanged })) {
+      if (shouldRefreshNode({ statusChanged: statusChanged, focusChanged: focusChanged, nextStatus: c.status, contentChanged: labelChanged || realChanged })) {
         // Lors d'une transition (building → completed), les enfants déjà
         // construits CONSERVENT leur DOM : détachés avant remplacement du
         // contenu, re-attachés par la boucle enfants ci-dessous — aucun
@@ -606,6 +609,7 @@
         nodeEl.innerHTML = nodeInner(c, isFocus);
         nodeEl.dataset.pvStatus = c.status;
         nodeEl.dataset.pvLabel = c.label || '';
+        if (realChanged) dirtyReal.delete(c.id);
       } else if (focusChanged) {
         nodeEl.classList.toggle('focus', isFocus);
       }
@@ -790,6 +794,23 @@
         return;
       }
       const row = (key, val) => '<div class="insp-row"><span class="insp-key">' + key + '</span><span class="insp-val">' + val + '</span></div>';
+      // É22 — CONTENT : édition du TEXTE de l'élément réel IA cliqué (élément
+      // textuel uniquement). La valeur est échappée dans l'attribut — jamais
+      // injectée comme HTML — et survit aux re-rendus comme le champ Label.
+      if (textCtx && textCtx.componentId === inspector.id) {
+        const prevContent = body.querySelector('#inspContentInput');
+        const keepContent = document.activeElement === prevContent ? prevContent.value : null;
+        body.innerHTML = '<div class="insp-card">'
+          + '<div class="insp-head"><div class="insp-title">' + canonicalize(inspector.label) + '</div><div class="insp-sub">contenu réel IA — texte</div></div>'
+          + '<div class="insp-rows">' + row('Élément texte', canonicalize(textCtx.text.slice(0, 60)) + (textCtx.text.length > 60 ? '…' : '')) + '</div>'
+          + '<div class="insp-editrow"><input id="inspContentInput" maxlength="400" value="' + canonicalize(textCtx.text) + '"><button id="inspContentApply">APPLY</button><span id="inspContentMsg"></span></div>'
+          + '</div>';
+        if (keepContent !== null) {
+          const contentInput = body.querySelector('#inspContentInput');
+          if (contentInput) { contentInput.value = keepContent; contentInput.focus(); contentInput.setSelectionRange(contentInput.value.length, contentInput.value.length); }
+        }
+        return;
+      }
       const rows = [
         row('Label', '<input id="inspLabelInput" maxlength="80" value="' + canonicalize(inspector.label) + '">'),
         row('Type', canonicalize(inspector.type)),
@@ -878,6 +899,28 @@
       idx.innerHTML = Array.from({ length: count }, (_, i) => '<option value="' + (i + 1) + '">position ' + (i + 1) + '</option>').join('');
     });
     el('inspectorBody').addEventListener('click', (e) => {
+      // É22 — APPLY du texte réel : UI → updateTextContent() → nouveau state
+      // → renderCurrent() (le canal dirtyReal rafraîchit le contenu du nœud).
+      // Le texte est échappé dans la commande — jamais injecté comme HTML.
+      if (e.target.id === 'inspContentApply') {
+        const msgC = el('inspContentMsg');
+        if (!textCtx) return;
+        const contentInput = el('inspContentInput');
+        const resultText = updateTextContent(state, textCtx.componentId, textCtx.path, contentInput.value);
+        if (!resultText.applied) {
+          if (msgC) msgC.textContent = resultText.reason === 'empty-text' ? 'Texte vide refusé'
+            : resultText.reason === 'not-textual' ? 'Cible non textuelle'
+            : resultText.reason === 'invalid-path' ? 'Cible introuvable'
+            : resultText.reason === 'missing-content' ? 'Aucun contenu réel'
+            : 'Texte déjà identique';
+          return;
+        }
+        state = resultText.state;
+        dirtyReal.add(textCtx.componentId);
+        textCtx = null;
+        renderCurrent();
+        return;
+      }
       // É18 — déplacement structurel (moveComponent)
       if (e.target.id === 'inspMoveApply') {
         const msg = el('inspMoveMsg');
@@ -957,6 +1000,26 @@
       // il ne doit pas désélectionner le composant fraîchement déplacé.
       if (suppressNextClick) { suppressNextClick = false; return; }
       selectedComponentId = resolvePreviewTarget(e.target);
+      // É22 — cible TEXTUELLE réelle : élément du realHtml sans enfant
+      // élément et avec du texte (les images/conteneurs ne donnent jamais
+      // de champ texte). Le chemin est dérivé du CONTENU (index d'éléments
+      // jusqu'au .pvz-real), jamais d'une position DOM globale.
+      textCtx = null;
+      const realRoot = e.target.closest ? e.target.closest('.pvz-real') : null;
+      const hostNode = e.target.closest ? e.target.closest('[data-pv-id]') : null;
+      if (selectedComponentId && realRoot && hostNode && hostNode.contains(e.target)
+        && e.target.children && e.target.children.length === 0
+        && e.target.tagName !== 'IMG' && e.target.textContent && e.target.textContent.trim().length > 0) {
+        const path = [];
+        let cur = e.target;
+        while (cur && cur !== realRoot) {
+          const p = cur.parentElement;
+          if (!p) { path.length = 0; break; }
+          path.unshift(Array.prototype.indexOf.call(p.children, cur));
+          cur = p;
+        }
+        if (path.length > 0) textCtx = { componentId: hostNode.dataset.pvId, path: path, text: e.target.textContent.trim() };
+      }
       renderCurrent();
     });
 
@@ -971,6 +1034,9 @@
     const MIN_DRAG_PX = 6;
     let dragCtx = null;
     let suppressNextClick = false;
+    // É22 — contexte d'édition texte : composant + chemin dans le HTML réel
+    // + texte capturé au clic. État d'interaction UI, jamais du state.
+    let textCtx = null;
 
     el('canvas').addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
@@ -1069,6 +1135,9 @@
        DOM. Au pointerup : resizeComponent() → nouveau state →
        renderCurrent(). pointercancel : nettoyage + restauration du state. */
     let resizeCtx = null;
+    // É22 — composants dont le HTML réel a été édité : canal de
+    // rafraîchissement du contenu (livre de rendu page, pas état métier).
+    const dirtyReal = new Set();
 
     document.addEventListener('pointerdown', (e) => {
       const handle = e.target.closest ? e.target.closest('.pv-resize-handle') : null;
