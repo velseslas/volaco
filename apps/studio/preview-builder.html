@@ -1075,7 +1075,7 @@
       if (e.target.closest('.insp-editrow')) return;
       // É20 — un drag qui vient de se terminer émet un click résiduel :
       // il ne doit pas désélectionner le composant fraîchement déplacé.
-      if (suppressNextClick) { suppressNextClick = false; return; }
+      if (Date.now() < suppressNextClickUntil) return;
       selectedComponentId = resolvePreviewTarget(e.target);
       // É22 — cible TEXTUELLE réelle : élément du realHtml sans enfant
       // élément et avec du texte (les conteneurs ne donnent jamais de champ
@@ -1132,7 +1132,7 @@
        → renderCurrent(). L'indicateur disparaît toujours, succès ou refus. */
     const MIN_DRAG_PX = 6;
     let dragCtx = null;
-    let suppressNextClick = false;
+    let suppressNextClickUntil = 0; // É25 — le drapeau EXPIRE : un pointerup sans click natif ne doit pas avaler le clic suivant
     // É22 — contexte d'édition texte : composant + chemin dans le HTML réel
     // + texte capturé au clic. État d'interaction UI, jamais du state.
     let textCtx = null;
@@ -1166,7 +1166,7 @@
       hideDropIndicator();
       document.body.classList.remove('pv-dragging');
       if (!wasActive) return; // pointerup sans mouvement : simple clic
-      suppressNextClick = true;
+      suppressNextClickUntil = Date.now() + 400;
       // pointerup → intention → compute → apply (délégation moveComponent)
       const intent = resolveDropTarget(document.elementFromPoint(e.clientX, e.clientY), { x: e.clientX, y: e.clientY }, draggedId);
       if (!intent) return; // hors preview → refus propre
