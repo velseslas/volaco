@@ -45,16 +45,31 @@
     .comp-row.error { color: #fb7185; }
 
     .canvas-panel { display: flex; flex-direction: column; min-width: 0; }
-    .canvas-wrap { flex: 1; overflow: auto; padding: 24px; display: flex; justify-content: center; align-items: flex-start; background: #080b16; }
-    .canvas { width: min(820px, 100%); min-height: 60%; border: 1px solid #223052; border-radius: 14px; background: #0b0f1e; padding: 20px; }
+    .canvas-wrap { flex: 1; overflow: auto; padding: 24px; display: flex; justify-content: center; align-items: flex-start;
+      background: radial-gradient(rgba(139,92,246,.05) 1px, transparent 1px); background-size: 22px 22px; }
+    /* ÉTAPE 12 — LE CANVAS EST UNE INTERFACE, pas une collection : tokens de
+       design partagés par tous les visuels (registry → classes → tokens). */
+    .canvas { --pv-radius: 14px; --pv-gap: 14px;
+      --pv-surface: #101830; --pv-surface-2: #0c1224;
+      --pv-border: #1c2743; --pv-accent: #8b5cf6; --pv-accent-soft: rgba(139,92,246,.15);
+      --pv-text: #e8edf9; --pv-muted: #9aa8c0; --pv-faint: #5c6b87;
+      width: min(860px, 100%); min-height: 60%;
+      border: 1px solid #1c2743; border-radius: 18px;
+      background: linear-gradient(180deg, #0b101f, #090d1a);
+      padding: 26px 26px 30px;
+      box-shadow: 0 24px 60px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.03);
+    }
     .canvas .placeholder { color: #334155; font-size: 13px; text-align: center; padding: 40px 0; }
 
     /* ===== NŒUDS ===== */
-    .pv-node { border: 1px solid #334155; border-radius: 12px; padding: 14px 18px; margin-bottom: 12px; background: #0d1222; transition: border-color .25s ease, background-color .25s ease; }
+    /* ÉTAPE 12 — un composant TERMINÉ disparaît dans l'interface : pas de
+       bordure ni de fond « démo », les sections composent UN seul écran.
+       Le nœud building garde son cadre (chantier visible), error son cadre
+       rouge. Aucune donnée, aucun state : pure présentation. */
+    .pv-node { border: 1px solid transparent; border-radius: var(--pv-radius); padding: 14px 18px; margin-bottom: 0; background: transparent; transition: border-color .25s ease, background-color .25s ease; }
     .pv-node .pv-label { font-size: 13px; font-weight: 600; color: #cbd5e1; }
     .pv-node .pv-type { font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: #64748b; margin-top: 4px; }
-    .pv-node.completed { border-color: #059669; }
-    .pv-node.error { border-color: #e11d48; }
+    .pv-node.error { border-color: #e11d48; background: rgba(225,29,72,.05); }
     .pv-node.error .pv-label { color: #fb7185; }
     .pv-node .pv-error { font-size: 10px; color: #fb7185; margin-top: 6px; }
     .pv-children { margin-top: 12px; padding-left: 16px; border-left: 1px solid #223052; display: flex; flex-direction: column; gap: 10px; }
@@ -96,9 +111,24 @@
       .canvas-wrap { scroll-behavior: auto; }
     }
 
-    /* ===== ÉTAPE 11 — STABILISATION à completed : un « ✓ » calme et net ===== */
-    .pv-node.completed { animation: pvStabilize .45s ease-out; }
-    @keyframes pvStabilize { 0% { box-shadow: 0 0 0 3px rgba(5,150,105,.32); } 100% { box-shadow: none; } }
+    /* ===== ÉTAPE 12 — TRANSITION CONSTRUCTION → FINAL =====
+       Le composant « se termine » : le cadre violet se dissout, un anneau
+       émeraude stabilise, un ✓ pop puis s'efface. Tout est joué par le
+       MÊME changement de state (building → completed), jamais l'inverse.
+       Le chip a opacity:0 par défaut : reduced-motion (animation:none) le
+       laisse invisible, et il ne capte jamais les événements pointeur. */
+    .pv-node.completed { animation: pvStabilize .6s cubic-bezier(.22,.9,.34,1); }
+    @keyframes pvStabilize { 0% { box-shadow: 0 0 0 3px rgba(5,150,105,.32); border-color: rgba(5,150,105,.35); } 100% { box-shadow: none; border-color: transparent; } }
+    .pv-node.completed::after {
+      content: '✓'; position: absolute; top: -9px; right: 14px;
+      width: 20px; height: 20px; border-radius: 999px;
+      background: linear-gradient(135deg, #10b981, #059669); color: #fff;
+      font-size: 11px; font-weight: 800; display: grid; place-items: center;
+      box-shadow: 0 4px 14px rgba(5,150,105,.4);
+      pointer-events: none; opacity: 0;
+      animation: pvCheckIn 1.15s ease .1s both;
+    }
+    @keyframes pvCheckIn { 0% { opacity: 0; transform: scale(.4); } 22% { opacity: 1; transform: scale(1.1); } 48% { opacity: 1; transform: scale(1); } 100% { opacity: 0; transform: scale(.92) translateY(-4px); } }
 
     /* ===== ERROR local, discret ===== */
     .pv-node.error .pv-error::before { content: '⚠ Component generation failed — '; }
@@ -142,51 +172,103 @@
     .pvz-hero .pvz-cta-ghost { margin-top: 14px; }
     .pvz-col-ghost { flex: 1; margin-top: 0; border-radius: 5px 5px 2px 2px; }
 
-    /* ===== ÉTAPE 11 — RÉVÉLATION DU CONTENU RÉEL (metadata.html de l'IA) =====
+    /* ===== ÉTAPE 11/12 — RÉVÉLATION DU CONTENU RÉEL (metadata.html de l'IA) =====
        ghost structure → real structure → real content → stable : le HTML réel
-       fond en douceur, jamais d'apparition instantanée. */
-    .pvz-real { animation: pvzRealIn .55s ease both; border-radius: 10px; overflow: hidden; min-width: 0; }
-    .pvz-real img { max-width: 100%; height: auto; }
-    @keyframes pvzRealIn { 0% { opacity: 0; transform: translateY(6px) scale(.995); } 100% { opacity: 1; transform: none; } }
+       fond en douceur (netteté + élévation), jamais d'apparition instantanée.
+       Le CONTENU reste 100 % IA ; la feuille ci-dessous n'apporte qu'une base
+       typographique (celle que le générateur croit avoir — utilitaires Tailwind
+       absents d'ici — retombe proprement sur ce socle premium). */
+    .pvz-real { animation: pvzRealIn .6s cubic-bezier(.22,.9,.34,1) both; border-radius: 12px; overflow: hidden; min-width: 0;
+      color: var(--pv-text); font-size: 14px; line-height: 1.6; }
+    .pvz-real > *:first-child { margin-top: 0; }
+    .pvz-real > *:last-child { margin-bottom: 0; }
+    .pvz-real img { max-width: 100%; height: auto; border-radius: 12px; border: 1px solid var(--pv-border); }
+    .pvz-real h1, .pvz-real h2, .pvz-real h3, .pvz-real h4 { color: #f4f7ff; line-height: 1.25; letter-spacing: -.015em; margin: 1.15em 0 .5em; font-weight: 700; }
+    .pvz-real h1 { font-size: 27px; }
+    .pvz-real h2 { font-size: 21px; }
+    .pvz-real h3 { font-size: 16px; }
+    .pvz-real h4 { font-size: 14px; }
+    .pvz-real p { margin: .55em 0; color: var(--pv-muted); }
+    .pvz-real strong, .pvz-real b { color: #f4f7ff; font-weight: 700; }
+    .pvz-real a { color: #b7a6ff; text-decoration: none; border-bottom: 1px solid rgba(139,92,246,.35); }
+    .pvz-real ul, .pvz-real ol { margin: .5em 0; padding-left: 1.15rem; color: var(--pv-muted); }
+    .pvz-real li { margin: .3em 0; }
+    .pvz-real li::marker { color: var(--pv-accent); }
+    .pvz-real blockquote { margin: .8em 0; padding: 10px 16px; border-left: 3px solid var(--pv-accent);
+      background: var(--pv-accent-soft); border-radius: 0 10px 10px 0; color: var(--pv-text); }
+    .pvz-real blockquote p { color: var(--pv-text); margin: .2em 0; }
+    .pvz-real hr { border: none; border-top: 1px solid var(--pv-border); margin: 1.2em 0; }
+    .pvz-real code { background: var(--pv-accent-soft); padding: 2px 6px; border-radius: 6px; font-size: 12px; color: #c4b5fd; }
+    .pvz-real pre { background: var(--pv-surface-2); border: 1px solid var(--pv-border); border-radius: 10px; padding: 12px 14px; overflow-x: auto; }
+    .pvz-real table { width: 100%; border-collapse: collapse; margin: .8em 0; font-size: 13px; }
+    .pvz-real th { text-align: left; color: var(--pv-faint); text-transform: uppercase; font-size: 10px; letter-spacing: .07em; padding: 8px 10px; border-bottom: 1px solid var(--pv-border); }
+    .pvz-real td { padding: 8px 10px; border-bottom: 1px solid rgba(28,39,67,.6); color: var(--pv-muted); }
+    .pvz-real button { background: linear-gradient(135deg, #8b5cf6, #6d28d9); color: #fff; border: none; padding: 9px 16px; border-radius: 10px; font-weight: 700; font-size: 13px; cursor: pointer; }
+    .pvz-real input, .pvz-real textarea, .pvz-real select { background: var(--pv-surface-2); border: 1px solid var(--pv-border); color: var(--pv-text); border-radius: 10px; padding: 9px 12px; font-size: 13px; max-width: 100%; }
+    .pvz-real form { display: flex; flex-direction: column; gap: 10px; max-width: 460px; }
+    @keyframes pvzRealIn { 0% { opacity: 0; transform: translateY(8px) scale(.99); filter: blur(4px); } 100% { opacity: 1; transform: none; filter: blur(0); } }
 
-    .pvz-header { display: flex; align-items: center; gap: 18px; padding: 12px 16px; border-radius: 10px; background: #0f1526; border: 1px solid #223052; }
-    .pvz-brand { font-weight: 700; font-size: 13px; color: #e2e8f0; }
-    .pvz-nav { display: flex; gap: 14px; margin-left: auto; }
-    .pvz-nav-item { font-size: 11px; color: #94a3b8; }
-    .pvz-cta { font-size: 11px; font-weight: 600; color: #fff; background: #7c3aed; padding: 6px 12px; border-radius: 8px; }
+    /* ===== ÉTAPE 12 — VISUELS COMPLETED PREMIUM (fallbacks du registry) =====
+       Mêmes classes que l'étape 10, présentation « vraie app » : surfaces
+       unifiées via les tokens du canvas, rythme vertical constant. */
+    .pvz-header { display: flex; align-items: center; gap: 18px; padding: 14px 18px; border-radius: var(--pv-radius);
+      background: linear-gradient(180deg, var(--pv-surface), var(--pv-surface-2)); border: 1px solid var(--pv-border);
+      box-shadow: 0 8px 24px rgba(0,0,0,.25); }
+    .pvz-brand { font-weight: 800; font-size: 14px; color: #f4f7ff; letter-spacing: -.01em; }
+    .pvz-nav { display: flex; gap: 16px; margin-left: auto; }
+    .pvz-nav-item { font-size: 12px; color: var(--pv-muted); }
+    .pvz-cta { font-size: 12px; font-weight: 700; color: #fff; background: linear-gradient(135deg, #8b5cf6, #6d28d9);
+      padding: 8px 15px; border-radius: 10px; box-shadow: 0 6px 16px rgba(109,40,217,.35); }
 
-    .pvz-sidebar { display: flex; flex-direction: column; gap: 8px; }
-    .pvz-side-item { font-size: 11px; color: #94a3b8; padding: 7px 10px; border-radius: 8px; background: #0f1526; border: 1px solid #1a2238; }
+    .pvz-sidebar { display: flex; flex-direction: column; gap: 6px; }
+    .pvz-side-item { font-size: 12px; color: var(--pv-muted); padding: 9px 12px; border-radius: 10px;
+      background: transparent; border: 1px solid transparent; position: relative; padding-left: 26px; }
+    .pvz-side-item::before { content: ''; position: absolute; left: 12px; top: 50%; width: 6px; height: 6px;
+      border-radius: 999px; transform: translateY(-50%); background: var(--pv-faint); }
 
     .pvz-content { padding: 6px 0; }
-    .pvz-zone-label { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: #475569; }
+    .pvz-zone-label { font-size: 10px; text-transform: uppercase; letter-spacing: .1em; color: var(--pv-faint); }
 
-    .pvz-card { border: 1px solid #1e293b; border-radius: 12px; padding: 14px 16px; background: #0f1526; }
-    .pvz-card-title { font-size: 11px; color: #94a3b8; }
-    .pvz-card-value { font-size: 20px; font-weight: 700; color: #f1f5f9; margin-top: 6px; }
-    .pvz-card-delta { font-size: 11px; color: #34d399; margin-top: 4px; }
+    .pvz-card { border: 1px solid var(--pv-border); border-radius: var(--pv-radius); padding: 16px 18px;
+      background: linear-gradient(180deg, var(--pv-surface), var(--pv-surface-2));
+      box-shadow: 0 8px 24px rgba(0,0,0,.22); }
+    .pvz-card-title { font-size: 10px; text-transform: uppercase; letter-spacing: .09em; color: var(--pv-faint); font-weight: 700; }
+    .pvz-card-value { font-size: 26px; font-weight: 800; color: #f4f7ff; margin-top: 8px; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+    .pvz-card-delta { display: inline-block; font-size: 11px; font-weight: 700; color: #34d399; margin-top: 10px;
+      padding: 3px 10px; border-radius: 999px; background: rgba(52,211,153,.12); }
 
-    .pvz-chart { padding: 8px 0; }
-    .pvz-bars { display: flex; align-items: flex-end; gap: 8px; height: 90px; }
-    .pvz-col { flex: 1; background: linear-gradient(180deg, #8b5cf6, #4c1d95); border-radius: 6px 6px 2px 2px; min-height: 8px; }
-    .pvz-chart-title { font-size: 11px; color: #94a3b8; margin-bottom: 10px; }
+    .pvz-chart { padding: 12px 14px 10px; border-radius: var(--pv-radius); background: var(--pv-surface-2); border: 1px solid var(--pv-border); }
+    .pvz-bars { display: flex; align-items: flex-end; gap: 10px; height: 110px; padding-top: 6px; position: relative; }
+    .pvz-bars::before { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 1px; background: var(--pv-border); }
+    .pvz-col { flex: 1; background: linear-gradient(180deg, #a78bfa, #5b21b6); border-radius: 7px 7px 2px 2px; min-height: 8px;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.18); }
+    .pvz-chart-title { font-size: 11px; color: var(--pv-muted); margin-bottom: 10px; font-weight: 600; }
 
-    /* ÉTAPE 11 — hero et footer stylés (visuels présents depuis l'étape 10) */
-    .pvz-hero { padding: 18px 16px; border-radius: 12px; background: linear-gradient(135deg, rgba(124,58,237,.14), rgba(14,20,40,.6)); border: 1px solid #2a3658; }
-    .pvz-hero-title { font-size: 20px; font-weight: 700; color: #f1f5f9; letter-spacing: -.01em; }
-    .pvz-hero-sub { font-size: 12px; color: #94a3b8; margin-top: 8px; }
-    .pvz-footer { display: flex; flex-direction: column; gap: 4px; padding: 12px 16px; border-radius: 10px; background: #0f1526; border: 1px solid #1a2238; }
-    .pvz-foot-title { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: #475569; }
+    /* ÉTAPE 12 — hero et footer composés comme de vraies sections */
+    .pvz-hero { padding: 26px 22px; border-radius: calc(var(--pv-radius) + 4px);
+      background: linear-gradient(135deg, rgba(139,92,246,.18), rgba(14,20,40,.55) 60%), var(--pv-surface-2);
+      border: 1px solid #2a3658; box-shadow: 0 12px 34px rgba(0,0,0,.3); }
+    .pvz-hero-title { font-size: 24px; font-weight: 800; color: #f6f8ff; letter-spacing: -.02em; line-height: 1.2; }
+    .pvz-hero-sub { font-size: 13px; color: var(--pv-muted); margin-top: 10px; line-height: 1.55; }
+    .pvz-hero-actions { margin-top: 16px; display: flex; gap: 10px; }
+    .pvz-hero-cta { font-size: 12px; font-weight: 700; color: #fff; background: linear-gradient(135deg, #8b5cf6, #6d28d9);
+      padding: 9px 18px; border-radius: 10px; box-shadow: 0 6px 16px rgba(109,40,217,.35); }
+
+    .pvz-footer { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 18px;
+      padding: 16px 18px; border-radius: var(--pv-radius); background: var(--pv-surface-2); border: 1px solid var(--pv-border); }
+    .pvz-foot-title { font-size: 10px; text-transform: uppercase; letter-spacing: .1em; color: var(--pv-faint); }
     .pvz-footer .pvz-ghost-row { margin-top: 8px; }
-    .pvz-foot-col { font-size: 11px; color: #94a3b8; }
-    .pvz-side-title { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: #475569; margin-bottom: 4px; }
-    .pvz-table-title { font-size: 11px; color: #94a3b8; margin-bottom: 6px; }
+    .pvz-foot-col { font-size: 12px; color: var(--pv-muted); display: flex; flex-direction: column; gap: 7px; }
+    .pvz-foot-head { font-size: 11px; font-weight: 700; color: #d7dff0; margin-bottom: 3px; }
+    .pvz-side-title { font-size: 10px; text-transform: uppercase; letter-spacing: .1em; color: var(--pv-faint); margin-bottom: 6px; }
+    .pvz-table-title { font-size: 11px; color: var(--pv-muted); margin-bottom: 8px; font-weight: 600; }
 
     .pvz-table { display: flex; flex-direction: column; gap: 6px; }
-    .pvz-table-row { display: flex; justify-content: space-between; font-size: 11px; color: #94a3b8; padding: 8px 10px; background: #0f1526; border-radius: 8px; border: 1px solid #1a2238; }
+    .pvz-table-row { display: flex; justify-content: space-between; font-size: 12px; color: var(--pv-muted);
+      padding: 10px 12px; background: var(--pv-surface-2); border-radius: 10px; border: 1px solid rgba(28,39,67,.7); }
 
-    .pvz-generic { font-size: 12px; color: #94a3b8; display: flex; justify-content: space-between; align-items: center; }
-    .pvz-type-tag { font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: #475569; border: 1px solid #1e293b; padding: 2px 8px; border-radius: 999px; }
+    .pvz-generic { font-size: 12px; color: var(--pv-muted); display: flex; justify-content: space-between; align-items: center; }
+    .pvz-type-tag { font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: var(--pv-faint); border: 1px solid var(--pv-border); padding: 2px 8px; border-radius: 999px; }
 
     /* Ghosts propres au registry : mêmes keyframes que le moteur visuel */
     .pvz-ghosts .pv-ghost { height: 12px; }
@@ -212,6 +294,12 @@
     .canvas.vp-mobile .pv-root-row { flex-direction: column; }
     .canvas.vp-mobile .pv-comp-row { flex-direction: column; }
     .canvas.vp-mobile .pv-comp-grid { grid-template-columns: 1fr; }
+    /* ÉTAPE 12 — échelle typographique du contenu réel par viewport (présentation
+       seule : le state, le focus, la timeline et le tree restent inchangés) */
+    .canvas.vp-tablet .pvz-real h1, .canvas.vp-mobile .pvz-real h1 { font-size: 22px; }
+    .canvas.vp-tablet .pvz-real h2, .canvas.vp-mobile .pvz-real h2 { font-size: 18px; }
+    .canvas.vp-mobile .pvz-hero-title { font-size: 20px; }
+    .canvas.vp-mobile .pvz-footer { grid-template-columns: 1fr; }
 
     /* STATUSBAR */
     .statusbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 20px; border-top: 1px solid #1a2238; background: #0a0e1c; font-size: 12px; color: #94a3b8; }

@@ -100,7 +100,9 @@ function heroVisual(c: VisualComponent, mode: 'building' | 'completed'): string 
     // ÉTAPE 11 — titre + lignes + action : le héros se dessine en entier
     return `<div class="pvz-hero"><div class="pvz-hero-title pvz-anim">${esc(title)}</div>${ghosts(2, [55, 40])}<div class="pv-ghost pvz-cta-ghost" style="animation-delay:0s,1.2s"></div></div>`;
   }
-  return `<div class="pvz-hero"><div class="pvz-hero-title pvz-anim">${esc(title)}</div>${subtitle ? `<div class="pvz-hero-sub pvz-anim" style="animation-delay:.15s">${esc(subtitle)}</div>` : ''}</div>`;
+  // ÉTAPE 12 — héros composé : titre, sous-titre, action (structure de
+  // présentation, aucune donnée métier codée en dur)
+  return `<div class="pvz-hero"><div class="pvz-hero-title pvz-anim">${esc(title)}</div>${subtitle ? `<div class="pvz-hero-sub pvz-anim" style="animation-delay:.15s">${esc(subtitle)}</div>` : ''}<div class="pvz-hero-actions pvz-anim" style="animation-delay:.3s"><span class="pvz-hero-cta">Action</span></div></div>`;
 }
 
 function contentVisual(c: VisualComponent, mode: 'building' | 'completed'): string {
@@ -152,8 +154,10 @@ function footerVisual(c: VisualComponent, mode: 'building' | 'completed'): strin
     // ÉTAPE 11 — blocs de colonnes fantômes : la grille du pied se voit déjà
     return `<div class="pvz-footer"><div class="pvz-foot-title pvz-anim">${esc(c.label || 'Pied de page')}</div>${ghostBlocks(3)}</div>`;
   }
+  // ÉTAPE 12 — colonnes groupées (titre + entrées) : structure de
+  // présentation générique, aucune donnée métier
   const cols = Array.from({ length: columns as number }, (_, i) =>
-    `<span class="pvz-foot-col pvz-anim" style="animation-delay:${.1 * i}s">Colonne ${i + 1}</span>`).join('');
+    `<div class="pvz-foot-col pvz-anim" style="animation-delay:${.1 * i}s"><div class="pvz-foot-head">Colonne ${i + 1}</div><span>Rubrique</span><span>Rubrique</span></div>`).join('');
   return `<div class="pvz-footer">${cols}</div>`;
 }
 
