@@ -53,12 +53,23 @@
       --pv-surface: #101830; --pv-surface-2: #0c1224;
       --pv-border: #1c2743; --pv-accent: #8b5cf6; --pv-accent-soft: rgba(139,92,246,.15);
       --pv-text: #e8edf9; --pv-muted: #9aa8c0; --pv-faint: #5c6b87;
+      position: relative;
       width: min(860px, 100%); min-height: 60%;
       border: 1px solid #1c2743; border-radius: 18px;
       background: linear-gradient(180deg, #0b101f, #090d1a);
       padding: 26px 26px 30px;
       box-shadow: 0 24px 60px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.03);
     }
+
+    /* ===== É20 — DROP INDICATOR (dérivé de resolveDropTarget) ===== */
+    #dropIndicator { position: absolute; z-index: 8; pointer-events: none; display: none; }
+    #dropIndicator.bar-h { display: block; height: 3px; border-radius: 2px; background: #22d3ee; box-shadow: 0 0 10px rgba(34,211,238,.7); }
+    #dropIndicator.bar-v { display: block; width: 3px; border-radius: 2px; background: #22d3ee; box-shadow: 0 0 10px rgba(34,211,238,.7); }
+    #dropIndicator.ring { display: block; border: 2px dashed #22d3ee; border-radius: 12px; background: rgba(34,211,238,.06); }
+    #dropIndicator.forbidden.bar-h, #dropIndicator.forbidden.bar-v { background: #fb7185; box-shadow: 0 0 10px rgba(251,113,133,.7); }
+    #dropIndicator.forbidden.ring { border-color: #fb7185; background: rgba(251,113,133,.06); }
+    body.pv-dragging { cursor: grabbing !important; user-select: none; }
+    body.pv-dragging .pv-node { cursor: grabbing; }
     .canvas .placeholder { color: #334155; font-size: 13px; text-align: center; padding: 40px 0; }
 
     /* ===== NŒUDS ===== */
@@ -464,8 +475,8 @@
 
   <script type="module">
     import { applyBuildEvent, createPreviewBuildState, BUILD_STAGES, PRESENTATION_VARIANTS } from '/preview-builder/engine.js';
-    import { renderPreview, buildTimeline, shouldRefreshNode, previewNodeId, resolvePreviewTarget, buildInspector } from '/preview-builder/renderer.js';
-    import { updateComponentLabel, updateComponentVariant, moveComponent } from '/preview-builder/editing.js';
+    import { renderPreview, buildTimeline, shouldRefreshNode, previewNodeId, resolvePreviewTarget, buildInspector, resolveDropTarget } from '/preview-builder/renderer.js';
+    import { updateComponentLabel, updateComponentVariant, moveComponent, computeDropTarget, applyDragIntent } from '/preview-builder/editing.js';
     import { layoutTree } from '/preview-builder/layout.js';
     import { renderComponentVisual } from '/preview-builder/visuals.js';
     import { demoBuildScript, scriptToEvents } from '/preview-builder/mocks.js';
@@ -913,9 +924,113 @@
       // É16 — interagir avec l'édition du label (saisie / Apply) ne
       // désélectionne pas : le clic fait partie du flux d'édition.
       if (e.target.closest('.insp-editrow')) return;
+      // É20 — un drag qui vient de se terminer émet un click résiduel :
+      // il ne doit pas désélectionner le composant fraîchement déplacé.
+      if (suppressNextClick) { suppressNextClick = false; return; }
       selectedComponentId = resolvePreviewTarget(e.target);
       renderCurrent();
     });
+
+    /* ===== ÉTAPE 20 — DRAG & DROP RÉEL (pointer events, fondation É19) =====
+       pointerdown → pointermove → pointerup UNIQUEMENT (aucun événement
+       HTML5). La source du drag est résolue par resolvePreviewTarget().
+       Pendant le drag : indicateur de dépose dérivé de resolveDropTarget()
+       + computeDropTarget() — AUCUN déplacement DOM, AUCUNE mutation du
+       state. Au pointerup : intent → computeDropTarget → applyDragIntent
+       (délégation moveComponent, unique source de vérité) → nouveau state
+       → renderCurrent(). L'indicateur disparaît toujours, succès ou refus. */
+    const MIN_DRAG_PX = 6;
+    let dragCtx = null;
+    let suppressNextClick = false;
+
+    el('canvas').addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      const componentId = resolvePreviewTarget(e.target);
+      if (!componentId) return;
+      dragCtx = { componentId: componentId, startX: e.clientX, startY: e.clientY, active: false };
+    });
+
+    document.addEventListener('pointermove', (e) => {
+      if (!dragCtx) return;
+      if (!dragCtx.active) {
+        if (Math.hypot(e.clientX - dragCtx.startX, e.clientY - dragCtx.startY) < MIN_DRAG_PX) return;
+        dragCtx.active = true;
+        document.body.classList.add('pv-dragging');
+      }
+      updateDropIndicator(e.clientX, e.clientY, dragCtx.componentId);
+    });
+
+    document.addEventListener('pointerup', (e) => {
+      if (!dragCtx) return;
+      const wasActive = dragCtx.active;
+      const draggedId = dragCtx.componentId;
+      dragCtx = null;
+      hideDropIndicator();
+      document.body.classList.remove('pv-dragging');
+      if (!wasActive) return; // pointerup sans mouvement : simple clic
+      suppressNextClick = true;
+      // pointerup → intention → compute → apply (délégation moveComponent)
+      const intent = resolveDropTarget(document.elementFromPoint(e.clientX, e.clientY), { x: e.clientX, y: e.clientY }, draggedId);
+      if (!intent) return; // hors preview → refus propre
+      const result = applyDragIntent(state, intent);
+      if (result.applied) {
+        state = result.state; // SEUL changement du state : au pointerup validé
+        renderCurrent();
+      }
+    });
+
+    document.addEventListener('pointercancel', () => {
+      dragCtx = null;
+      hideDropIndicator();
+      document.body.classList.remove('pv-dragging');
+    });
+
+    function ensureDropIndicator() {
+      let ind = document.getElementById('dropIndicator');
+      if (!ind) {
+        ind = document.createElement('div');
+        ind.id = 'dropIndicator';
+        el('canvas').appendChild(ind);
+      }
+      return ind;
+    }
+
+    function hideDropIndicator() {
+      const ind = document.getElementById('dropIndicator');
+      if (ind) ind.style.display = 'none';
+    }
+
+    function updateDropIndicator(x, y, componentId) {
+      const indicator = ensureDropIndicator();
+      const intent = resolveDropTarget(document.elementFromPoint(x, y), { x: x, y: y }, componentId);
+      const hostEl = intent ? document.querySelector('[data-pv-id="' + intent.hoveredId + '"]') : null;
+      if (!intent || !hostEl) { indicator.style.display = 'none'; return; }
+      const target = computeDropTarget(state, intent);
+      indicator.className = target ? '' : 'forbidden'; // cible refusée → rouge
+      const crect = el('canvas').getBoundingClientRect();
+      const r = hostEl.getBoundingClientRect();
+      const vertical = (r.bottom - r.top) >= (r.right - r.left);
+      indicator.style.display = 'block';
+      if (intent.edge === 'inside') {
+        indicator.className += ' ring';
+        indicator.style.top = (r.top - crect.top) + 'px';
+        indicator.style.left = (r.left - crect.left) + 'px';
+        indicator.style.width = r.width + 'px';
+        indicator.style.height = r.height + 'px';
+      } else if (vertical) {
+        indicator.className += ' bar-h';
+        indicator.style.top = (intent.edge === 'before' ? r.top - crect.top - 2 : r.bottom - crect.top + 1) + 'px';
+        indicator.style.left = (r.left - crect.left) + 'px';
+        indicator.style.width = r.width + 'px';
+        indicator.style.height = '3px';
+      } else {
+        indicator.className += ' bar-v';
+        indicator.style.left = (intent.edge === 'before' ? r.left - crect.left - 2 : r.right - crect.left + 1) + 'px';
+        indicator.style.top = (r.top - crect.top) + 'px';
+        indicator.style.height = r.height + 'px';
+        indicator.style.width = '3px';
+      }
+    }
 
     // ÉTAPE 08 — DEUX SOURCES interchangeables, le moteur ne voit que des
     // PreviewBuildEvents (BuildEventSource, spec §problème 2) :
