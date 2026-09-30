@@ -47,6 +47,24 @@ function ghosts(count = 2, widths: number[] = [85, 65]): string {
   return `<div class="pvz-ghosts">${bars.join('')}</div>`;
 }
 
+/** ÉTAPE 11 — pilules fantômes en ligne (nav, actions) : silhouette finale. */
+function ghostPills(pxs: number[]): string {
+  return `<div class="pvz-ghost-row">` + pxs.map((w, i) =>
+    `<div class="pv-ghost pvz-ghost-pill" style="width:${w}px; animation-delay:0s,${.7 + i * .12}s"></div>`).join('') + `</div>`;
+}
+
+/** ÉTAPE 11 — blocs fantômes flexibles (colonnes de footer, zones). */
+function ghostBlocks(count = 3): string {
+  return `<div class="pvz-ghost-row">` + Array.from({ length: count }, (_, i) =>
+    `<div class="pv-ghost pvz-ghost-block" style="animation-delay:0s,${.7 + i * .1}s"></div>`).join('') + `</div>`;
+}
+
+/** ÉTAPE 11 — colonnes fantômes de graphique : la silhouette ▂▄▆ du rendu final. */
+function ghostCols(heights: number[]): string {
+  return heights.map((h, i) =>
+    `<div class="pv-ghost pvz-col-ghost" style="height:${h}%; animation-delay:0s,${.55 + i * .1}s"></div>`).join('');
+}
+
 function esc(text: unknown): string {
   return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
@@ -57,7 +75,8 @@ function headerVisual(c: VisualComponent, mode: 'building' | 'completed'): strin
   const brand = (c.metadata?.title as string) || c.label || 'App';
   const links = (c.metadata?.links as number) || 3;
   if (mode === 'building') {
-    return `<div class="pvz-header"><span class="pvz-brand pvz-anim">${esc(brand)}</span>${ghosts(1, [40])}</div>`;
+    // ÉTAPE 11 — squelette réel : marque révélée + pilules nav + pilule CTA
+    return `<div class="pvz-header"><span class="pvz-brand pvz-anim">${esc(brand)}</span>${ghostPills([34, 44, 30])}<div class="pv-ghost pvz-ghost-pill pvz-cta-ghost" style="animation-delay:0s,1.05s"></div></div>`;
   }
   const nav = Array.from({ length: links as number }, (_, i) =>
     `<span class="pvz-nav-item pvz-anim" style="animation-delay:${.15 + i * .08}s">Section ${i + 1}</span>`).join('');
@@ -67,7 +86,7 @@ function headerVisual(c: VisualComponent, mode: 'building' | 'completed'): strin
 function sidebarVisual(c: VisualComponent, mode: 'building' | 'completed'): string {
   const items = (c.metadata?.items as number) || 4;
   if (mode === 'building') {
-    return `<div class="pvz-sidebar"><div class="pvz-side-title pvz-anim">${esc(c.label || 'Navigation')}</div>${ghosts(3, [80, 65, 72])}</div>`;
+    return `<div class="pvz-sidebar"><div class="pvz-side-title pvz-anim">${esc(c.label || 'Navigation')}</div>${ghosts(4, [80, 65, 72, 55])}</div>`;
   }
   const list = Array.from({ length: items as number }, (_, i) =>
     `<span class="pvz-side-item pvz-anim" style="animation-delay:${.1 + i * .09}s">Élément ${i + 1}</span>`).join('');
@@ -78,7 +97,8 @@ function heroVisual(c: VisualComponent, mode: 'building' | 'completed'): string 
   const title = (c.metadata?.title as string) || c.label || 'Titre';
   const subtitle = (c.metadata?.subtitle as string) || '';
   if (mode === 'building') {
-    return `<div class="pvz-hero"><div class="pvz-hero-title pvz-anim">${esc(title)}</div>${ghosts(2, [55, 40])}</div>`;
+    // ÉTAPE 11 — titre + lignes + action : le héros se dessine en entier
+    return `<div class="pvz-hero"><div class="pvz-hero-title pvz-anim">${esc(title)}</div>${ghosts(2, [55, 40])}<div class="pv-ghost pvz-cta-ghost" style="animation-delay:0s,1.2s"></div></div>`;
   }
   return `<div class="pvz-hero"><div class="pvz-hero-title pvz-anim">${esc(title)}</div>${subtitle ? `<div class="pvz-hero-sub pvz-anim" style="animation-delay:.15s">${esc(subtitle)}</div>` : ''}</div>`;
 }
@@ -93,8 +113,8 @@ function contentVisual(c: VisualComponent, mode: 'building' | 'completed'): stri
 function cardVisual(c: VisualComponent, mode: 'building' | 'completed'): string {
   const title = (c.metadata?.title as string) || c.label || 'Carte';
   if (mode === 'building') {
-    // Titre révélé tôt, valeur/ghosts remplis ensuite (CSS delays)
-    return `<div class="pvz-card"><div class="pvz-card-title pvz-anim">${esc(title)}</div>${ghosts(2, [60, 45])}</div>`;
+    // ÉTAPE 11 — titre révélé tôt, valeur + delta en fantômes décalés (CSS)
+    return `<div class="pvz-card"><div class="pvz-card-title pvz-anim">${esc(title)}</div><div class="pv-ghost pvz-value-ghost"></div><div class="pv-ghost g1" style="width:35%; animation-delay:0s,1.1s"></div></div>`;
   }
   const value = (c.metadata?.value as string) || '—';
   const delta = (c.metadata?.delta as string) || '';
@@ -107,7 +127,9 @@ function cardVisual(c: VisualComponent, mode: 'building' | 'completed'): string 
 
 function chartVisual(c: VisualComponent, mode: 'building' | 'completed'): string {
   if (mode === 'building') {
-    return `<div class="pvz-chart"><div class="pvz-chart-title pvz-anim">${esc(c.label || 'Graphique')}</div><div class="pvz-bars">${ghosts(4, [90, 90, 90, 90])}</div></div>`;
+    // ÉTAPE 11 — colonnes fantômes de hauteurs variées : la silhouette du
+    // graphique final est visible PENDANT la construction
+    return `<div class="pvz-chart"><div class="pvz-chart-title pvz-anim">${esc(c.label || 'Graphique')}</div><div class="pvz-bars">${ghostCols([38, 62, 48, 78, 56, 88])}</div></div>`;
   }
   const heights = (c.metadata?.bars as number[]) || [45, 70, 55, 85, 60, 95];
   const bars = heights.map((h, i) => `<div class="pvz-col pvz-anim" style="height:${h}%; animation-delay:${.08 * i}s"></div>`).join('');
@@ -117,7 +139,7 @@ function chartVisual(c: VisualComponent, mode: 'building' | 'completed'): string
 function tableVisual(c: VisualComponent, mode: 'building' | 'completed'): string {
   const rows = (c.metadata?.rows as number) || 3;
   if (mode === 'building') {
-    return `<div class="pvz-table"><div class="pvz-table-title pvz-anim">${esc(c.label || 'Tableau')}</div>${ghosts(2, [90, 75])}</div>`;
+    return `<div class="pvz-table"><div class="pvz-table-title pvz-anim">${esc(c.label || 'Tableau')}</div>${ghosts(3, [90, 75, 82])}</div>`;
   }
   const lines = Array.from({ length: rows as number }, (_, i) =>
     `<div class="pvz-table-row pvz-anim" style="animation-delay:${.1 * i}s"><span>Ligne ${i + 1}</span><span>Valeur</span></div>`).join('');
@@ -127,7 +149,8 @@ function tableVisual(c: VisualComponent, mode: 'building' | 'completed'): string
 function footerVisual(c: VisualComponent, mode: 'building' | 'completed'): string {
   const columns = (c.metadata?.columns as number) || 3;
   if (mode === 'building') {
-    return `<div class="pvz-footer"><div class="pvz-foot-title pvz-anim">${esc(c.label || 'Pied de page')}</div>${ghosts(2, [50, 35])}</div>`;
+    // ÉTAPE 11 — blocs de colonnes fantômes : la grille du pied se voit déjà
+    return `<div class="pvz-footer"><div class="pvz-foot-title pvz-anim">${esc(c.label || 'Pied de page')}</div>${ghostBlocks(3)}</div>`;
   }
   const cols = Array.from({ length: columns as number }, (_, i) =>
     `<span class="pvz-foot-col pvz-anim" style="animation-delay:${.1 * i}s">Colonne ${i + 1}</span>`).join('');

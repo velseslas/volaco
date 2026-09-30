@@ -62,7 +62,8 @@
     /* ===== LOT 03 — CONSTRUCTION PROGRESSIVE (conséquence du state) ===== */
     /* Squelette → label → contenu : 3 phases CSS enchaînées à l'insertion du
        nœud building. Aucun timer JS : tout est keyframes + animation-delay. */
-    .pv-node.building { border-style: dashed; border-color: #7c3aed; background: rgba(124,58,237,.06); }
+    .pv-node.building { border-style: dashed; border-color: #7c3aed; background: rgba(124,58,237,.06); animation: pvScaffoldIn .45s ease; }
+    @keyframes pvScaffoldIn { 0% { opacity: 0; border-color: rgba(124,58,237,.12); } 100% { opacity: 1; } }
     .pv-node.building .pv-label { color: #a78bfa; animation: pvLabelIn .5s ease .45s both; }
     .pv-node.building .pv-building-tag { display: inline-block; font-size: 10px; color: #a78bfa; margin-left: 10px; animation: pvLabelIn .4s ease .2s both; }
     .pv-node.building .pv-type { animation: pvLabelIn .4s ease 1.15s both; }
@@ -85,18 +86,19 @@
       align-items: center; gap: 5px; background: #7c3aed; color: #fff; font-size: 9px; font-weight: 700;
       padding: 2px 9px; border-radius: 999px; letter-spacing: .07em; box-shadow: 0 2px 8px rgba(124,58,237,.35); }
     /* Passage de témoin : highlight court sur le NOUVEAU focus — l'animation
-       retire une classe visuelle, elle ne décide jamais d'un état (spec LOT 06). */
-    .pv-node.focus-move { animation: pvFocusMove .7s ease; }
-    @keyframes pvFocusMove { 0% { background: rgba(139,92,246,.18); } 100% { background: rgba(124,58,237,.04); } }
+       retire une classe visuelle, elle ne décide jamais d'un état (spec LOT 06).
+       ÉTAPE 11 : halo qui se resserre, sensation « premium AI tool ». */
+    .pv-node.focus-move { animation: pvFocusMove .8s cubic-bezier(.22,.9,.34,1); }
+    @keyframes pvFocusMove { 0% { box-shadow: 0 0 0 6px rgba(139,92,246,.22); background: rgba(139,92,246,.14); } 100% { box-shadow: 0 0 0 0 rgba(139,92,246,0); background: rgba(124,58,237,.04); } }
     .tree-row.focus-row { border-left: 2px solid #8b5cf6; }
     @media (prefers-reduced-motion: reduce) {
       .pv-node.focus-move { animation: none; }
       .canvas-wrap { scroll-behavior: auto; }
     }
 
-    /* ===== STABILISATION à completed : courte et élégante ===== */
-    .pv-node.completed { animation: pvStabilize .25s ease; }
-    @keyframes pvStabilize { 0% { box-shadow: 0 0 0 3px rgba(5,150,105,.25); } 100% { box-shadow: none; } }
+    /* ===== ÉTAPE 11 — STABILISATION à completed : un « ✓ » calme et net ===== */
+    .pv-node.completed { animation: pvStabilize .45s ease-out; }
+    @keyframes pvStabilize { 0% { box-shadow: 0 0 0 3px rgba(5,150,105,.32); } 100% { box-shadow: none; } }
 
     /* ===== ERROR local, discret ===== */
     .pv-node.error .pv-error::before { content: '⚠ Component generation failed — '; }
@@ -130,6 +132,23 @@
     @keyframes pvzIn { 0% { opacity: 0; transform: translateY(4px); } 100% { opacity: 1; transform: none; } }
     .pvz-ghosts { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
 
+    /* ===== ÉTAPE 11 — GHOSTS STRUCTURÉS : silhouette finale dès la construction ===== */
+    .pvz-ghost-row { display: flex; gap: 8px; margin-top: 10px; align-items: center; }
+    .pvz-ghost-pill { height: 10px; border-radius: 999px; margin-top: 0; flex: none; }
+    .pvz-ghost-block { flex: 1; height: 34px; border-radius: 8px; margin-top: 0; }
+    .pvz-value-ghost { height: 26px; width: 55%; border-radius: 6px; margin-top: 12px; }
+    .pvz-cta-ghost { height: 22px; width: 92px; border-radius: 8px; margin-top: 12px; flex: none; }
+    .pvz-header .pvz-cta-ghost { margin-top: 0; }
+    .pvz-hero .pvz-cta-ghost { margin-top: 14px; }
+    .pvz-col-ghost { flex: 1; margin-top: 0; border-radius: 5px 5px 2px 2px; }
+
+    /* ===== ÉTAPE 11 — RÉVÉLATION DU CONTENU RÉEL (metadata.html de l'IA) =====
+       ghost structure → real structure → real content → stable : le HTML réel
+       fond en douceur, jamais d'apparition instantanée. */
+    .pvz-real { animation: pvzRealIn .55s ease both; border-radius: 10px; overflow: hidden; min-width: 0; }
+    .pvz-real img { max-width: 100%; height: auto; }
+    @keyframes pvzRealIn { 0% { opacity: 0; transform: translateY(6px) scale(.995); } 100% { opacity: 1; transform: none; } }
+
     .pvz-header { display: flex; align-items: center; gap: 18px; padding: 12px 16px; border-radius: 10px; background: #0f1526; border: 1px solid #223052; }
     .pvz-brand { font-weight: 700; font-size: 13px; color: #e2e8f0; }
     .pvz-nav { display: flex; gap: 14px; margin-left: auto; }
@@ -150,6 +169,18 @@
     .pvz-chart { padding: 8px 0; }
     .pvz-bars { display: flex; align-items: flex-end; gap: 8px; height: 90px; }
     .pvz-col { flex: 1; background: linear-gradient(180deg, #8b5cf6, #4c1d95); border-radius: 6px 6px 2px 2px; min-height: 8px; }
+    .pvz-chart-title { font-size: 11px; color: #94a3b8; margin-bottom: 10px; }
+
+    /* ÉTAPE 11 — hero et footer stylés (visuels présents depuis l'étape 10) */
+    .pvz-hero { padding: 18px 16px; border-radius: 12px; background: linear-gradient(135deg, rgba(124,58,237,.14), rgba(14,20,40,.6)); border: 1px solid #2a3658; }
+    .pvz-hero-title { font-size: 20px; font-weight: 700; color: #f1f5f9; letter-spacing: -.01em; }
+    .pvz-hero-sub { font-size: 12px; color: #94a3b8; margin-top: 8px; }
+    .pvz-footer { display: flex; flex-direction: column; gap: 4px; padding: 12px 16px; border-radius: 10px; background: #0f1526; border: 1px solid #1a2238; }
+    .pvz-foot-title { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: #475569; }
+    .pvz-footer .pvz-ghost-row { margin-top: 8px; }
+    .pvz-foot-col { font-size: 11px; color: #94a3b8; }
+    .pvz-side-title { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: #475569; margin-bottom: 4px; }
+    .pvz-table-title { font-size: 11px; color: #94a3b8; margin-bottom: 6px; }
 
     .pvz-table { display: flex; flex-direction: column; gap: 6px; }
     .pvz-table-row { display: flex; justify-content: space-between; font-size: 11px; color: #94a3b8; padding: 8px 10px; background: #0f1526; border-radius: 8px; border: 1px solid #1a2238; }
@@ -250,7 +281,7 @@
 
   <script type="module">
     import { applyBuildEvent, createPreviewBuildState, BUILD_STAGES } from '/preview-builder/engine.js';
-    import { renderPreview, buildTimeline } from '/preview-builder/renderer.js';
+    import { renderPreview, buildTimeline, shouldRefreshNode } from '/preview-builder/renderer.js';
     import { layoutTree } from '/preview-builder/layout.js';
     import { renderComponentVisual } from '/preview-builder/visuals.js';
     import { demoBuildScript, scriptToEvents } from '/preview-builder/mocks.js';
@@ -319,10 +350,25 @@
         nodeEl.dataset.pvStatus = '';
         parentEl.appendChild(nodeEl);
       }
-      if (nodeEl.dataset.pvStatus !== c.status || nodeEl.classList.contains('focus') !== isFocus) {
+      const statusChanged = nodeEl.dataset.pvStatus !== c.status;
+      const focusChanged = nodeEl.classList.contains('focus') !== isFocus;
+      // ÉTAPE 11 — la politique de rafraîchissement est PURE (renderer.js) :
+      // un composant completed n'est JAMAIS re-rendu pour un simple passage
+      // de focus — son contenu ne scintille pas, ses animations ne repartent
+      // pas. La classe focus reste un simple toggle.
+      if (shouldRefreshNode({ statusChanged: statusChanged, focusChanged: focusChanged, nextStatus: c.status })) {
+        // Lors d'une transition (building → completed), les enfants déjà
+        // construits CONSERVENT leur DOM : détachés avant remplacement du
+        // contenu, re-attachés par la boucle enfants ci-dessous — aucun
+        // contenu perdu, aucune animation relancée (stabilisation, brief).
+        const alive = nodeEl.querySelectorAll('[data-pv-id]');
+        const keep = alive.length ? document.createDocumentFragment() : null;
+        if (keep) alive.forEach((child) => keep.appendChild(child));
         nodeEl.className = 'pv-node ' + c.status + (isFocus ? ' focus' : '');
         nodeEl.innerHTML = nodeInner(c, isFocus);
         nodeEl.dataset.pvStatus = c.status;
+      } else if (focusChanged) {
+        nodeEl.classList.toggle('focus', isFocus);
       }
       // Wrapper de composition des enfants (kind dérivé du state)
       let wrap = nodeEl.querySelector(':scope > .pv-children');
@@ -420,10 +466,14 @@
 
       el('progressLabel').textContent = model.progressLabel;
       const footer = el('footerStatus');
-      // LOT 06 — statusbar dérivée du même buildFocus : « ● Building Revenue... »
+      // ÉTAPE 11 — statusbar dérivée du state : « ● Building X… » pendant la
+      // construction, « ✓ X ready » entre deux composants (dernier stabilisé,
+      // dérivé), « ● PREVIEW READY » à la fin. Même model que canvas/tree.
       const focusNode = model.focusId ? model.flat.find((n) => n.id === model.focusId) : null;
       if (model.status === 'error') { footer.textContent = model.statusLabel; footer.className = 'err'; }
       else if (focusNode) { footer.innerHTML = '<span class="dot building" style="display:inline-block;margin-right:8px;"></span>Building ' + canonicalize(focusNode.label) + '...'; footer.className = ''; }
+      else if (model.status === 'building' && model.lastCompletedLabel) { footer.innerHTML = '<span style="color:#34d399;margin-right:8px;">✓</span>' + canonicalize(model.lastCompletedLabel) + ' ready'; footer.className = ''; }
+      else if (model.status === 'completed') { footer.innerHTML = '<span class="dot completed" style="display:inline-block;margin-right:8px;"></span>PREVIEW READY'; footer.className = ''; }
       else { footer.textContent = model.statusLabel; footer.className = ''; }
     }
 
@@ -485,7 +535,10 @@
       const sdata = await sres.json();
       const sid = sdata.session.sessionId;
       if (v2Status) v2Status.textContent = 'sessionId: ' + sid;
-      // 3. Flux SSE RÉEL — le MÊME endpoint que le Studio, consommé par V2
+      // 3. Flux SSE RÉEL — le MÊME endpoint que le Studio, consommé par V2.
+      // ÉTAPE 11 — le HANDLE (avec stop) est stocké, pas l'instance : sans
+      // cela, le deuxième GÉNÉRER plantait en silence (realSource.stop is
+      // not a function) et le canvas restait sur l'ancien état.
       if (realSource) realSource.stop();
       state = createPreviewBuildState();
       lastFocusId = null;
@@ -494,8 +547,7 @@
         url: '/api/v1/projects/' + proj.id + '/conversation/sessions/' + sid + '/stream',
         body: { message, isModification: false, planFirst: false },
         headers: H
-      });
-      realSource.subscribe(
+      }).subscribe(
         (event) => consume(event),
         (m) => { if (v2Status) v2Status.textContent = 'Erreur: ' + m; }
       );

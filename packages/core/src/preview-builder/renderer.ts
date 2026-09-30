@@ -65,6 +65,13 @@ export interface PreviewRenderModel {
    * pur — le moteur n'est pas modifié, l'animation ne modifie jamais l'état.
    */
   focusId?: string | undefined;
+  /**
+   * ÉTAPE 11 — dernier composant STABILISÉ (order max parmi les completed) :
+   * permet à la barre d'état d'afficher « ✓ X ready » entre deux composants,
+   * dérivé du state comme tout le reste (aucun état parallèle).
+   */
+  lastCompletedId?: string | undefined;
+  lastCompletedLabel?: string | undefined;
   buildError?: string | undefined;
 }
 
@@ -119,6 +126,26 @@ export function buildTimeline(state: PreviewBuildState): TimelineStep[] {
     }
     return { stage, status };
   });
+}
+
+/**
+ * ÉTAPE 11 — politique de rafraîchissement DOM (pure, testable en Node).
+ * Décide si le CONTENU d'un nœud doit être re-rendu ; la classe focus reste
+ * un simple toggle dans tous les cas :
+ * - changement de statut            → oui (construction → révélation) ;
+ * - focus seul sur un `building`    → oui (bannière ◉ ajoutée/retirée) ;
+ * - focus seul sur `completed`/`error` → NON : un composant terminé n'est
+ *   JAMAIS re-rendu — son contenu ne scintille pas, ses animations CSS ne
+ *   repartent pas (stabilisation, brief ÉTAPE 11).
+ */
+export function shouldRefreshNode(input: {
+  statusChanged: boolean;
+  focusChanged: boolean;
+  nextStatus: ComponentState['status'];
+}): boolean {
+  if (input.statusChanged) return true;
+  if (input.focusChanged) return input.nextStatus === 'building';
+  return false;
 }
 
 function buildNode(
@@ -181,6 +208,9 @@ export function renderPreview(state: PreviewBuildState): PreviewRenderModel {
     error: flat.filter((n) => n.status === 'error').length
   };
   const focusId = buildFocus(state)?.id;
+  const lastCompleted = all
+    .filter((c) => c.status === 'completed')
+    .sort((a, b) => b.order - a.order || b.id.localeCompare(a.id))[0];
 
   return {
     status: state.status,
@@ -198,6 +228,7 @@ export function renderPreview(state: PreviewBuildState): PreviewRenderModel {
           ? 'Building…'
           : 'idle',
     ...(focusId !== undefined ? { focusId } : {}),
+    ...(lastCompleted ? { lastCompletedId: lastCompleted.id, lastCompletedLabel: lastCompleted.label || lastCompleted.id } : {}),
     ...(state.error !== undefined ? { buildError: state.error } : {})
   };
 }
