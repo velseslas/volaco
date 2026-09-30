@@ -1403,6 +1403,14 @@
         <div id="wsSubPanel-preview" class="flex-1 w-full h-full flex items-center justify-center overflow-hidden relative select-none">
           <!-- Animated Device Frame Wrapper -->
           <div id="previewFrameWrapper" class="w-full h-full rounded-3xl bg-[#090b14] border border-[#151928] overflow-hidden flex flex-col relative shadow-2xl transition-all duration-300 ease-out">
+            <!-- É26 — SWITCH RÉVERSIBLE : Ancien Preview (défaut) ←→ Preview Builder.
+                 Opt-in uniquement : le mode legacy reste le comportement par défaut
+                 et le Builder est chargé TEL QUEL (page autonome É01→É25) dans le
+                 MÊME iframe — aucun double montage, aucune duplication de renderer. -->
+            <div id="previewModeSwitch" class="absolute top-3 right-4 z-40 flex items-center gap-1 bg-[#0c1020]/90 border border-[#1e2642] rounded-full px-1.5 py-1 select-none">
+              <button id="pvModeLegacy" onclick="setPreviewMode('legacy')" class="pv-mode-btn px-2.5 py-0.5 rounded-full text-[10px] font-bold transition" title="Ancien Preview (par défaut)">Ancien</button>
+              <button id="pvModeBuilder" onclick="setPreviewMode('builder')" class="pv-mode-btn px-2.5 py-0.5 rounded-full text-[10px] font-bold transition" title="Preview Builder v2 (opt-in)">Builder v2</button>
+            </div>
             <iframe
               id="wsLiveIframe"
               title="Preview Canvas"
@@ -3322,6 +3330,9 @@
          */
         function stitchBegin(info) {
           const frame = document.getElementById('wsLiveIframe');
+          // É26 — garde : en mode Builder, le flux stitch n'écrit PAS dans
+          // l'iframe (la page Builder est autonome et gelée).
+          if (__builderModeActive()) { stitch.fallbackRender = true; return; }
           if (!frame || !frame.contentDocument || !frame.contentDocument.body) {
             stitch.fallbackRender = true;
             (window.__stitchFallbacks = window.__stitchFallbacks || []).push({ reason: 'doc_absent', section: info && info.name });
@@ -6066,7 +6077,38 @@ npx serve .
       if (targetB) targetB.className = 'px-4 py-2 rounded-xl bg-violet-600 text-white transition';
     }
 
-    function renderWorkspaceIframe(htmlCode) {
+            // É26 — MODE D'INTÉGRATION : 'legacy' par défaut (aucun changement de
+        // comportement). 'builder' = l'iframe charge la page autonome du
+        // Preview Builder (É01→É25 gelé) ; le flux stitch ne doit alors PAS
+        // écraser cette page (gardes dans stitchBegin/renderWorkspaceIframe).
+        window.__previewMode = 'legacy';
+        let legacyHtmlBackup = '';
+        function setPreviewMode(mode) {
+          const frame = document.getElementById('wsLiveIframe');
+          if (!frame || mode === window.__previewMode) return;
+          if (mode === 'builder') {
+            try { legacyHtmlBackup = frame.contentDocument && frame.contentDocument.documentElement
+              ? frame.contentDocument.documentElement.outerHTML : ''; } catch (e) { legacyHtmlBackup = ''; }
+            frame.removeAttribute('srcdoc');
+            frame.src = '/preview-builder.html?v2=1';
+          } else {
+            frame.removeAttribute('src');
+            frame.srcdoc = legacyHtmlBackup || '';
+          }
+          window.__previewMode = mode;
+          const on = document.getElementById('pvModeBuilder');
+          const off = document.getElementById('pvModeLegacy');
+          if (on && off) {
+            const active = 'bg-violet-600 text-white shadow shadow-violet-600/40';
+            const idle = 'text-slate-400 hover:text-white';
+            on.className = 'pv-mode-btn px-2.5 py-0.5 rounded-full text-[10px] font-bold transition ' + (mode === 'builder' ? active : idle);
+            off.className = 'pv-mode-btn px-2.5 py-0.5 rounded-full text-[10px] font-bold transition ' + (mode === 'legacy' ? active : idle);
+          }
+        }
+        window.setPreviewMode = setPreviewMode;
+        function __builderModeActive() { return window.__previewMode === 'builder'; }
+
+function renderWorkspaceIframe(htmlCode) {
       const iframe = document.getElementById('wsLiveIframe');
       if (!iframe) return;
 
@@ -6211,6 +6253,9 @@ npx serve .
         instrumentedHtml = logBridgeScript + instrumentedHtml;
       }
 
+      // É26 — garde : en mode Builder, le srcdoc final n'écrase pas la page
+      // autonome du Preview Builder.
+      if (__builderModeActive()) return;
       iframe.srcdoc = instrumentedHtml;
 
       if (typeof addTerminalLogEntry === 'function') {
