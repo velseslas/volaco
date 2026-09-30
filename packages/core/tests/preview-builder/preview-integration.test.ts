@@ -21,6 +21,62 @@ import { createApiServer } from '../../../../apps/api/src/server.js';
 const studio = (): string => readFileSync(join(process.cwd(), 'apps', 'studio', 'index.html'), 'utf8');
 const builderPage = (): string => readFileSync(join(process.cwd(), 'apps', 'studio', 'preview-builder.html'), 'utf8');
 
+describe('ÉTAPE 27 : Builder v2 = Preview principal, Legacy = fallback', () => {
+  it('1. Builder v2 est le DÉFAUT : chargé automatiquement à l ouverture du Studio', () => {
+    const src = studio();
+    assert.ok(src.includes("document.addEventListener('DOMContentLoaded', function () {"), 'boot au DOMContentLoaded');
+    assert.ok(src.includes("setPreviewMode('builder');"), 'le boot charge le Builder');
+    assert.ok(src.includes('bg-violet-600 text-white shadow shadow-violet-600/40" title="Preview Builder v2 — principal"'), 'bouton Builder actif par défaut dans le HTML');
+    assert.ok(!src.includes('title="Ancien Preview (par défaut)"'), "l ancien n est plus le défaut");
+  });
+
+  it('2. Legacy = FALLBACK : bouton Ancien + placeholder si aucun rendu connu', () => {
+    const src = studio();
+    assert.ok(src.includes('title="Ancien Preview — fallback"'), "l ancien est le fallback");
+    assert.ok(src.includes('Fallback Legacy'), 'placeholder si aucun rendu legacy connu');
+    assert.ok(src.includes('legacyHtmlBackup || '), 'le backup reste prioritaire sur le placeholder');
+  });
+
+  it('3. PONT Chat Studio → Builder : postMessage conditionné au mode builder', () => {
+    const src = studio();
+    const flowStart = src.indexOf('async function runConversationEngineFlow(text, isModification, loadEl, cleanTitle, planState) {');
+    const flowBlock = src.slice(flowStart, flowStart + 1600);
+    assert.ok(flowBlock.includes("window.__previewMode === 'builder'"), 'conditionné au mode builder');
+    assert.ok(flowBlock.includes('start-builder-generation'), 'commande de génération transmise');
+    assert.ok(flowBlock.includes('postMessage'), 'transmis par postMessage (le Studio n écrit jamais dans le document du Builder)');
+  });
+
+  it('4. le Builder reçoit le pont : listener additif → son PROPRE flux (btnReal)', () => {
+    const page = builderPage();
+    assert.ok(page.includes('start-builder-generation'), 'listener du pont présent');
+    assert.ok(page.includes('ev.origin !== location.origin'), 'origine vérifiée');
+    assert.ok(page.includes('promptInput.value = d.prompt') && page.includes('realBtn.click()'), 'le Builder déclenche SON PROPRE flux (btnReal)');
+  });
+
+  it('5. gardes É26 toujours actives : aucun écrasement Legacy pendant que le Builder génère', () => {
+    const src = studio();
+    assert.ok(src.includes('if (__builderModeActive()) { stitch.fallbackRender = true; return; }'));
+    assert.ok(src.includes('if (__builderModeActive()) return;'));
+  });
+
+  it('6. retours Builder ↔ Legacy toujours réversibles', () => {
+    const src = studio();
+    const modeFn = src.slice(src.indexOf('function setPreviewMode(mode)'), src.indexOf('window.setPreviewMode = setPreviewMode;'));
+    assert.ok(modeFn.includes("'builder'") && modeFn.includes("'legacy'"), 'les deux sens gérés');
+  });
+
+  it('7. RESET + générations successives : le pont est réutilisable sans état caché', () => {
+    const page = builderPage();
+    assert.ok(page.includes("btnReset.addEventListener('click'"), 'RESET intact');
+    // le listener du pont ne se désabonne jamais : réutilisable pour toutes
+    // les générations successives de la session :
+    assert.ok(!page.includes("removeEventListener('message'"));
+    // et le Studio ne persiste rien du pont (pas de localStorage/sessionStorage lié) :
+    assert.ok(!/Storage\.setItem\([^)]*builder/i.test(studio()));
+  });
+});
+
+
 describe('ÉTAPE 26 : intégration progressive du Preview Builder', () => {
   it('1. l ancien Preview reste accessible et son flux est intact', () => {
     const src = studio();

@@ -1408,8 +1408,8 @@
                  et le Builder est chargé TEL QUEL (page autonome É01→É25) dans le
                  MÊME iframe — aucun double montage, aucune duplication de renderer. -->
             <div id="previewModeSwitch" class="absolute top-3 right-4 z-40 flex items-center gap-1 bg-[#0c1020]/90 border border-[#1e2642] rounded-full px-1.5 py-1 select-none">
-              <button id="pvModeLegacy" onclick="setPreviewMode('legacy')" class="pv-mode-btn px-2.5 py-0.5 rounded-full text-[10px] font-bold transition" title="Ancien Preview (par défaut)">Ancien</button>
-              <button id="pvModeBuilder" onclick="setPreviewMode('builder')" class="pv-mode-btn px-2.5 py-0.5 rounded-full text-[10px] font-bold transition" title="Preview Builder v2 (opt-in)">Builder v2</button>
+              <button id="pvModeLegacy" onclick="setPreviewMode('legacy')" class="pv-mode-btn px-2.5 py-0.5 rounded-full text-[10px] font-bold transition text-slate-400 hover:text-white" title="Ancien Preview — fallback">Ancien</button>
+              <button id="pvModeBuilder" onclick="setPreviewMode('builder')" class="pv-mode-btn px-2.5 py-0.5 rounded-full text-[10px] font-bold transition bg-violet-600 text-white shadow shadow-violet-600/40" title="Preview Builder v2 — principal">Builder v2</button>
             </div>
             <iframe
               id="wsLiveIframe"
@@ -3109,6 +3109,17 @@
      * mettre à jour l'iframe.
      */
     async function runConversationEngineFlow(text, isModification, loadEl, cleanTitle, planState) {
+    // É27 — PONT CHAT → PREVIEW BUILDER : Builder v2 étant le Preview
+    // PRINCIPAL, l'intention de génération du chat est TRANSMISE au Builder
+    // (postMessage — le Studio n'écrit jamais dans son document). Le flux
+    // chat continue normalement (progression, diff, quality gate) sans
+    // écrire dans l'iframe (gardes É26).
+    if (window.__previewMode === 'builder') {
+      const builderFrame = document.getElementById('wsLiveIframe');
+      if (builderFrame && builderFrame.contentWindow) {
+        builderFrame.contentWindow.postMessage({ source: 'vibecode-studio', command: 'start-builder-generation', prompt: String(text || '') }, window.location.origin);
+      }
+    }
       planState = planState || { confirmed: false };
       try {
         const serverProjectId = await ensureServerProjectSynced();
@@ -6093,7 +6104,7 @@ npx serve .
             frame.src = '/preview-builder.html?v2=1';
           } else {
             frame.removeAttribute('src');
-            frame.srcdoc = legacyHtmlBackup || '';
+            frame.srcdoc = legacyHtmlBackup || '<!DOCTYPE html><html><body style="margin:0;font-family:system-ui,sans-serif;background:#0b0f1a;color:#64748b;display:flex;align-items:center;justify-content:center;min-height:100vh"><div style="text-align:center"><p style="font-size:13px;margin:0 0 8px;font-weight:600">Fallback Legacy</p><p style="font-size:11px;opacity:.75;margin:0;line-height:1.6">Lancez une génération depuis le chat,<br>puis revenez en Legacy pour voir le rendu.</p></div></body></html>';
           }
           window.__previewMode = mode;
           const on = document.getElementById('pvModeBuilder');
@@ -6106,6 +6117,13 @@ npx serve .
           }
         }
         window.setPreviewMode = setPreviewMode;
+        // É27 — BUILDER V2 = PREVIEW PRINCIPAL : chargé automatiquement à
+        // l'ouverture du Studio. Legacy devient le FALLBACK (bouton Ancien :
+        // restaure le dernier rendu legacy, ou un placeholder si aucun).
+        document.addEventListener('DOMContentLoaded', function () {
+          if (window.__previewMode === 'builder') return; // déjà actif
+          setPreviewMode('builder');
+        });
         function __builderModeActive() { return window.__previewMode === 'builder'; }
 
 function renderWorkspaceIframe(htmlCode) {

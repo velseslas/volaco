@@ -1177,6 +1177,22 @@
       }
     });
 
+    // É27 — PONT STUDIO → BUILDER (additif) : le chat du Studio transmet
+    // l'intention de génération ; le Builder reste MAÎTRE de son pipeline —
+    // il déclenche son PROPRE flux (v2Prompt + btnReal, même endpoint SSE).
+    // Origine vérifiée ; tout autre message est ignoré. Aucune écriture
+    // externe dans ce document (le Studio ne fait que poster).
+    window.addEventListener('message', (ev) => {
+      if (ev.origin !== location.origin) return;
+      const d = ev.data || {};
+      if (d.source !== 'vibecode-studio' || d.command !== 'start-builder-generation') return;
+      const promptInput = document.getElementById('v2Prompt');
+      const realBtn = document.getElementById('btnReal');
+      if (!promptInput || !realBtn || typeof d.prompt !== 'string' || !d.prompt.trim()) return;
+      promptInput.value = d.prompt;
+      realBtn.click();
+    });
+
     document.addEventListener('pointercancel', () => {
       dragCtx = null;
       hideDropIndicator();
@@ -1287,6 +1303,22 @@
       const result = resizeComponent(state, ctx.componentId, w, h);
       if (result.applied) state = result.state; // SEUL changement : au pointerup
       renderCurrent(); // applique la taille du state OU restaure l'ancienne
+    });
+
+    // É27 — PONT STUDIO → BUILDER (additif) : le chat du Studio transmet
+    // l'intention de génération ; le Builder reste MAÎTRE de son pipeline —
+    // il déclenche son PROPRE flux (v2Prompt + btnReal, même endpoint SSE).
+    // Origine vérifiée ; tout autre message est ignoré. Aucune écriture
+    // externe dans ce document (le Studio ne fait que poster).
+    window.addEventListener('message', (ev) => {
+      if (ev.origin !== location.origin) return;
+      const d = ev.data || {};
+      if (d.source !== 'vibecode-studio' || d.command !== 'start-builder-generation') return;
+      const promptInput = document.getElementById('v2Prompt');
+      const realBtn = document.getElementById('btnReal');
+      if (!promptInput || !realBtn || typeof d.prompt !== 'string' || !d.prompt.trim()) return;
+      promptInput.value = d.prompt;
+      realBtn.click();
     });
 
     document.addEventListener('pointercancel', () => {
