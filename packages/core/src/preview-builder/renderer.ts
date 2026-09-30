@@ -211,6 +211,62 @@ export function resolvePreviewTarget(element: PreviewTargetElement | null): stri
   return host.getAttribute(PV_ID_ATTRIBUTE);
 }
 
+/* =====================================================================
+ * ÉTAPE 15 — INSPECTOR DESCRIPTIF (pur, en lecture seule)
+ *
+ * buildInspector(state, selectedId) ne fait QUE lire le composant déjà
+ * présent dans PreviewBuildState : aucune lecture du DOM, aucune mutation,
+ * aucun nouvel état métier. Le HTML réel IA (metadata.html) est transporté
+ * tel quel — jamais transformé ni édité. Composant inexistant ou absence
+ * de sélection → null (panneau vide côté page).
+ * ===================================================================== */
+
+/** Modèle descriptif du composant sélectionné — aucune donnée visuelle. */
+export interface InspectorModel {
+  id: string;
+  type: string;
+  label: string;
+  parentId?: string | undefined;
+  status: ComponentState['status'];
+  /** Étape de construction à laquelle le composant appartient. */
+  stage: ComponentState['stage'];
+  /** Ordre d'annonce (identité et traçabilité — jamais une position DOM). */
+  order: number;
+  /** Ids des composants enfants déclarés via parentId (données du state). */
+  children: string[];
+  /** Vrai quand le composant porte un HTML réel IA (metadata.html). */
+  hasRealHtml: boolean;
+  error?: string | undefined;
+  metadata?: Record<string, unknown>;
+}
+
+export function buildInspector(
+  state: PreviewBuildState,
+  selectedId?: string | null
+): InspectorModel | null {
+  if (selectedId == null) return null;
+  const component = state.components.get(selectedId);
+  if (!component) return null;
+  const children = [...state.components.values()]
+    .filter((c) => c.parentId === component.id)
+    .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id))
+    .map((c) => c.id);
+  const hasRealHtml = typeof component.metadata?.html === 'string' && component.metadata.html.length > 0;
+  return {
+    id: component.id,
+    type: component.type,
+    label: component.label || component.id,
+    ...(component.parentId !== undefined ? { parentId: component.parentId } : {}),
+    status: component.status,
+    stage: component.stage,
+    order: component.order,
+    children,
+    hasRealHtml,
+    ...(component.error !== undefined ? { error: component.error } : {}),
+    ...(component.metadata !== undefined ? { metadata: component.metadata } : {})
+  };
+}
+
 function buildNode(
   component: ComponentState,
   childrenByParent: Map<string, ComponentState[]>,

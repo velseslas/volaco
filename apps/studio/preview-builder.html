@@ -19,9 +19,9 @@
     .dot.error { background: #fb7185; }
     a.back { color: #8b5cf6; font-size: 11px; text-decoration: none; margin-left: 16px; }
 
-    .layout { display: grid; grid-template-columns: 300px 1fr; gap: 0; flex: 1; min-height: 0; }
+    .layout { display: grid; grid-template-columns: 300px 1fr 280px; gap: 0; flex: 1; min-height: 0; }
     .panel-build { border-right: 1px solid #1a2238; background: #0a0e1c; padding: 16px; overflow-y: auto; }
-    .panel-build h2, .canvas-panel h2 { font-size: 10px; text-transform: uppercase; letter-spacing: .1em; color: #64748b; margin: 0 0 10px; }
+    .panel-build h2, .canvas-panel h2, .panel-inspect h2 { font-size: 10px; text-transform: uppercase; letter-spacing: .1em; color: #64748b; margin: 0 0 10px; }
     .controls { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
     button { background: #7c3aed; border: none; color: #fff; padding: 8px 14px; border-radius: 10px; font-size: 12px; font-weight: 600; cursor: pointer; }
     button.secondary { background: #1e293b; }
@@ -320,6 +320,32 @@
     #selectionStatus { color: #67e8f9; font-size: 11px; }
     @media (prefers-reduced-motion: reduce) { .pv-node.selected { transition: none; } }
 
+    /* ===== ÉTAPE 15 — INSPECTOR DESCRIPTIF (lecture seule) ===== */
+    /* Palette alignée sur les tokens du canvas (É12) : surfaces #101830/#0c1224,
+       bordures #1c2743, accent violet, sélection cyan. AUCUN champ éditable,
+       AUCUN bouton : le panneau ne fait que décrire le composant sélectionné. */
+    .panel-inspect { border-left: 1px solid #1a2238; background: #0a0e1c; padding: 16px; overflow-y: auto; }
+    .insp-empty { color: #475569; font-size: 11px; line-height: 1.7; padding: 14px 10px; border: 1px dashed #1e293b; border-radius: 12px; text-align: center; }
+    .insp-card { border: 1px solid #1c2743; border-radius: 14px; background: #0d1326; overflow: hidden; box-shadow: 0 10px 28px rgba(0,0,0,.28); }
+    .insp-head { padding: 12px 14px; background: linear-gradient(135deg, rgba(139,92,246,.16), rgba(13,19,38,.4)); border-bottom: 1px solid #1c2743; }
+    .insp-title { font-size: 13px; font-weight: 700; color: #f4f7ff; letter-spacing: -.01em; }
+    .insp-sub { font-size: 9px; color: #64748b; text-transform: uppercase; letter-spacing: .09em; margin-top: 3px; }
+    .insp-rows { display: flex; flex-direction: column; }
+    .insp-row { display: flex; justify-content: space-between; gap: 10px; padding: 8px 14px; font-size: 11px; border-bottom: 1px solid rgba(28,39,67,.5); }
+    .insp-row:last-child { border-bottom: none; }
+    .insp-key { color: #5c6b87; text-transform: uppercase; font-size: 9px; letter-spacing: .07em; padding-top: 2px; flex: none; }
+    .insp-val { color: #cdd7ea; text-align: right; word-break: break-word; }
+    .insp-status { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 9px; font-weight: 700; letter-spacing: .05em; }
+    .insp-status.building { color: #c4b5fd; background: rgba(139,92,246,.16); }
+    .insp-status.completed { color: #34d399; background: rgba(52,211,153,.12); }
+    .insp-status.pending { color: #64748b; background: rgba(100,116,139,.14); }
+    .insp-status.error { color: #fb7185; background: rgba(251,113,133,.14); }
+    .insp-real { color: #34d399; font-weight: 600; }
+    .insp-details { padding: 10px 14px; border-top: 1px solid rgba(28,39,67,.5); }
+    .insp-details summary { cursor: pointer; color: #a78bfa; font-size: 10px; font-weight: 600; letter-spacing: .04em; }
+    .insp-details pre { white-space: pre-wrap; word-break: break-word; font-size: 10px; line-height: 1.5; color: #94a3b8; max-height: 190px; overflow: auto;
+      background: #090d1a; border: 1px solid #1c2743; border-radius: 10px; padding: 10px; margin: 8px 0 0; }
+
     /* STATUSBAR */
     .statusbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 20px; border-top: 1px solid #1a2238; background: #0a0e1c; font-size: 12px; color: #94a3b8; }
     .statusbar .err { color: #fb7185; }
@@ -378,6 +404,14 @@
           <div class="canvas" id="canvas"></div>
         </div>
       </section>
+
+      <!-- ÉTAPE 15 — INSPECTOR DESCRIPTIF : lecture seule, aucune donnée
+           visuelle, aucune action. Contenu dérivé de buildInspector(state,
+           selectedComponentId) — jamais du DOM du canvas. -->
+      <aside class="panel-inspect">
+        <h2>Inspector</h2>
+        <div id="inspectorBody"></div>
+      </aside>
     </div>
 
     <footer class="statusbar">
@@ -389,7 +423,7 @@
 
   <script type="module">
     import { applyBuildEvent, createPreviewBuildState, BUILD_STAGES } from '/preview-builder/engine.js';
-    import { renderPreview, buildTimeline, shouldRefreshNode, previewNodeId, resolvePreviewTarget } from '/preview-builder/renderer.js';
+    import { renderPreview, buildTimeline, shouldRefreshNode, previewNodeId, resolvePreviewTarget, buildInspector } from '/preview-builder/renderer.js';
     import { layoutTree } from '/preview-builder/layout.js';
     import { renderComponentVisual } from '/preview-builder/visuals.js';
     import { demoBuildScript, scriptToEvents } from '/preview-builder/mocks.js';
@@ -610,9 +644,48 @@
       // ÉTAPE 14 — la sélection vit dans une ZONE SECONDAIRE : le statut de
       // construction (et PREVIEW READY) garde toujours la priorité.
       el('selectionStatus').textContent = model.selectedLabel ? 'Selected: ' + canonicalize(model.selectedLabel) : '';
+      // ÉTAPE 15 — INSPECTOR : construit depuis le state et la sélection du
+      // modèle (buildInspector, pur). Se met à jour avec le build : sélectionner
+      // un composant en construction montre son statut évoluer en direct.
+      renderInspector(buildInspector(state, model.selectedId ?? null));
     }
 
-    function canonicalize(text) { return String(text).replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+    function canonicalize(text) { return String(text).replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+
+    /* ===== ÉTAPE 15 — INSPECTOR DESCRIPTIF (lecture seule) =====
+       Les données viennent EXCLUSIVEMENT de buildInspector(state, selectedId)
+       — donc du PreviewBuildState — jamais du DOM du canvas. Le HTML réel IA
+       est affiché tel quel (échappé pour l'affichage), jamais transformé.
+       Aucun champ éditable, aucun bouton, aucun effet sur le composant. */
+    function renderInspector(inspector) {
+      const body = el('inspectorBody');
+      if (!inspector) {
+        body.innerHTML = '<div class="insp-empty">Aucune sélection.<br>Cliquez sur un composant du preview<br>pour voir ses propriétés.</div>';
+        return;
+      }
+      const row = (key, val) => '<div class="insp-row"><span class="insp-key">' + key + '</span><span class="insp-val">' + val + '</span></div>';
+      const rows = [
+        row('Label', canonicalize(inspector.label)),
+        row('Type', canonicalize(inspector.type)),
+        row('ID', canonicalize(inspector.id)),
+        row('Parent', inspector.parentId ? canonicalize(inspector.parentId) : '—'),
+        row('Status', '<span class="insp-status ' + inspector.status + '">' + canonicalize(inspector.status) + '</span>'),
+        row('Étape', canonicalize(inspector.stage)),
+        row('Enfants', inspector.children.length ? inspector.children.map(canonicalize).join(', ') : '—')
+      ];
+      const metaKeys = Object.keys(inspector.metadata || {}).filter((k) => k !== 'html');
+      const metaRows = metaKeys.map((k) => {
+        const v = inspector.metadata[k];
+        const text = (v !== null && typeof v === 'object') ? JSON.stringify(v) : String(v);
+        return row(canonicalize(k), canonicalize(text));
+      });
+      body.innerHTML = '<div class="insp-card">'
+        + '<div class="insp-head"><div class="insp-title">' + canonicalize(inspector.label) + '</div><div class="insp-sub">' + canonicalize(inspector.type) + '</div></div>'
+        + '<div class="insp-rows">' + rows.join('') + (inspector.hasRealHtml ? row('HTML réel IA', '<span class="insp-real">✓ présent</span>') : '') + '</div>'
+        + (metaRows.length ? '<div class="insp-rows">' + metaRows.join('') + '</div>' : '')
+        + (inspector.hasRealHtml ? '<details class="insp-details"><summary>Contenu réel IA — lecture seule</summary><pre>' + canonicalize(inspector.metadata.html) + '</pre></details>' : '')
+        + '</div>';
+    }
 
     /* ---------- Pipeline : EVENT → ENGINE → STATE → RENDERER → CANVAS ---------- */
     function consume(event) {
