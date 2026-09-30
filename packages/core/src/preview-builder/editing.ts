@@ -103,3 +103,93 @@ export function updateComponentVariant(
     applied: true
   };
 }
+
+/* =====================================================================
+ * ÉTAPE 18 — moveComponent : déplacement STRUCTUREL (parentId + ordre).
+ *
+ * Même contrat que les autres commandes : pure, immuable, résultats
+ * explicites. Le composant déplacé est recréé avec SEULS parentId et
+ * order modifiés (id, type, label É16, variant É17, metadata.html,
+ * statut et stage intacts) ; les autres composants gardent leurs
+ * références. Le nouvel order utilise l'insertion par index fractionnaire
+ * entre les ordres existants : aucun frère n'est renuméroté.
+ * targetParentId = null → racine. Cycles refusés (un composant ne peut
+ * pas devenir son propre descendant).
+ * ===================================================================== */
+
+export interface MoveComponentResult {
+  /** Nouvel état (ou la MÊME référence si rien n'a changé). */
+  state: PreviewBuildState;
+  applied: boolean;
+  reason?: 'unknown-component' | 'unknown-parent' | 'cycle' | 'invalid-index' | 'unchanged' | undefined;
+}
+
+/** Enfants d'un parent (null = racine), ordonnés comme le renderer. */
+function siblingsOf(state: PreviewBuildState, parentId: string | null | undefined): ComponentState[] {
+  const key = parentId ?? null;
+  return [...state.components.values()]
+    .filter((c) => (c.parentId ?? null) === key)
+    .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+}
+
+export function moveComponent(
+  state: PreviewBuildState,
+  componentId: string,
+  targetParentId: string | null,
+  targetIndex: number
+): MoveComponentResult {
+  const component = state.components.get(componentId);
+  if (!component) return { state, applied: false, reason: 'unknown-component' };
+  if (!Number.isFinite(targetIndex)) return { state, applied: false, reason: 'invalid-index' };
+
+  const newParentId = targetParentId === null ? undefined : targetParentId;
+  if (newParentId !== undefined && !state.components.has(newParentId)) {
+    return { state, applied: false, reason: 'unknown-parent' };
+  }
+  // Cycle : la cible ne peut pas être le composant lui-même ni un descendant.
+  if (newParentId !== undefined) {
+    let cursor: string | undefined = newParentId;
+    while (cursor !== undefined) {
+      if (cursor === componentId) return { state, applied: false, reason: 'cycle' };
+      cursor = state.components.get(cursor)?.parentId;
+    }
+  }
+
+  const currentParentKey = component.parentId ?? null;
+  const sameParent = (newParentId ?? null) === currentParentKey;
+  const before = siblingsOf(state, currentParentKey);
+  const targetSiblings = sameParent
+    ? before.filter((c) => c.id !== componentId)
+    : siblingsOf(state, newParentId ?? null);
+  // Bornage propre : 0..len (len = fin de liste)
+  const index = Math.max(0, Math.min(targetSiblings.length, Math.trunc(targetIndex)));
+
+  if (sameParent) {
+    const beforeIds = before.map((c) => c.id).join('|');
+    const afterIds = [...targetSiblings.slice(0, index).map((c) => c.id), componentId, ...targetSiblings.slice(index).map((c) => c.id)].join('|');
+    if (beforeIds === afterIds) return { state, applied: false, reason: 'unchanged' };
+  }
+
+  // Nouvel order par insertion fractionnaire : AUCUN frère renuméroté.
+  let newOrder: number;
+  if (targetSiblings.length === 0) {
+    newOrder = component.order; // seul enfant : son ordre suffit
+  } else if (index === 0) {
+    newOrder = targetSiblings[0]!.order - 1;
+  } else if (index >= targetSiblings.length) {
+    newOrder = targetSiblings[targetSiblings.length - 1]!.order + 1;
+  } else {
+    const prev = targetSiblings[index - 1]!.order;
+    const next = targetSiblings[index]!.order;
+    newOrder = prev < next ? (prev + next) / 2 : prev + 1;
+  }
+
+  const updated: ComponentState = {
+    ...component,
+    ...(newParentId !== undefined ? { parentId: newParentId } : { parentId: undefined }),
+    order: newOrder
+  };
+  const components = new Map(state.components);
+  components.set(componentId, updated);
+  return { state: { ...state, components }, applied: true };
+}

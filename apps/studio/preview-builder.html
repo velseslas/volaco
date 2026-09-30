@@ -378,6 +378,15 @@
     .insp-variant.active { background: linear-gradient(135deg, #0891b2, #0e7490); border-color: transparent; color: #fff; }
     .insp-appear .insp-key { padding-top: 5px; }
 
+    /* ===== É18 — CONTRÔLES STRUCTURELS (Move to / Position / APPLY) ===== */
+    .insp-structure { flex-wrap: wrap; }
+    .insp-structure .insp-key { flex-basis: 100%; padding-bottom: 2px; }
+    #inspMoveTarget, #inspMoveIndex { flex: 1 1 44%; min-width: 0; background: #090d1a; border: 1px solid #223052; color: #e8edf9; border-radius: 8px; padding: 6px 8px; font-size: 10px; }
+    #inspMoveTarget:focus, #inspMoveIndex:focus { outline: none; border-color: #a78bfa; }
+    #inspMoveApply { flex: none; width: 100%; background: linear-gradient(135deg, #7c3aed, #6d28d9); }
+    #inspMoveApply:hover { filter: brightness(1.12); }
+    #inspMoveMsg { flex-basis: 100%; font-size: 9px; color: #fb7185; text-align: right; }
+
     /* STATUSBAR */
     .statusbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 20px; border-top: 1px solid #1a2238; background: #0a0e1c; font-size: 12px; color: #94a3b8; }
     .statusbar .err { color: #fb7185; }
@@ -456,7 +465,7 @@
   <script type="module">
     import { applyBuildEvent, createPreviewBuildState, BUILD_STAGES, PRESENTATION_VARIANTS } from '/preview-builder/engine.js';
     import { renderPreview, buildTimeline, shouldRefreshNode, previewNodeId, resolvePreviewTarget, buildInspector } from '/preview-builder/renderer.js';
-    import { updateComponentLabel, updateComponentVariant } from '/preview-builder/editing.js';
+    import { updateComponentLabel, updateComponentVariant, moveComponent } from '/preview-builder/editing.js';
     import { layoutTree } from '/preview-builder/layout.js';
     import { renderComponentVisual } from '/preview-builder/visuals.js';
     import { demoBuildScript, scriptToEvents } from '/preview-builder/mocks.js';
@@ -493,7 +502,13 @@
       [...canvas.querySelectorAll(':scope > [data-root-group]')].forEach((wrap) => {
         const i = Number(wrap.dataset.rootGroup);
         const g = groups[i];
-        if (i >= groups.length || !g || g.kind !== wrap.dataset.rootKind) wrap.remove();
+        if (i >= groups.length || !g || g.kind !== wrap.dataset.rootKind) {
+          // É18 — les nœuds du conteneur condamné restent dans le canvas :
+          // ils seront ADOPTÉS par leur nouveau conteneur ci-dessous (aucun
+          // nœud perdu, aucun doublon recréé).
+          [...wrap.querySelectorAll('[data-pv-id]')].forEach((n) => canvas.appendChild(n));
+          wrap.remove();
+        }
       });
 
       // Placeholder quand aucune construction visible
@@ -512,6 +527,19 @@
           canvas.appendChild(wrap);
         }
         for (const ln of group.nodes) upsertLayoutNode(wrap, ln, focusId);
+        // É18 — l'ordre DOM suit l'ordre du modèle (déplacement structurel)
+        reorderChildren(wrap, group.nodes.map((ln) => ln.component.id));
+      });
+    }
+
+    /* É18 — réordonnancement par insertions minimales : l'ordre DOM suit
+       l'ordre du modèle sans recréer aucun nœud. */
+    function reorderChildren(container, ids) {
+      ids.forEach((id, position) => {
+        const nodeEl = container.querySelector(':scope > [data-pv-id="' + id + '"]');
+        if (nodeEl && container.children[position] !== nodeEl) {
+          container.insertBefore(nodeEl, container.children[position] || null);
+        }
       });
     }
 
@@ -520,13 +548,21 @@
       const isFocus = focusId === c.id;
       let nodeEl = parentEl.querySelector(':scope > [data-pv-id="' + c.id + '"]');
       if (!nodeEl) {
-        nodeEl = document.createElement('div');
-        // ÉTAPE 13 — l'identité VIENT DU MODÈLE (component.id), via la
-        // définition unique previewNodeId : jamais un index, une position
-        // ou un ordre d'affichage. Stable building → completed → viewports.
-        nodeEl.dataset.pvId = previewNodeId(c);
-        nodeEl.dataset.pvStatus = '';
-        nodeEl.dataset.pvLabel = '';
+        // É18 — ADOPTION : un nœud déplacé existe ailleurs dans le canvas →
+        // DÉPLACÉ par appendChild, jamais recréé (zéro doublon, data-pv-id,
+        // contenu et animations préservés).
+        const existing = el('canvas').querySelector('[data-pv-id="' + c.id + '"]');
+        if (existing) {
+          nodeEl = existing;
+        } else {
+          nodeEl = document.createElement('div');
+          // É13 — l'identité VIENT DU MODÈLE (component.id), via la
+          // définition unique previewNodeId : jamais un index, une position
+          // ou un ordre d'affichage. Stable building → completed → viewports.
+          nodeEl.dataset.pvId = previewNodeId(c);
+          nodeEl.dataset.pvStatus = '';
+          nodeEl.dataset.pvLabel = '';
+        }
         parentEl.appendChild(nodeEl);
       }
       const statusChanged = nodeEl.dataset.pvStatus !== c.status;
@@ -572,6 +608,8 @@
           if (kind === 'grid') wrap.style.setProperty('--pv-cols', String(ln.layout.columns));
         }
         for (const child of ln.children) upsertLayoutNode(wrap, child, focusId);
+        // É18 — ordre DOM des enfants imbriqués = ordre du modèle
+        reorderChildren(wrap, ln.children.map((ch) => ch.component.id));
       } else if (wrap) {
         wrap.remove();
       }
@@ -731,6 +769,37 @@
       rows.splice(2, 0, '<div class="insp-editrow insp-appear"><span class="insp-key">Appearance</span>'
         + PRESENTATION_VARIANTS.map((v) => '<button class="insp-variant' + (v === currentVariant ? ' active' : '') + '" data-variant="' + v + '" title="Variant ' + v + '">' + v + '</button>').join('')
         + '</div>');
+      // É18 — STRUCTURE : position dérivée du state (jamais du DOM) + contrôles
+      // Move to / Position / APPLY. Cibles : tout composant SAUF soi-même et
+      // ses descendants (cycles impossibles par construction).
+      const siblings = [...state.components.values()]
+        .filter((x) => (x.parentId ?? null) === (inspector.parentId ?? null))
+        .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+      const position = siblings.findIndex((x) => x.id === inspector.id) + 1;
+      const isDescendantOf = (id) => {
+        let cur = state.components.get(id);
+        while (cur) {
+          if (cur.id === inspector.id) return true;
+          cur = cur.parentId !== undefined ? state.components.get(cur.parentId) : undefined;
+        }
+        return false;
+      };
+      const targets = [...state.components.values()]
+        .filter((x) => x.id !== inspector.id && !isDescendantOf(x.id))
+        .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+      const targetOptions = '<option value="">racine</option>'
+        + targets.map((t) => '<option value="' + canonicalize(t.id) + '"' + (t.id === inspector.parentId ? ' selected' : '') + '>' + canonicalize(t.label || t.id) + '</option>').join('');
+      const posCount = (inspector.parentId ? siblings.filter((x) => x.id !== inspector.id).length : siblings.length) + 1;
+      const indexOptions = Array.from({ length: posCount }, (_, i) => '<option value="' + (i + 1) + '"' + (i + 1 === Math.min(position, posCount) ? ' selected' : '') + '>position ' + (i + 1) + '</option>').join('');
+      rows.splice(3, 0, '<div class="insp-rows">'
+        + row('Parent', inspector.parentId ? canonicalize((state.components.get(inspector.parentId) || {}).label || inspector.parentId) : 'racine')
+        + row('Position', position + ' / ' + siblings.length)
+        + '</div>'
+        + '<div class="insp-editrow insp-structure"><span class="insp-key">Structure</span>'
+        + '<select id="inspMoveTarget">' + targetOptions + '</select>'
+        + '<select id="inspMoveIndex">' + indexOptions + '</select>'
+        + '<button id="inspMoveApply" title="Déplacer le composant sélectionné">APPLY</button>'
+        + '<span id="inspMoveMsg"></span></div>');
       const metaKeys = Object.keys(inspector.metadata || {}).filter((k) => k !== 'html');
       const metaRows = metaKeys.map((k) => {
         const v = inspector.metadata[k];
@@ -753,11 +822,42 @@
       }
     }
 
-    // É16/É17 — les deux chemins d'application (label + variant) passent par
-    // les commandes PURES de editing.ts : UI → commande → NOUVEAU state →
-    // renderCurrent(). Le canvas se met à jour PAR LE PIPELINE (label via le
-    // canal contentChanged, variant via l'attribut), jamais en direct.
+    // É16/É17/É18 — les chemins d'application (label, variant, structure)
+    // passent par les commandes PURES de editing.ts : UI → commande →
+    // NOUVEAU state → renderCurrent(). Le canvas se met à jour PAR LE
+    // PIPELINE (label via contentChanged, variant via attribut, structure
+    // via adoption/réordonnancement), jamais en direct.
+    // É18 — le choix de « Move to » recalcule les positions disponibles.
+    el('inspectorBody').addEventListener('change', (e) => {
+      if (e.target.id !== 'inspMoveTarget' || !selectedComponentId) return;
+      const target = e.target.value === '' ? null : e.target.value;
+      const idx = el('inspMoveIndex');
+      const count = [...state.components.values()]
+        .filter((x) => x.id !== selectedComponentId && (x.parentId ?? null) === target)
+        .length + 1;
+      idx.innerHTML = Array.from({ length: count }, (_, i) => '<option value="' + (i + 1) + '">position ' + (i + 1) + '</option>').join('');
+    });
     el('inspectorBody').addEventListener('click', (e) => {
+      // É18 — déplacement structurel (moveComponent)
+      if (e.target.id === 'inspMoveApply') {
+        const msg = el('inspMoveMsg');
+        if (!selectedComponentId) return;
+        const targetVal = el('inspMoveTarget').value;
+        const targetParent = targetVal === '' ? null : targetVal;
+        const idx = parseInt(el('inspMoveIndex').value, 10) - 1;
+        const result = moveComponent(state, selectedComponentId, targetParent, idx);
+        if (!result.applied) {
+          if (msg) msg.textContent = result.reason === 'cycle' ? 'Cycle refusé'
+            : result.reason === 'unknown-parent' ? 'Parent introuvable'
+            : result.reason === 'unknown-component' ? 'Composant introuvable'
+            : result.reason === 'invalid-index' ? 'Position invalide'
+            : 'Structure déjà identique';
+          return;
+        }
+        state = result.state;
+        renderCurrent();
+        return;
+      }
       // É17 — sélecteur de variant de présentation
       const variantBtn = e.target.closest('.insp-variant');
       if (variantBtn) {

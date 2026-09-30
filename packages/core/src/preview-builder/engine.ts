@@ -49,8 +49,10 @@ export type PresentationVariant = (typeof PRESENTATION_VARIANTS)[number];
 export interface ComponentState {
   id: string;
   type: string;
-  label?: string;
-  parentId?: string;
+  label?: string | undefined;
+  /** ÉTAPE 18 — |undefined explicite : la commande de déplacement peut
+   * réassigner parentId à undefined (retour à la racine). */
+  parentId?: string | undefined;
   status: ComponentStatus;
   /** Étape de construction à laquelle le composant appartient. */
   stage: AnyStage;
