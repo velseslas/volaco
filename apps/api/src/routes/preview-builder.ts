@@ -26,6 +26,8 @@ const visualsJsPath = join(repoRoot, 'dist', 'packages', 'core', 'src', 'preview
 const mocksJsPath = join(repoRoot, 'dist', 'packages', 'core', 'src', 'preview-builder', 'mocks.js');
 const adapterJsPath = join(repoRoot, 'dist', 'packages', 'core', 'src', 'preview-builder', 'adapter.js');
 const flagsJsPath = join(repoRoot, 'dist', 'packages', 'core', 'src', 'preview-builder', 'flags.js');
+// ÉTAPE 16 — commandes d'édition (module séparé du moteur)
+const editingJsPath = join(repoRoot, 'dist', 'packages', 'core', 'src', 'preview-builder', 'editing.js');
 
 function serveFile(res: ServerResponse, filePath: string, contentType: string, notFound: string): boolean {
   if (!existsSync(filePath)) {
@@ -70,6 +72,9 @@ export async function handlePreviewBuilderRoutes(
   }
   if (pathname === '/preview-builder/flags.js') {
     return serveFile(res, flagsJsPath, 'text/javascript; charset=utf-8', 'Flags Preview Builder non compilés (npm run build)');
+  }
+  if (pathname === '/preview-builder/editing.js') {
+    return serveFile(res, editingJsPath, 'text/javascript; charset=utf-8', 'Editing Preview Builder non compilé (npm run build)');
   }
   return false;
 }

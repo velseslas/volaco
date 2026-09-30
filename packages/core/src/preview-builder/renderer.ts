@@ -146,17 +146,22 @@ export function buildTimeline(state: PreviewBuildState): TimelineStep[] {
  * Décide si le CONTENU d'un nœud doit être re-rendu ; la classe focus reste
  * un simple toggle dans tous les cas :
  * - changement de statut            → oui (construction → révélation) ;
+ * - contenu du modèle changé        → oui (É16 — ex. label édité : la seule
+ *   réécriture légitime hors cycle de construction) ;
  * - focus seul sur un `building`    → oui (bannière ◉ ajoutée/retirée) ;
  * - focus seul sur `completed`/`error` → NON : un composant terminé n'est
  *   JAMAIS re-rendu — son contenu ne scintille pas, ses animations CSS ne
  *   repartent pas (stabilisation, brief ÉTAPE 11).
+ * `contentChanged` est ADDITIF et optionnel : sans lui, le comportement
+ * É11 est strictement identique.
  */
 export function shouldRefreshNode(input: {
   statusChanged: boolean;
   focusChanged: boolean;
   nextStatus: ComponentState['status'];
+  contentChanged?: boolean;
 }): boolean {
-  if (input.statusChanged) return true;
+  if (input.statusChanged || input.contentChanged === true) return true;
   if (input.focusChanged) return input.nextStatus === 'building';
   return false;
 }
