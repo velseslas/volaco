@@ -15,7 +15,12 @@
  *   références) — le journal d'événements et le reste de l'état aussi.
  */
 
-import type { ComponentState, PreviewBuildState } from './engine.js';
+import {
+  PRESENTATION_VARIANTS,
+  type ComponentState,
+  type PresentationVariant,
+  type PreviewBuildState
+} from './engine.js';
 
 /** Raison du non-application d'une édition de label. */
 export type EditLabelRejection = 'empty-label' | 'unknown-component' | 'unchanged';
@@ -46,6 +51,51 @@ export function updateComponentLabel(
     return { state, applied: false, reason: 'unchanged' };
   }
   const updated: ComponentState = { ...component, label };
+  const components = new Map(state.components);
+  components.set(componentId, updated);
+  return {
+    state: { ...state, components },
+    applied: true
+  };
+}
+
+/* =====================================================================
+ * ÉTAPE 17 — updateComponentVariant : changer la PRÉSENTATION d'un
+ * composant (jamais son contenu). Même contrat que updateComponentLabel :
+ * commande pure, immuable, résultats explicites. Le HTML réel IA
+ * (metadata.html), l'id, le type métier, le label et le statut sont
+ * intouchés ; les autres composants gardent leurs références.
+ * ===================================================================== */
+
+export interface EditVariantResult {
+  /** Nouvel état (ou la MÊME référence si rien n'a changé). */
+  state: PreviewBuildState;
+  /** Vrai uniquement quand un nouveau state a été produit. */
+  applied: boolean;
+  reason?: 'invalid-variant' | 'unknown-component' | 'unchanged' | undefined;
+}
+
+/** Variant actuel d'un composant ('default' en l'absence de champ). */
+export function componentVariant(component: ComponentState): PresentationVariant {
+  return component.variant ?? 'default';
+}
+
+export function updateComponentVariant(
+  state: PreviewBuildState,
+  componentId: string,
+  variant: string
+): EditVariantResult {
+  if (!(PRESENTATION_VARIANTS as readonly string[]).includes(variant)) {
+    return { state, applied: false, reason: 'invalid-variant' };
+  }
+  const component = state.components.get(componentId);
+  if (!component) {
+    return { state, applied: false, reason: 'unknown-component' };
+  }
+  if (componentVariant(component) === variant) {
+    return { state, applied: false, reason: 'unchanged' };
+  }
+  const updated: ComponentState = { ...component, variant: variant as PresentationVariant };
   const components = new Map(state.components);
   components.set(componentId, updated);
   return {

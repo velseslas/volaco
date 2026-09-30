@@ -38,6 +38,14 @@ export type AnyStage = BuildStage | typeof ERROR_STAGE;
 export type ComponentStatus = 'pending' | 'building' | 'completed' | 'error';
 
 /** Composant générique : identifiant + type libre (rien n'est hardcodé). */
+/**
+ * ÉTAPE 17 — variants de présentation (strictement additif) : la PRÉSENTATION
+ * d'un composant, jamais son contenu. Le registry/CSS dérive le rendu ; le
+ * HTML réel IA (metadata.html) n'est pas concerné.
+ */
+export const PRESENTATION_VARIANTS = ['default', 'compact', 'featured', 'wide'] as const;
+export type PresentationVariant = (typeof PRESENTATION_VARIANTS)[number];
+
 export interface ComponentState {
   id: string;
   type: string;
@@ -50,6 +58,12 @@ export interface ComponentState {
   /** Raison de l'échec quand status = 'error' — le reste du build continue. */
   error?: string | undefined;
   metadata?: Record<string, unknown>;
+  /**
+   * ÉTAPE 17 — variant de présentation choisi par l'utilisateur (commande
+   * d'édition). Absent = 'default'. Préservé par les handlers (spread) ;
+   * une nouvelle construction repart sans variant (aucune fuite).
+   */
+  variant?: PresentationVariant | undefined;
 }
 
 /** Événements de construction consommés par le moteur. */

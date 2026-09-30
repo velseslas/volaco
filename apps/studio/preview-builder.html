@@ -354,6 +354,30 @@
     #inspApplyLabel:hover { filter: brightness(1.12); }
     #inspLabelMsg { font-size: 9px; color: #fb7185; text-align: right; flex: 1; }
 
+    /* ===== É17 — VARIANTS DE PRÉSENTATION (attribut data-pv-variant) =====
+       La présentation dérive du variant : densité (compact), mise en avant
+       (featured), largeur (wide). JAMAIS le contenu, JAMAIS le HTML réel IA. */
+    .pv-node[data-pv-variant="compact"] { padding: 8px 12px; }
+    .pv-node[data-pv-variant="compact"] .pvz-card { padding: 10px 12px; }
+    .pv-node[data-pv-variant="compact"] .pvz-card-value { font-size: 15px; margin-top: 3px; }
+    .pv-node[data-pv-variant="compact"] .pvz-bars { height: 54px; }
+    .pv-node[data-pv-variant="compact"] .pvz-hero { padding: 12px 14px; }
+    .pv-node[data-pv-variant="compact"] .pvz-real { font-size: 12px; line-height: 1.5; }
+    .pv-node[data-pv-variant="featured"] { background: linear-gradient(135deg, rgba(139,92,246,.12), transparent 60%);
+      box-shadow: inset 0 0 0 1px rgba(139,92,246,.45), 0 12px 32px rgba(109,40,217,.14); border-radius: var(--pv-radius); padding: 20px; }
+    .pv-node[data-pv-variant="featured"] .pvz-card { border-color: rgba(139,92,246,.5); box-shadow: 0 10px 30px rgba(109,40,217,.2); }
+    .pv-node[data-pv-variant="featured"] .pvz-card-value { font-size: 32px; }
+    .pv-node[data-pv-variant="featured"] .pvz-hero { border-color: rgba(139,92,246,.5); }
+    .pv-node[data-pv-variant="wide"] { grid-column: 1 / -1; }
+    .pv-comp-row > .pv-node[data-pv-variant="wide"] { flex: 2.5 1 0; }
+    .pv-comp-grid > .pv-node[data-pv-variant="wide"] { grid-column: 1 / -1; }
+
+    /* Boutons du sélecteur Appearance (segmenté compact) */
+    .insp-variant { background: #101830; border: 1px solid #223052; color: #9aa8c0; padding: 5px 9px; border-radius: 8px; font-size: 9px; font-weight: 700; letter-spacing: .03em; cursor: pointer; text-transform: capitalize; }
+    .insp-variant:hover { border-color: #2a3658; color: #e8edf9; }
+    .insp-variant.active { background: linear-gradient(135deg, #0891b2, #0e7490); border-color: transparent; color: #fff; }
+    .insp-appear .insp-key { padding-top: 5px; }
+
     /* STATUSBAR */
     .statusbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 20px; border-top: 1px solid #1a2238; background: #0a0e1c; font-size: 12px; color: #94a3b8; }
     .statusbar .err { color: #fb7185; }
@@ -430,9 +454,9 @@
   </div>
 
   <script type="module">
-    import { applyBuildEvent, createPreviewBuildState, BUILD_STAGES } from '/preview-builder/engine.js';
+    import { applyBuildEvent, createPreviewBuildState, BUILD_STAGES, PRESENTATION_VARIANTS } from '/preview-builder/engine.js';
     import { renderPreview, buildTimeline, shouldRefreshNode, previewNodeId, resolvePreviewTarget, buildInspector } from '/preview-builder/renderer.js';
-    import { updateComponentLabel } from '/preview-builder/editing.js';
+    import { updateComponentLabel, updateComponentVariant } from '/preview-builder/editing.js';
     import { layoutTree } from '/preview-builder/layout.js';
     import { renderComponentVisual } from '/preview-builder/visuals.js';
     import { demoBuildScript, scriptToEvents } from '/preview-builder/mocks.js';
@@ -530,6 +554,10 @@
       } else if (focusChanged) {
         nodeEl.classList.toggle('focus', isFocus);
       }
+      // É17 — variant de présentation : ATTRIBUT seul (aucune réécriture de
+      // contenu, aucun rebuild) — le CSS dérive la présentation de l'attribut.
+      const variant = c.variant || 'default';
+      if (nodeEl.dataset.pvVariant !== variant) nodeEl.dataset.pvVariant = variant;
       // Wrapper de composition des enfants (kind dérivé du state)
       let wrap = nodeEl.querySelector(':scope > .pv-children');
       const kind = ln.layout.kind;
@@ -694,8 +722,15 @@
         row('Étape', canonicalize(inspector.stage)),
         row('Enfants', inspector.children.length ? inspector.children.map(canonicalize).join(', ') : '—')
       ];
-      // É16 — Apply : l'unique action d'édition (label uniquement)
+      // É16 — Apply : l'unique action d'édition du label (label uniquement)
       rows.splice(1, 0, '<div class="insp-editrow"><button id="inspApplyLabel" title="Appliquer le label au composant sélectionné">APPLY</button><span id="inspLabelMsg"></span></div>');
+      // É17 — APPEARANCE : sélecteur du variant de présentation (boutons
+      // compacts, variant courant surligné). Présentation seule — le contenu
+      // et le HTML réel IA ne sont jamais touchés.
+      const currentVariant = inspector.variant || 'default';
+      rows.splice(2, 0, '<div class="insp-editrow insp-appear"><span class="insp-key">Appearance</span>'
+        + PRESENTATION_VARIANTS.map((v) => '<button class="insp-variant' + (v === currentVariant ? ' active' : '') + '" data-variant="' + v + '" title="Variant ' + v + '">' + v + '</button>').join('')
+        + '</div>');
       const metaKeys = Object.keys(inspector.metadata || {}).filter((k) => k !== 'html');
       const metaRows = metaKeys.map((k) => {
         const v = inspector.metadata[k];
@@ -718,10 +753,25 @@
       }
     }
 
-    // É16 — l'unique chemin d'application : UI → updateComponentLabel() →
-    // NOUVEAU state → renderCurrent(). Le canvas se met à jour PAR LE
-    // PIPELINE (canal contentChanged), jamais par manipulation directe.
+    // É16/É17 — les deux chemins d'application (label + variant) passent par
+    // les commandes PURES de editing.ts : UI → commande → NOUVEAU state →
+    // renderCurrent(). Le canvas se met à jour PAR LE PIPELINE (label via le
+    // canal contentChanged, variant via l'attribut), jamais en direct.
     el('inspectorBody').addEventListener('click', (e) => {
+      // É17 — sélecteur de variant de présentation
+      const variantBtn = e.target.closest('.insp-variant');
+      if (variantBtn) {
+        if (!selectedComponentId) return;
+        const result = updateComponentVariant(state, selectedComponentId, variantBtn.dataset.variant);
+        const msg = el('inspLabelMsg');
+        if (!result.applied) {
+          if (msg) msg.textContent = result.reason === 'invalid-variant' ? 'Variant invalide' : '';
+          return;
+        }
+        state = result.state;
+        renderCurrent();
+        return;
+      }
       if (e.target.id !== 'inspApplyLabel') return;
       const msg = el('inspLabelMsg');
       if (!selectedComponentId || msg === null) return;
