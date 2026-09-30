@@ -148,6 +148,56 @@ export function shouldRefreshNode(input: {
   return false;
 }
 
+/* =====================================================================
+ * ÉTAPE 13 — FONDATION DE L'ÉDITION : IDENTITÉ STABLE + RÉSOLUTION DE CIBLE
+ *
+ * Direction imposée (brief) : PreviewBuildState → Renderer → DOM →
+ * data-pv-id → resolvePreviewTarget(). JAMAIS l'inverse.
+ *
+ * - L'identité d'un nœud VIENT DU MODÈLE (component.id) — jamais d'un index
+ *   DOM, d'une position, d'un texte ou d'un ordre d'affichage ;
+ * - resolvePreviewTarget répond à « DOM element → component id » : PUR,
+ *   déterministe, sans événement, sans sélection persistante, sans
+ *   modification du state NI du DOM (lecture seule de l'ascendance) ;
+ * - aucune sélection, aucun inspector : uniquement la fondation.
+ * ===================================================================== */
+
+/** Attribut DOM unique portant l'identité Preview (contrat d'édition). */
+export const PV_ID_ATTRIBUTE = 'data-pv-id';
+
+/**
+ * ÉTAPE 13 — DÉFINITION UNIQUE de l'identité d'un nœud : l'id du composant,
+ * tel que le moteur l'a annoncé. Toute la page assigne l'identité via cette
+ * fonction — il n'existe AUCUNE autre source d'identité.
+ */
+export function previewNodeId(component: { id: string }): string {
+  return component.id;
+}
+
+/**
+ * Élément minimal requis pour résoudre une cible (structurel : le DOM réel
+ * le satisfait ; les tests Node passent des doublures sans dépendance DOM).
+ */
+export interface PreviewTargetElement {
+  closest(selectors: string): PreviewTargetElement | null;
+  getAttribute(name: string): string | null;
+}
+
+/**
+ * ÉTAPE 13 — résout « élément DOM → composant Preview » :
+ * - l'élément PORTE l'attribut       → son id ;
+ * - il est DANS un composant (enfant, contenu réel IA) → l'id du composant
+ *   porteur le plus proche (remontée d'ascendance, sémantique closest) ;
+ * - il est HORS du Preview           → null.
+ * Pur : même entrée → même sortie ; ne lit que l'ascendance, n'écrit rien
+ * (ni state, ni DOM), ne s'abonne à rien, ne sélectionne rien.
+ */
+export function resolvePreviewTarget(element: PreviewTargetElement | null): string | null {
+  const host = element ? element.closest(`[${PV_ID_ATTRIBUTE}]`) : null;
+  if (!host) return null;
+  return host.getAttribute(PV_ID_ATTRIBUTE);
+}
+
 function buildNode(
   component: ComponentState,
   childrenByParent: Map<string, ComponentState[]>,

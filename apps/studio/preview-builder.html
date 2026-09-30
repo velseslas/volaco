@@ -369,7 +369,7 @@
 
   <script type="module">
     import { applyBuildEvent, createPreviewBuildState, BUILD_STAGES } from '/preview-builder/engine.js';
-    import { renderPreview, buildTimeline, shouldRefreshNode } from '/preview-builder/renderer.js';
+    import { renderPreview, buildTimeline, shouldRefreshNode, previewNodeId } from '/preview-builder/renderer.js';
     import { layoutTree } from '/preview-builder/layout.js';
     import { renderComponentVisual } from '/preview-builder/visuals.js';
     import { demoBuildScript, scriptToEvents } from '/preview-builder/mocks.js';
@@ -434,7 +434,10 @@
       let nodeEl = parentEl.querySelector(':scope > [data-pv-id="' + c.id + '"]');
       if (!nodeEl) {
         nodeEl = document.createElement('div');
-        nodeEl.dataset.pvId = c.id;
+        // ÉTAPE 13 — l'identité VIENT DU MODÈLE (component.id), via la
+        // définition unique previewNodeId : jamais un index, une position
+        // ou un ordre d'affichage. Stable building → completed → viewports.
+        nodeEl.dataset.pvId = previewNodeId(c);
         nodeEl.dataset.pvStatus = '';
         parentEl.appendChild(nodeEl);
       }
