@@ -521,3 +521,99 @@ export function updateImageSource(
   components.set(componentId, updated);
   return { state: { ...state, components }, applied: true };
 }
+
+/* =====================================================================
+ * ÉTAPE 24 — updateLinkHref : éditer le href d'un LIEN réel IA.
+ *
+ * Même contrat que les autres commandes : pure, immuable, refus explicites
+ * (dont 'not-link' si la cible n'est pas <a> et 'unsafe-href' pour tout
+ * schéma dangereux — javascript:, vbscript:, data: — y compris variantes
+ * encodées (%xx), entités HTML (&#x6A;...) et espacement/contrôle, car les
+ * navigateurs ignorent ces caractères dans un schéma). SEUL l'attribut href
+ * change ; tous les autres attributs (class, target, rel…) et le reste du
+ * HTML sont intacts ; la valeur est échappée en attribut.
+ * ===================================================================== */
+
+const UNSAFE_HREF_SCHEMES = new Set(['javascript', 'vbscript', 'data']);
+
+/**
+ * Schéma normalisé d'un href (anti-contournement) : retire espaces et
+ * caractères de contrôle (ignorés par les navigateurs dans un schéma),
+ * décode itérativement les %xx et les entités numériques HTML — PUIS
+ * extrait le schéma en minuscules. '' = pas de schéma (relatif/ancre).
+ */
+function hrefScheme(href: string): string {
+  const strip = (s: string) => s.replace(/[\x00-\x20\x7f]+/g, '');
+  let cleaned = strip(href);
+  for (let round = 0; round < 4; round++) {
+    const decoded = cleaned.replace(/%[0-9a-fA-F]{2}/g, (m) => String.fromCharCode(parseInt(m.slice(1), 16)));
+    const entitied = decoded.replace(/&#x?[0-9a-fA-F]+;/g, (m) => {
+      const isHex = /^&#x/i.test(m);
+      const num = parseInt(m.replace(/&#x?|;/gi, ''), isHex ? 16 : 10);
+      return Number.isFinite(num) ? String.fromCharCode(num) : '';
+    });
+    const next = strip(entitied);
+    if (next === cleaned) break;
+    cleaned = next;
+  }
+  const colon = cleaned.indexOf(':');
+  if (colon <= 0) return '';
+  return cleaned.slice(0, colon).toLowerCase();
+}
+
+export interface LinkEditResult {
+  /** Nouvel état (ou la MÊME référence si rien n'a changé). */
+  state: PreviewBuildState;
+  /** Vrai uniquement quand un nouveau state a été produit. */
+  applied: boolean;
+  reason?: 'unknown-component' | 'missing-content' | 'invalid-path' | 'not-link' | 'empty-href' | 'unsafe-href' | 'unchanged' | undefined;
+}
+
+export function updateLinkHref(
+  state: PreviewBuildState,
+  componentId: string,
+  targetPath: number[],
+  newHref: string
+): LinkEditResult {
+  const component = state.components.get(componentId);
+  if (!component) return { state, applied: false, reason: 'unknown-component' };
+  const html = component.metadata?.html;
+  if (typeof html !== 'string' || html.length === 0) {
+    return { state, applied: false, reason: 'missing-content' };
+  }
+  if (!Array.isArray(targetPath) || targetPath.length === 0 || !targetPath.every((k) => Number.isInteger(k) && k >= 0)) {
+    return { state, applied: false, reason: 'invalid-path' };
+  }
+  const trimmed = newHref.trim();
+  if (trimmed.length === 0) return { state, applied: false, reason: 'empty-href' };
+  if (UNSAFE_HREF_SCHEMES.has(hrefScheme(trimmed))) {
+    return { state, applied: false, reason: 'unsafe-href' };
+  }
+  const loc = locateElement(html, targetPath);
+  if ('reason' in loc) return { state, applied: false, reason: loc.reason };
+  const el = loc.el;
+  if (el.tagName !== 'a') return { state, applied: false, reason: 'not-link' };
+  const openTag = html.slice(el.openStart, el.openEnd);
+  const match = openTag.match(/\bhref\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'>]+))/i);
+  const currentHref = match ? (match[2] ?? match[3] ?? match[4] ?? '') : null;
+  if (currentHref !== null && currentHref === trimmed) {
+    return { state, applied: false, reason: 'unchanged' };
+  }
+  const escaped = escapeHtmlAttr(trimmed);
+  let newTag: string;
+  if (match && match.index !== undefined) {
+    // Remplacement de la VALEUR uniquement — tous les autres attributs intacts.
+    newTag = openTag.slice(0, match.index) + 'href="' + escaped + '"' + openTag.slice(match.index + match[0].length);
+  } else {
+    const inner = openTag.slice(1, -1);
+    newTag = '<' + inner + ' href="' + escaped + '">';
+  }
+  const updated: ComponentState = {
+    ...component,
+    metadata: { ...component.metadata, href: undefined, html: html.slice(0, el.openStart) + newTag + html.slice(el.openEnd) } as Record<string, unknown>
+  };
+  delete (updated.metadata as Record<string, unknown>).href;
+  const components = new Map(state.components);
+  components.set(componentId, updated);
+  return { state: { ...state, components }, applied: true };
+}

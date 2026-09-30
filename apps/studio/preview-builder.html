@@ -359,8 +359,8 @@
 
     /* ===== É16 — ÉDITION DU LABEL : l'unique champ éditable + Apply ===== */
     .insp-editrow { display: flex; gap: 8px; align-items: center; padding: 10px 14px; border-bottom: 1px solid rgba(28,39,67,.5); background: rgba(34,211,238,.05); }
-    #inspLabelInput, #inspContentInput, #inspImageInput { flex: 1; min-width: 0; background: #090d1a; border: 1px solid #223052; color: #e8edf9; border-radius: 8px; padding: 7px 10px; font-size: 11px; font-weight: 600; }
-    #inspLabelInput:focus, #inspContentInput:focus, #inspImageInput:focus { outline: none; border-color: #22d3ee; box-shadow: 0 0 0 2px rgba(34,211,238,.15); }
+    #inspLabelInput, #inspContentInput, #inspImageInput, #inspLinkInput { flex: 1; min-width: 0; background: #090d1a; border: 1px solid #223052; color: #e8edf9; border-radius: 8px; padding: 7px 10px; font-size: 11px; font-weight: 600; }
+    #inspLabelInput:focus, #inspContentInput:focus, #inspImageInput:focus, #inspLinkInput:focus { outline: none; border-color: #22d3ee; box-shadow: 0 0 0 2px rgba(34,211,238,.15); }
     #inspApplyLabel { flex: none; background: linear-gradient(135deg, #0891b2, #0e7490); padding: 7px 14px; font-size: 10px; letter-spacing: .06em; }
     #inspApplyLabel:hover { filter: brightness(1.12); }
     #inspLabelMsg { font-size: 9px; color: #fb7185; text-align: right; flex: 1; }
@@ -484,7 +484,7 @@
   <script type="module">
     import { applyBuildEvent, createPreviewBuildState, BUILD_STAGES, PRESENTATION_VARIANTS, RESIZE_BOUNDS } from '/preview-builder/engine.js';
     import { renderPreview, buildTimeline, shouldRefreshNode, previewNodeId, resolvePreviewTarget, buildInspector, resolveDropTarget } from '/preview-builder/renderer.js';
-    import { updateComponentLabel, updateComponentVariant, moveComponent, computeDropTarget, applyDragIntent, resizeComponent, updateTextContent, updateImageSource } from '/preview-builder/editing.js';
+    import { updateComponentLabel, updateComponentVariant, moveComponent, computeDropTarget, applyDragIntent, resizeComponent, updateTextContent, updateImageSource, updateLinkHref } from '/preview-builder/editing.js';
     import { layoutTree } from '/preview-builder/layout.js';
     import { renderComponentVisual } from '/preview-builder/visuals.js';
     import { demoBuildScript, scriptToEvents } from '/preview-builder/mocks.js';
@@ -794,6 +794,22 @@
         return;
       }
       const row = (key, val) => '<div class="insp-row"><span class="insp-key">' + key + '</span><span class="insp-val">' + val + '</span></div>';
+      // É24 — LINK : édition du href du lien réel cliqué (valeur d'attribut
+      // échappée ; schémas dangereux refusés par la commande).
+      if (linkCtx && linkCtx.componentId === inspector.id) {
+        const prevLink = body.querySelector('#inspLinkInput');
+        const keepLink = document.activeElement === prevLink ? prevLink.value : null;
+        body.innerHTML = '<div class="insp-card">'
+          + '<div class="insp-head"><div class="insp-title">' + canonicalize(inspector.label) + '</div><div class="insp-sub">lien réel IA — href</div></div>'
+          + '<div class="insp-rows">' + row('Href actuel', canonicalize(linkCtx.href.length > 60 ? linkCtx.href.slice(0, 60) + '…' : linkCtx.href)) + '</div>'
+          + '<div class="insp-editrow"><input id="inspLinkInput" maxlength="600" value="' + canonicalize(linkCtx.href) + '"><button id="inspLinkApply">APPLY</button><span id="inspLinkMsg"></span></div>'
+          + '</div>';
+        if (keepLink !== null) {
+          const linkInput = body.querySelector('#inspLinkInput');
+          if (linkInput) { linkInput.value = keepLink; linkInput.focus(); linkInput.setSelectionRange(linkInput.value.length, linkInput.value.length); }
+        }
+        return;
+      }
       // É23 — IMAGE : édition du src de l'image réelle cliquée (valeur
       // d'attribut échappée — jamais interprétée comme HTML).
       if (imageCtx && imageCtx.componentId === inspector.id) {
@@ -915,6 +931,29 @@
       idx.innerHTML = Array.from({ length: count }, (_, i) => '<option value="' + (i + 1) + '">position ' + (i + 1) + '</option>').join('');
     });
     el('inspectorBody').addEventListener('click', (e) => {
+      // É24 — APPLY du href lien : UI → updateLinkHref() → nouveau state →
+      // renderCurrent() (canal dirtyReal). Schémas dangereux refusés par la
+      // commande (javascript:, variantes encodées/espacées) — jamais exécutés.
+      if (e.target.id === 'inspLinkApply') {
+        const msgL = el('inspLinkMsg');
+        if (!linkCtx) return;
+        const linkInput = el('inspLinkInput');
+        const resultLink = updateLinkHref(state, linkCtx.componentId, linkCtx.path, linkInput.value);
+        if (!resultLink.applied) {
+          if (msgL) msgL.textContent = resultLink.reason === 'empty-href' ? 'Href vide refusé'
+            : resultLink.reason === 'unsafe-href' ? 'Schéma interdit (javascript:, data:…)'
+            : resultLink.reason === 'not-link' ? 'Cible non lien'
+            : resultLink.reason === 'invalid-path' ? 'Cible introuvable'
+            : resultLink.reason === 'missing-content' ? 'Aucun contenu réel'
+            : 'Href déjà identique';
+          return;
+        }
+        state = resultLink.state;
+        dirtyReal.add(linkCtx.componentId);
+        linkCtx = null;
+        renderCurrent();
+        return;
+      }
       // É23 — APPLY du src image : UI → updateImageSource() → nouveau state
       // → renderCurrent() (canal dirtyReal). La valeur reste une VALEUR
       // D'ATTRIBUT échappée — jamais interprétée comme HTML.
@@ -1044,8 +1083,12 @@
       // .pvz-real), jamais d'une position DOM globale.
       // É23 — cible IMAGE réelle : une <img> du realHtml ouvre la section
       // Image (src courant). Les deux contextes s'excluent mutuellement.
+      // É24 — un lien du contenu réel ne doit JAMAIS naviguer : le clic
+      // reste un clic de SÉLECTION du Preview.
+      if (e.target.closest && e.target.closest('.pvz-real a')) e.preventDefault();
       textCtx = null;
       imageCtx = null;
+      linkCtx = null;
       const realRoot = e.target.closest ? e.target.closest('.pvz-real') : null;
       const hostNode = e.target.closest ? e.target.closest('[data-pv-id]') : null;
       if (selectedComponentId && realRoot && hostNode && hostNode.contains(e.target)) {
@@ -1057,8 +1100,20 @@
           path.unshift(Array.prototype.indexOf.call(p.children, cur));
           cur = p;
         }
+        const anchorAncestor = e.target.closest ? e.target.closest('a') : null;
         if (e.target.tagName === 'IMG') {
           if (path.length > 0) imageCtx = { componentId: hostNode.dataset.pvId, path: path, src: e.target.getAttribute('src') || '' };
+        } else if (anchorAncestor && realRoot.contains(anchorAncestor)) {
+          // É24 — clic sur un lien (ou son texte) : le LIEN est la cible.
+          let cur2 = anchorAncestor;
+          const anchorPath = [];
+          while (cur2 && cur2 !== realRoot) {
+            const p2 = cur2.parentElement;
+            if (!p2) { anchorPath.length = 0; break; }
+            anchorPath.unshift(Array.prototype.indexOf.call(p2.children, cur2));
+            cur2 = p2;
+          }
+          if (anchorPath.length > 0) linkCtx = { componentId: hostNode.dataset.pvId, path: anchorPath, href: anchorAncestor.getAttribute('href') || '' };
         } else if (e.target.children && e.target.children.length === 0
           && e.target.textContent && e.target.textContent.trim().length > 0) {
           if (path.length > 0) textCtx = { componentId: hostNode.dataset.pvId, path: path, text: e.target.textContent.trim() };
@@ -1083,6 +1138,8 @@
     let textCtx = null;
     // É23 — contexte d'édition image : composant + chemin + src courant.
     let imageCtx = null;
+    // É24 — contexte d'édition lien : composant + chemin + href courant.
+    let linkCtx = null;
 
     el('canvas').addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
