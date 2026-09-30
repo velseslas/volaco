@@ -34,6 +34,12 @@ export interface RenderNode {
   canvasVisible: boolean;
   /** LOT 03 — vrai pour l'unique composant `building` actif (dérivé du state). */
   isBuildFocus: boolean;
+  /**
+   * ÉTAPE 14 — SÉLECTION UTILISATEUR (état d'interaction UI, JAMAIS injecté
+   * dans PreviewBuildState) : dérivé du selectedId passé au renderer.
+   * Indépendant du Build Focus : les deux peuvent coexister.
+   */
+  isUserSelected: boolean;
   /** ÉTAPE 05 — données de démonstration transportées telles quelles. */
   metadata?: Record<string, unknown>;
 }
@@ -72,6 +78,13 @@ export interface PreviewRenderModel {
    */
   lastCompletedId?: string | undefined;
   lastCompletedLabel?: string | undefined;
+  /**
+   * ÉTAPE 14 — sélection utilisateur : id du composant choisi (via
+   * resolvePreviewTarget sur le clic) et libellé dérivé DU MODÈLE
+   * (component.label, repli component.type). null = aucune sélection.
+   */
+  selectedId?: string | null | undefined;
+  selectedLabel?: string | undefined;
   buildError?: string | undefined;
 }
 
@@ -202,10 +215,11 @@ function buildNode(
   component: ComponentState,
   childrenByParent: Map<string, ComponentState[]>,
   depth: number,
-  focusId?: string
+  focusId?: string,
+  selectedId?: string | null
 ): RenderNode {
   const children = (childrenByParent.get(component.id) || []).map((child) =>
-    buildNode(child, childrenByParent, depth + 1, focusId)
+    buildNode(child, childrenByParent, depth + 1, focusId, selectedId)
   );
   return {
     id: component.id,
@@ -217,6 +231,7 @@ function buildNode(
     children,
     canvasVisible: component.status !== 'pending',
     isBuildFocus: focusId !== undefined && component.id === focusId,
+    isUserSelected: selectedId != null && component.id === selectedId,
     ...(component.metadata !== undefined ? { metadata: component.metadata } : {})
   };
 }
@@ -229,8 +244,21 @@ function collectFlat(nodes: RenderNode[], into: RenderNode[]): RenderNode[] {
   return into;
 }
 
-/** Transforme l'état du moteur en modèle d'affichage. Pur, sans effet de bord. */
-export function renderPreview(state: PreviewBuildState): PreviewRenderModel {
+/**
+ * Transforme l'état du moteur en modèle d'affichage. Pur, sans effet de bord.
+ *
+ * ÉTAPE 14 — `selection.selectedId` : id du composant sélectionné par
+ * l'UTILISATEUR (obtenu via resolvePreviewTarget — unique mécanisme
+ * d'identification). État d'interaction UI, porté par le MODÈLE DE RENDU
+ * uniquement : PreviewBuildState reste inchangé, le Build Focus reste
+ * indépendant. Paramètre optionnel : tous les appels existants sont
+ * inchangés (aucune sélection).
+ */
+export function renderPreview(
+  state: PreviewBuildState,
+  selection?: { selectedId?: string | null }
+): PreviewRenderModel {
+  const selectedId = selection?.selectedId ?? null;
   const all = [...state.components.values()].sort(
     (a, b) => a.order - b.order || a.id.localeCompare(b.id)
   );
@@ -247,7 +275,7 @@ export function renderPreview(state: PreviewBuildState): PreviewRenderModel {
       byParent.set(component.parentId, list);
     }
   }
-  const tree = roots.map((root) => buildNode(root, byParent, 0, buildFocus(state)?.id));
+  const tree = roots.map((root) => buildNode(root, byParent, 0, buildFocus(state)?.id, selectedId));
   const flat = collectFlat(tree, []);
 
   const counts = {
@@ -258,9 +286,10 @@ export function renderPreview(state: PreviewBuildState): PreviewRenderModel {
     error: flat.filter((n) => n.status === 'error').length
   };
   const focusId = buildFocus(state)?.id;
-  const lastCompleted = all
-    .filter((c) => c.status === 'completed')
-    .sort((a, b) => b.order - a.order || b.id.localeCompare(a.id))[0];
+  // Libellé de sélection DÉRIVÉ DU MODÈLE : component.label, repli
+  // component.type (le label du nœud retombe sur l'id — jamais utilisé).
+  const selectedNode = selectedId != null ? flat.find((n) => n.id === selectedId) : undefined;
+  const selectedLabel = selectedNode ? (selectedNode.label !== selectedNode.id ? selectedNode.label : selectedNode.type) : undefined;
 
   return {
     status: state.status,
@@ -278,7 +307,19 @@ export function renderPreview(state: PreviewBuildState): PreviewRenderModel {
           ? 'Building…'
           : 'idle',
     ...(focusId !== undefined ? { focusId } : {}),
-    ...(lastCompleted ? { lastCompletedId: lastCompleted.id, lastCompletedLabel: lastCompleted.label || lastCompleted.id } : {}),
+    ...(lastCompletedDerivation(all)),
+    ...(selectedId !== null ? { selectedId } : {}),
+    ...(selectedLabel !== undefined ? { selectedLabel } : {}),
     ...(state.error !== undefined ? { buildError: state.error } : {})
   };
+}
+
+/** Dernier composant stabilisé (ÉTAPE 11) — dérivé, sans état parallèle. */
+function lastCompletedDerivation(all: ComponentState[]): { lastCompletedId: string; lastCompletedLabel: string } | Record<string, never> {
+  const lastCompleted = all
+    .filter((c) => c.status === 'completed')
+    .sort((a, b) => b.order - a.order || b.id.localeCompare(a.id))[0];
+  return lastCompleted
+    ? { lastCompletedId: lastCompleted.id, lastCompletedLabel: lastCompleted.label || lastCompleted.id }
+    : {};
 }

@@ -301,6 +301,25 @@
     .canvas.vp-mobile .pvz-hero-title { font-size: 20px; }
     .canvas.vp-mobile .pvz-footer { grid-template-columns: 1fr; }
 
+    /* ===== ÉTAPE 14 — SÉLECTION UTILISATEUR ===== */
+    /* Contour CYAN = intention UTILISATEUR — distinct du violet (Build Focus
+       IA) et de l'émeraude (stabilisation). outline + offset : AUCUN impact
+       layout, aucun contenu modifié, aucune animation agressive. Le chip
+       affiche le libellé DÉRIVÉ DU MODÈLE via l'attribut (content: attr). */
+    .pv-node.selected { outline: 2px solid rgba(34,211,238,.7); outline-offset: 2px; box-shadow: 0 0 0 5px rgba(34,211,238,.10); }
+    .pv-node.selected::before {
+      content: attr(data-selected-label);
+      position: absolute; top: -11px; left: 14px; z-index: 3;
+      background: #0891b2; color: #fff; font-size: 9px; font-weight: 700;
+      padding: 2px 9px; border-radius: 999px; letter-spacing: .06em;
+      box-shadow: 0 2px 8px rgba(8,145,178,.4); pointer-events: none;
+      max-width: 70%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .tree-row.selected-row { background: rgba(34,211,238,.10); border-left: 2px solid #22d3ee; }
+    .tree-row.selected-row .glyph { color: #22d3ee; }
+    #selectionStatus { color: #67e8f9; font-size: 11px; }
+    @media (prefers-reduced-motion: reduce) { .pv-node.selected { transition: none; } }
+
     /* STATUSBAR */
     .statusbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 20px; border-top: 1px solid #1a2238; background: #0a0e1c; font-size: 12px; color: #94a3b8; }
     .statusbar .err { color: #fb7185; }
@@ -363,13 +382,14 @@
 
     <footer class="statusbar">
       <span id="progressLabel">Components: 0/0</span>
+      <span id="selectionStatus"></span>
       <span id="footerStatus">Idle</span>
     </footer>
   </div>
 
   <script type="module">
     import { applyBuildEvent, createPreviewBuildState, BUILD_STAGES } from '/preview-builder/engine.js';
-    import { renderPreview, buildTimeline, shouldRefreshNode, previewNodeId } from '/preview-builder/renderer.js';
+    import { renderPreview, buildTimeline, shouldRefreshNode, previewNodeId, resolvePreviewTarget } from '/preview-builder/renderer.js';
     import { layoutTree } from '/preview-builder/layout.js';
     import { renderComponentVisual } from '/preview-builder/visuals.js';
     import { demoBuildScript, scriptToEvents } from '/preview-builder/mocks.js';
@@ -531,17 +551,38 @@
       el('progressText').textContent = model.progressLabel;
 
       // LOT 04 — CONSTRUCTION TREE : arbre indenté dérivé du model (pré-ordre
-      // + depth), glyphes par statut, focus identifié (même state que le canvas)
+      // + depth), glyphes par statut, focus identifié (même state que le canvas).
+      // ÉTAPE 14 — la sélection utilisateur lit le MÊME model : ▶ = intention
+      // utilisateur (cyan), ◉ = Build Focus IA (violet) — indépendants.
       const glyphs = { building: '◉', completed: '✓', pending: '○', error: '⚠' };
       el('compTree').innerHTML = model.flat.map((n) => {
         const focusTag = n.isBuildFocus ? ' <span style="color:#a78bfa;">construction…</span>' : '';
-        return '<div class="tree-row ' + n.status + (n.isBuildFocus ? ' focus-row' : '') + '" style="margin-left:' + (n.depth * 16) + 'px;">'
-          + '<span class="glyph">' + (glyphs[n.status] || '○') + '</span>'
-          + '<span>' + n.label + focusTag + '</span>'
+        const selectedTag = n.isUserSelected ? ' <span style="color:#67e8f9;">sélection</span>' : '';
+        const glyph = n.isUserSelected ? '▶' : (glyphs[n.status] || '○');
+        return '<div class="tree-row ' + n.status + (n.isBuildFocus ? ' focus-row' : '') + (n.isUserSelected ? ' selected-row' : '') + '" style="margin-left:' + (n.depth * 16) + 'px;">'
+          + '<span class="glyph">' + glyph + '</span>'
+          + '<span>' + n.label + focusTag + selectedTag + '</span>'
           + '<span class="type">' + n.type + '</span></div>';
       }).join('') || '<div class="tree-row">—</div>';
 
       syncLayout(model.focusId);
+
+      // ÉTAPE 14 — HIGHLIGHT DE SÉLECTION : classes + attribut UNIQUEMENT,
+      // après syncLayout. Aucun innerHTML, aucun rebuild (politique É11) :
+      // un clic ne reconstruit jamais le canvas. Le chip lit son libellé
+      // DANS LE MODÈLE via l'attribut (content: attr(...) en CSS).
+      const canvasEl = el('canvas');
+      canvasEl.querySelectorAll('.selected').forEach((n) => {
+        n.classList.remove('selected');
+        n.removeAttribute('data-selected-label');
+      });
+      if (model.selectedId) {
+        const selEl = canvasEl.querySelector('[data-pv-id="' + model.selectedId + '"]');
+        if (selEl) {
+          selEl.classList.add('selected');
+          selEl.setAttribute('data-selected-label', canonicalize(model.selectedLabel || model.selectedId));
+        }
+      }
 
       // LOT 06 — AUTO-SCROLL doux : uniquement si le focus est réellement hors
       // de la zone visible ; 'nearest' = déplacement minimal, jamais forcé.
@@ -566,6 +607,9 @@
       else if (model.status === 'building' && model.lastCompletedLabel) { footer.innerHTML = '<span style="color:#34d399;margin-right:8px;">✓</span>' + canonicalize(model.lastCompletedLabel) + ' ready'; footer.className = ''; }
       else if (model.status === 'completed') { footer.innerHTML = '<span class="dot completed" style="display:inline-block;margin-right:8px;"></span>PREVIEW READY'; footer.className = ''; }
       else { footer.textContent = model.statusLabel; footer.className = ''; }
+      // ÉTAPE 14 — la sélection vit dans une ZONE SECONDAIRE : le statut de
+      // construction (et PREVIEW READY) garde toujours la priorité.
+      el('selectionStatus').textContent = model.selectedLabel ? 'Selected: ' + canonicalize(model.selectedLabel) : '';
     }
 
     function canonicalize(text) { return String(text).replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
@@ -573,8 +617,29 @@
     /* ---------- Pipeline : EVENT → ENGINE → STATE → RENDERER → CANVAS ---------- */
     function consume(event) {
       state = applyBuildEvent(state, event);
-      render(renderPreview(state));
+      renderCurrent();
     }
+
+    /* ===== ÉTAPE 14 — SÉLECTION INTERACTIVE (état d'interaction UI) =====
+       selectedComponentId n'appartient JAMAIS à PreviewBuildState : c'est un
+       état UI de la page, dérivé d'UN seul mécanisme — resolvePreviewTarget()
+       (fondation É13). Un seul écouteur sur document : DOM → id → highlight.
+       Aucun index, position, texte ou classe CSS pour identifier ; la
+       sélection ne touche qu'aux classes/attributs + overlay (jamais de
+       rebuild canvas — politique É11 conservée). */
+    let selectedComponentId = null;
+
+    function renderCurrent() {
+      render(renderPreview(state, { selectedId: selectedComponentId }));
+    }
+
+    document.addEventListener('click', (e) => {
+      // Le sélecteur de viewport est du chrome d'affichage : changer de
+      // viewport conserve la sélection (l'identité ne change jamais).
+      if (e.target.closest('.vp-switch')) return;
+      selectedComponentId = resolvePreviewTarget(e.target);
+      renderCurrent();
+    });
 
     // ÉTAPE 08 — DEUX SOURCES interchangeables, le moteur ne voit que des
     // PreviewBuildEvents (BuildEventSource, spec §problème 2) :
@@ -588,6 +653,7 @@
       if (activeSource) { activeSource.stop(); activeSource = null; }
       state = createPreviewBuildState();
       lastFocusId = null;
+      selectedComponentId = null; // É14 — nouvelle construction : sélection à blanc
       btnStart.disabled = true;
       activeSource = source.subscribe(
         (event) => consume(event),
@@ -633,7 +699,8 @@
       if (realSource) realSource.stop();
       state = createPreviewBuildState();
       lastFocusId = null;
-      render(renderPreview(state));
+      selectedComponentId = null;
+      renderCurrent();
       realSource = new SSEBuildEventSource({
         url: '/api/v1/projects/' + proj.id + '/conversation/sessions/' + sid + '/stream',
         body: { message, isModification: false, planFirst: false },
@@ -668,6 +735,7 @@
     btnReset.addEventListener('click', () => {
       if (timer) { clearInterval(timer); timer = null; btnStart.disabled = false; }
       if (activeSource) { activeSource.stop(); activeSource = null; }
+      selectedComponentId = null;
       consume({ kind: 'BUILD_RESET', timestamp: Date.now() });
     });
 
@@ -683,7 +751,7 @@
       });
     });
 
-    render(renderPreview(state));
+    renderCurrent();
   </script>
 </body>
 </html>
