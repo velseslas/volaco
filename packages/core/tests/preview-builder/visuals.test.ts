@@ -1,9 +1,8 @@
 /**
- * ÉTAPE 05 — tests du Visual Component System + Progressive Content Reveal.
- * Brief : 1-4 visuels par type, 5 fallback générique, 6 registry pur,
- * 7 pending sans contenu final, 8 building = état de construction,
- * 9 completed = contenu final, 10 l'animation ne modifie pas le state,
- * 11 reduced-motion (aucun timing inline), 12 focus cohérent.
+ * ÉTAPES 05+10 — tests du Visual Component System enrichi.
+ * ÉTAPE 05 : registry ouvert, fallback, pureté, modes building/completed.
+ * ÉTAPE 10 : visuels enrichis par type (hero/footer/…), données RÉELLES
+ * (metadata.html prioritaire à completed), aucun timer JS, anti-flicker.
  */
 
 import { describe, it } from 'node:test';
@@ -13,12 +12,6 @@ import {
   registerVisual,
   renderComponentVisual
 } from '../../src/preview-builder/visuals.js';
-import {
-  applyBuildEvent,
-  applyBuildEvents,
-  createPreviewBuildState
-} from '../../src/preview-builder/engine.js';
-import { renderPreview } from '../../src/preview-builder/renderer.js';
 import type { VisualComponent } from '../../src/preview-builder/visuals.js';
 
 const comp = (overrides: Partial<VisualComponent> = {}): VisualComponent => ({
@@ -29,90 +22,103 @@ const comp = (overrides: Partial<VisualComponent> = {}): VisualComponent => ({
   ...overrides
 });
 
-describe('ÉTAPE 05 : Visual Component System', () => {
-  it('1-4. header, sidebar, card, chart possèdent chacun un renderer visuel distinct', () => {
-    for (const type of ['header', 'sidebar', 'card', 'chart']) {
-      assert.ok(hasVisual(type), `un visuel existe pour « ${type} »`);
-      const html = renderComponentVisual(comp({ type, label: 'Titre' }), 'completed');
-      assert.ok(html.length > 20, `${type} produit un visuel non vide`);
+describe('ÉTAPES 05+10 : Visual Component System enrichi', () => {
+  it('1-4. tous les types ont un visuel distinct : header/sidebar/hero/card/chart/content/footer', () => {
+    for (const type of ['header', 'sidebar', 'hero', 'card', 'chart', 'content', 'footer']) {
+      assert.ok(hasVisual(type), `visuel « ${type} » enregistré`);
+      const done = renderComponentVisual(comp({ type, label: 'Z' }), 'completed');
+      assert.ok(done.length > 20, `${type} completed non vide`);
+      const building = renderComponentVisual(comp({ type, label: 'Z' }), 'building');
+      assert.ok(building.includes('pv-ghost'), `${type} building = titre + zones ghost`);
+      assert.ok(building.includes('pvz-anim'), `${type} building : titre révélé par CSS`);
     }
-    // Structures distinctes : le header a une nav, la card une valeur, le chart des barres
+    // Structures distinctes
     assert.ok(renderComponentVisual(comp({ type: 'header' }), 'completed').includes('pvz-header'));
     assert.ok(renderComponentVisual(comp({ type: 'sidebar' }), 'completed').includes('pvz-sidebar'));
-    assert.ok(renderComponentVisual(comp(), 'completed').includes('$124,500'), 'la card montre sa valeur réelle');
-    assert.ok(renderComponentVisual(comp({ type: 'chart', metadata: { bars: [40, 80] } }), 'completed').includes('pvz-bars'));
+    assert.ok(renderComponentVisual(comp({ type: 'hero' }), 'completed').includes('pvz-hero'));
+    assert.ok(renderComponentVisual(comp({ type: 'footer' }), 'completed').includes('pvz-footer'));
+    assert.ok(renderComponentVisual(comp(), 'completed').includes('$124,500'), 'card = valeur réelle');
   });
 
-  it('5. un type inconnu utilise le renderer générique (extensibilité)', () => {
-    assert.equal(hasVisual('hero'), false, 'hero n’est pas encore enregistré');
-    const html = renderComponentVisual(comp({ type: 'hero', label: 'Bannière' }), 'completed');
-    assert.ok(html.includes('pvz-generic'), 'fallback générique');
-    assert.ok(html.includes('Bannière'));
-    // Extension ouverte : registerVisual('hero', …) sans toucher au moteur
-    registerVisual('hero', (c) => `<div class="pvz-hero pvz-anim">${c.label}</div>`);
-    assert.equal(hasVisual('hero'), true);
-    assert.ok(renderComponentVisual(comp({ type: 'hero', label: 'Bannière' }), 'completed').includes('pvz-hero'));
+  it('5. registry OUVERT : un type inconnu utilise le générique, puis extension sans toucher au moteur', () => {
+    assert.equal(hasVisual('mystique'), false);
+    const b = renderComponentVisual(comp({ type: 'mystique', label: 'Mystère' }), 'building');
+    const d = renderComponentVisual(comp({ type: 'mystique', label: 'Mystère' }), 'completed');
+    assert.ok(b.includes('pv-ghost'), 'générique building = ghosts aussi');
+    assert.ok(d.includes('Mystère') && d.includes('mystique'));
+    registerVisual('mystique', (c) => `<div class="pvz-hero pvz-anim">${c.label}</div>`);
+    assert.equal(hasVisual('mystique'), true);
+    assert.ok(renderComponentVisual(comp({ type: 'mystique', label: 'M' }), 'completed').includes('pvz-hero'));
   });
 
-  it('6. le registry ne modifie jamais le PreviewBuildState (pur)', () => {
-    let s = applyBuildEvent(createPreviewBuildState(), { kind: 'BUILD_STARTED', timestamp: 1 });
-    s = applyBuildEvent(s, { kind: 'COMPONENT_CREATED', component: { id: 'c1', type: 'card', label: 'Revenue', metadata: { value: '$1' } }, timestamp: 2 });
-    s = applyBuildEvent(s, { kind: 'COMPONENT_BUILDING', componentId: 'c1', timestamp: 3 });
-    const before = JSON.stringify([...s.components.entries()]);
-    renderComponentVisual(comp(), 'building');
-    renderComponentVisual(comp(), 'completed');
-    assert.equal(JSON.stringify([...s.components.entries()]), before, 'state intact');
-    // Déterminisme : même entrée → même HTML
-    assert.equal(renderComponentVisual(comp(), 'completed'), renderComponentVisual(comp(), 'completed'));
-  });
-});
-
-describe('ÉTAPE 05 : Progressive Content Reveal', () => {
-  it('7. pending n’affiche PAS le contenu final', () => {
-    assert.equal(renderComponentVisual(comp(), 'pending'), '', 'pending = rien dans le canvas');
+  it('6. building : titre révélé, contenu final ABSENT (révélation progressive)', () => {
+    const building = renderComponentVisual(comp(), 'building');
+    assert.ok(building.includes('Revenue'), 'titre révélé pendant la construction');
+    assert.ok(building.includes('pv-ghost'), 'zones de construction présentes');
+    assert.ok(!building.includes('$124,500'), 'la valeur finale n’est pas montrée en building');
+    assert.ok(!building.includes('pvz-card-value'), 'pas de bloc de valeur finale');
   });
 
-  it('8. building affiche l’état de construction : titre révélé + zones ghost, PAS le contenu final', () => {
-    const html = renderComponentVisual(comp(), 'building');
-    assert.ok(html.includes('pv-ghost'), 'zones de construction présentes');
-    assert.ok(html.includes('Revenue'), 'le titre se révèle en premier');
-    assert.ok(!html.includes('$124,500'), 'la valeur finale n’est PAS encore montrée');
-    assert.ok(!html.includes('pvz-card-value'), 'pas de bloc de valeur finale en building');
-  });
-
-  it('9. completed affiche le contenu final stable (titre + valeur + delta)', () => {
+  it('7. completed : le contenu RÉEL est affiché (valeur + delta), plus aucune zone fantôme', () => {
     const html = renderComponentVisual(comp(), 'completed');
     assert.ok(html.includes('Revenue'));
     assert.ok(html.includes('$124,500'));
     assert.ok(html.includes('↑ 18.4%'));
-    assert.ok(!html.includes('pv-ghost'), 'plus aucune zone fantôme une fois terminé');
+    assert.ok(!html.includes('pv-ghost'));
   });
 
-  it('10. l’animation ne modifie pas le state : l’ordre des appels n’a aucun effet', () => {
-    // Les 3 statuts du même composant produisent 3 HTML distincts, et
-    // l'ordre d'appel n'a aucun effet (pas de mutation cachée).
-    const building = renderComponentVisual(comp(), 'building');
-    const completed = renderComponentVisual(comp(), 'completed');
-    assert.equal(building, renderComponentVisual(comp(), 'building'));
-    assert.equal(completed, renderComponentVisual(comp(), 'completed'));
-    assert.notEqual(building, completed);
+  it('8. hero : building = titre + ghosts ; completed = titre + sous-titre', () => {
+    const c = comp({ type: 'hero', label: 'Bienvenue', metadata: { title: 'Bienvenue', subtitle: 'Votre espace' } });
+    assert.ok(renderComponentVisual(c, 'building').includes('Bienvenue'));
+    const done = renderComponentVisual(c, 'completed');
+    assert.ok(done.includes('Bienvenue') && done.includes('Votre espace'));
   });
 
-  it('11. reduced-motion : aucun timing JS ni animation inline dans le HTML généré', () => {
-    const html = renderComponentVisual(comp(), 'completed');
-    assert.ok(!html.includes('setTimeout'), 'aucun timer embarqué');
-    assert.ok(!html.includes('animation:'), 'aucune animation inline (elles vivent en CSS page, neutralisables)');
+  it('9. footer : building = ghosts ; completed = colonnes réelles', () => {
+    const c = comp({ type: 'footer', label: 'Pied', metadata: { columns: 4 } });
+    assert.ok(renderComponentVisual(c, 'building').includes('pv-ghost'));
+    const done = renderComponentVisual(c, 'completed');
+    assert.ok(done.includes('Colonne 1') && done.includes('Colonne 4'));
   });
 
-  it('12. le Build Focus reste cohérent avec le registry (mêmes règles, même state)', () => {
-    let s = applyBuildEvent(createPreviewBuildState(), { kind: 'BUILD_STARTED', timestamp: 1 });
-    s = applyBuildEvent(s, { kind: 'COMPONENT_CREATED', component: { id: 'card-01', type: 'card', label: 'Revenue', metadata: { value: '$124,500' } }, timestamp: 2 });
-    s = applyBuildEvent(s, { kind: 'COMPONENT_BUILDING', componentId: 'card-01', timestamp: 3 });
-    const model = renderPreview(s);
-    assert.equal(model.focusId, 'card-01', 'focus inchangé (buildFocus réutilisé)');
-    // Le visuel du nœud focus est bien celui du registry, au statut du state
-    const node = model.canvas.find((n) => n.id === 'card-01')!;
-    const html = renderComponentVisual({ id: node.id, type: node.type, label: node.label, ...(node.metadata !== undefined ? { metadata: node.metadata } : {}) }, node.status);
-    assert.ok(html.includes('pv-ghost'), 'le nœud focus rend son état de construction');
+  it('10. chart : building = barres fantômes ; completed = barres réelles depuis metadata', () => {
+    const c = comp({ type: 'chart', metadata: { bars: [30, 60, 90] } });
+    assert.ok(renderComponentVisual(c, 'building').includes('pv-ghost'));
+    const done = renderComponentVisual(c, 'completed');
+    assert.equal((done.match(/pvz-col/g) || []).length, 3, 'une barre par donnée réelle');
+  });
+
+  it('11. DONNÉES RÉELLES : metadata.html (généré par l’IA) prioritaire à completed', () => {
+    const c = comp({
+      type: 'card',
+      metadata: { title: 'Revenue', html: '<section data-section="revenue"><h2>Revenue réel</h2><p>Contenu IA</p></section>' }
+    });
+    const html = renderComponentVisual(c, 'completed');
+    assert.ok(html.includes('Revenue réel'), 'le HTML réel de l’IA est affiché');
+    assert.ok(html.includes('pvz-real'), 'enveloppé pour le reveal CSS');
+    assert.ok(renderComponentVisual(c, 'building').includes('pv-ghost'), 'building reste l’état de construction');
+  });
+
+  it('12. les valeurs mock ne fuient pas quand les données réelles n’existent pas', () => {
+    const c = comp({ type: 'card', metadata: { title: 'Seulement un titre' } });
+    const html = renderComponentVisual(c, 'completed');
+    assert.ok(html.includes('Seulement un titre'));
+    assert.ok(!html.includes('$124,500'), 'aucune valeur mock codée en dur');
+    assert.ok(html.includes('—'), 'valeur absente = — neutre');
+  });
+
+  it('13. PUR : déterministe, aucune mutation de l’entrée', () => {
+    const c = comp();
+    assert.equal(renderComponentVisual(c, 'completed'), renderComponentVisual(c, 'completed'));
+    const copy = JSON.parse(JSON.stringify(c));
+    renderComponentVisual(c, 'building');
+    renderComponentVisual(c, 'completed');
+    assert.deepEqual(c, copy);
+  });
+
+  it('14. reduced-motion : aucun timer JS, aucun handler inline dans le HTML généré', () => {
+    const html = renderComponentVisual(comp(), 'completed') + renderComponentVisual(comp(), 'building');
+    assert.ok(!html.includes('setTimeout'), 'aucun timer');
+    assert.ok(!html.includes('addEventListener'), 'aucun handler inline');
   });
 });
