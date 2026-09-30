@@ -121,7 +121,7 @@ export interface MoveComponentResult {
   /** Nouvel état (ou la MÊME référence si rien n'a changé). */
   state: PreviewBuildState;
   applied: boolean;
-  reason?: 'unknown-component' | 'unknown-parent' | 'cycle' | 'invalid-index' | 'unchanged' | undefined;
+  reason?: 'unknown-component' | 'unknown-parent' | 'cycle' | 'invalid-index' | 'invalid-target' | 'unchanged' | undefined;
 }
 
 /** Enfants d'un parent (null = racine), ordonnés comme le renderer. */
@@ -192,4 +192,82 @@ export function moveComponent(
   const components = new Map(state.components);
   components.set(componentId, updated);
   return { state: { ...state, components }, applied: true };
+}
+
+/* =====================================================================
+ * ÉTAPE 19 — FONDATION DRAG & DROP (modèle pur, drag NON activé).
+ *
+ * moveComponent() reste l'UNIQUE source de vérité du déplacement : cette
+ * fondation se borne à produire une { targetParentId, targetIndex } à
+ * partir d'une intention (composant saisi + élément survolé + bord), puis
+ * à DÉLÉGUER exclusivement à moveComponent(). Aucun état métier
+ * supplémentaire dans PreviewBuildState, aucun DOM, aucun SSE.
+ * ===================================================================== */
+
+/** Sondage résolu depuis le DOM : élément survolé + bord de dépose. */
+export interface DropProbe {
+  hoveredId: string;
+  edge: 'before' | 'after' | 'inside';
+}
+
+/** Intention de déplacement : composant saisi + sondage de dépose. */
+export interface DragIntent extends DropProbe {
+  componentId: string;
+}
+
+/** Cible structurelle calculée — les arguments exacts de moveComponent. */
+export interface DropTarget {
+  /** null = racine. */
+  parentId: string | null;
+  /** Position d'insertion parmi les enfants de la cible (ajustée). */
+  index: number;
+}
+
+/**
+ * É19 — convertit une intention en cible structurelle. PUR : même entrée →
+ * même cible ; ne mute rien ; retourne null pour toute cible invalide
+ * (inconnue, sur soi-même, dans son propre sous-arbre — cycles impossibles).
+ * L'index est AJUSTÉ quand le composant déplacé est un frère situé avant le
+ * point d'insertion (sa suppression décale la position d'une unité).
+ */
+export function computeDropTarget(state: PreviewBuildState, intent: DragIntent): DropTarget | null {
+  if (!state.components.has(intent.componentId)) return null;
+  const hovered = state.components.get(intent.hoveredId);
+  if (!hovered) return null;
+  // Cycle : l'élément survolé ne peut pas être soi-même ni un descendant
+  // (la remontée de sa chaîne de parents croiserait le composant saisi).
+  let cursor: string | undefined = intent.hoveredId;
+  while (cursor !== undefined) {
+    if (cursor === intent.componentId) return null;
+    cursor = state.components.get(cursor)?.parentId;
+  }
+  if (intent.edge === 'inside') {
+    // Déposer DANS l'élément survolé : il devient le parent, en fin de liste.
+    const children = [...state.components.values()].filter((c) => c.parentId === intent.hoveredId);
+    return { parentId: intent.hoveredId, index: children.length };
+  }
+  // before/after : même parent que l'élément survolé, à sa position (±1).
+  const parentId = hovered.parentId ?? null;
+  const siblings = [...state.components.values()]
+    .filter((c) => (c.parentId ?? null) === parentId)
+    .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+  let index = siblings.findIndex((c) => c.id === intent.hoveredId);
+  if (index < 0) return null;
+  if (intent.edge === 'after') index += 1;
+  const draggedIdx = siblings.findIndex((c) => c.id === intent.componentId);
+  if (draggedIdx >= 0 && draggedIdx < index) index -= 1;
+  return { parentId, index };
+}
+
+/**
+ * É19 — applique une intention : computeDropTarget puis DÉLÉGATION
+ * EXCLUSIVE à moveComponent (unique source de vérité du déplacement).
+ * Cible invalide → état inchangé + raison explicite.
+ */
+export function applyDragIntent(state: PreviewBuildState, intent: DragIntent): MoveComponentResult {
+  const target = computeDropTarget(state, intent);
+  if (!target) {
+    return { state, applied: false, reason: 'invalid-target' };
+  }
+  return moveComponent(state, intent.componentId, target.parentId, target.index);
 }

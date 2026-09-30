@@ -18,6 +18,7 @@
  */
 
 import { BUILD_STAGES, type PresentationVariant } from './engine.js';
+import type { DragIntent } from './editing.js';
 import type { AnyStage, BuildStage, PreviewBuildState } from './engine.js';
 import type { ComponentState } from './engine.js';
 
@@ -278,6 +279,47 @@ export function buildInspector(
     ...(component.error !== undefined ? { error: component.error } : {}),
     ...(component.metadata !== undefined ? { metadata: component.metadata } : {})
   };
+}
+
+/* =====================================================================
+ * ÉTAPE 19 — resolveDropTarget : sondage DOM pour le futur drag & drop
+ * (NON activé — aucun écouteur, aucun déplacement DOM).
+ *
+ * Lecture seule : remonte à l'hôte data-pv-id (fondation É13), lit sa
+ * géométrie et déduit le bord de dépose (tiers haut/gauche = before,
+ * milieu = inside, tiers bas/droit = after). Aucun index DOM, aucune
+ * écriture, data-pv-id inchangé. L'intention retournée est ensuite
+ * traitée exclusivement par computeDropTarget/applyDragIntent (editing).
+ * ===================================================================== */
+
+export interface DropRect { top: number; left: number; bottom: number; right: number; }
+
+/** Élément minimal requis (structurel : le DOM réel le satisfait). */
+export interface DropProbeElement {
+  closest(selectors: string): DropProbeElement | null;
+  getAttribute(name: string): string | null;
+  getBoundingClientRect(): DropRect;
+}
+
+export function resolveDropTarget(
+  element: DropProbeElement | null,
+  geometry: { x: number; y: number },
+  componentId: string
+): DragIntent | null {
+  if (!element) return null;
+  const host = element.closest('[data-pv-id]');
+  if (!host) return null;
+  const hoveredId = host.getAttribute('data-pv-id');
+  if (!hoveredId) return null;
+  const rect = host.getBoundingClientRect();
+  const width = rect.right - rect.left || 1;
+  const height = rect.bottom - rect.top || 1;
+  const vertical = height >= width;
+  const ratio = vertical
+    ? (geometry.y - rect.top) / height
+    : (geometry.x - rect.left) / width;
+  const edge = ratio <= 1 / 3 ? 'before' : ratio >= 2 / 3 ? 'after' : 'inside';
+  return { componentId, hoveredId, edge };
 }
 
 function buildNode(
