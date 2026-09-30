@@ -343,13 +343,24 @@ export interface TextEditResult {
   reason?: 'unknown-component' | 'missing-content' | 'invalid-path' | 'not-textual' | 'empty-text' | 'unchanged' | undefined;
 }
 
-/** Remplace le texte de l'élément situé à `path` dans `html`. */
-function editHtmlText(html: string, path: number[], text: string): { ok: true; html: string } | { ok: false; reason: 'invalid-path' | 'not-textual' } {
-  // Frames : isOnPath = tous les ancêtres correspondent à path ; isTarget =
-  // l'élément au sommet est exactement l'élément visé (profondeur path.length).
+/** Élément localisé dans metadata.html par le parseur commun. */
+interface LocatedElement {
+  openStart: number;
+  openEnd: number;
+  innerStart: number;
+  innerEnd: number; // -1 pour un élément void/self-closing
+  tagName: string;
+}
+
+/**
+ * É22/É23 — parseur commun : localise l'élément situé à `path` (chemin
+ * d'éléments depuis la racine du HTML). Frames : isOnPath = tous les
+ * ancêtres correspondent à path ; isTarget = l'élément au sommet est
+ * exactement l'élément visé (profondeur path.length).
+ */
+function locateElement(html: string, path: number[]): { el: LocatedElement } | { reason: 'invalid-path' } {
   const stack: { childCount: number; isOnPath: boolean; isTarget: boolean }[] = [{ childCount: 0, isOnPath: true, isTarget: false }];
-  let targetStart = -1;
-  let targetEnd = -1;
+  let el: LocatedElement | null = null;
   const targetDepth = path.length;
   let i = 0;
   while (i < html.length) {
@@ -367,7 +378,10 @@ function editHtmlText(html: string, path: number[], text: string): { ok: true; h
     if (body.startsWith('/')) {
       // Fermeture : si c'est la fin de la cible, on capture l'intérieur.
       const frame = stack.pop();
-      if (frame && frame.isTarget && targetEnd < 0) targetEnd = lt;
+      if (frame && frame.isTarget && el) {
+        el.innerEnd = lt;
+        return { el };
+      }
       i = gt + 1;
       continue;
     }
@@ -375,25 +389,33 @@ function editHtmlText(html: string, path: number[], text: string): { ok: true; h
     const selfClosing = body.endsWith('/');
     const voidEl = VOID_TAGS.has(tagName);
     const parent = stack[stack.length - 1];
-    if (!parent) return { ok: false, reason: 'invalid-path' };
+    if (!parent) return { reason: 'invalid-path' };
     const depth = stack.length; // profondeur du nouvel élément
     const isOnPath = parent.isOnPath && depth <= targetDepth && parent.childCount === path[depth - 1];
-    const isTarget = !found(targetStart) && isOnPath && depth === targetDepth;
+    const isTarget = el === null && isOnPath && depth === targetDepth;
     parent.childCount += 1;
+    // É23 — un élément VOID (img, br…) peut être la cible : localisé avec un
+    // intérieur vide (innerEnd = -1). Seuls les non-void sont empilés.
+    if (isTarget) el = { openStart: lt, openEnd: gt + 1, innerStart: gt + 1, innerEnd: -1, tagName: tagName };
     if (!voidEl && !selfClosing) {
       stack.push({ childCount: 0, isOnPath: isOnPath, isTarget: isTarget });
-      if (isTarget) targetStart = gt + 1;
     }
     i = gt + 1;
   }
-  function found(v: number) { return v >= 0; }
-  if (targetStart < 0 || targetEnd < 0) return { ok: false, reason: 'invalid-path' };
-  const inner = html.slice(targetStart, targetEnd);
+  return el ? { el: el } : { reason: 'invalid-path' };
+}
+
+/** Remplace le texte de l'élément situé à `path` (cible textuelle uniquement). */
+function editHtmlText(html: string, path: number[], text: string): { ok: true; html: string } | { ok: false; reason: 'invalid-path' | 'not-textual' } {
+  const loc = locateElement(html, path);
+  if ('reason' in loc) return { ok: false, reason: loc.reason };
+  if (loc.el.innerEnd < 0) return { ok: false, reason: 'not-textual' }; // void : pas d'intérieur textuel
+  const inner = html.slice(loc.el.innerStart, loc.el.innerEnd);
   // Cible NON textuelle : tout '<' interne = élément ou commentaire enfant.
   if (inner.includes('<')) return { ok: false, reason: 'not-textual' };
   const escaped = escapeHtmlText(text);
   if (inner === escaped) return { ok: true, html: html };
-  return { ok: true, html: html.slice(0, targetStart) + escaped + html.slice(targetEnd) };
+  return { ok: true, html: html.slice(0, loc.el.innerStart) + escaped + html.slice(loc.el.innerEnd) };
 }
 
 export function updateTextContent(
@@ -422,6 +444,78 @@ export function updateTextContent(
   const updated: ComponentState = {
     ...component,
     metadata: { ...component.metadata, html: outcome.html }
+  };
+  const components = new Map(state.components);
+  components.set(componentId, updated);
+  return { state: { ...state, components }, applied: true };
+}
+
+/* =====================================================================
+ * ÉTAPE 23 — updateImageSource : éditer le src d'une IMAGE réelle IA.
+ *
+ * Même contrat que les autres commandes : pure, immuable, refus explicites.
+ * targetPath localise l'élément dans metadata.html (parseur commun) ; la
+ * cible doit être une balise <img> ('not-image' sinon). SEUL l'attribut src
+ * est modifié (valeur d'attribut échappée : &, <, >, ") — tous les autres
+ * attributs, le reste du HTML et toutes les autres propriétés du composant
+ * sont intacts. Aucune injection possible : la valeur ne quitte jamais
+ * l'attribut, jamais interprétée comme HTML.
+ * ===================================================================== */
+
+/** Échappement valeur d'attribut : &, <, > et " (jamais interprétés). */
+function escapeHtmlAttr(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+export interface ImageEditResult {
+  /** Nouvel état (ou la MÊME référence si rien n'a changé). */
+  state: PreviewBuildState;
+  /** Vrai uniquement quand un nouveau state a été produit. */
+  applied: boolean;
+  reason?: 'unknown-component' | 'missing-content' | 'invalid-path' | 'not-image' | 'empty-src' | 'unchanged' | undefined;
+}
+
+export function updateImageSource(
+  state: PreviewBuildState,
+  componentId: string,
+  targetPath: number[],
+  newSrc: string
+): ImageEditResult {
+  const component = state.components.get(componentId);
+  if (!component) return { state, applied: false, reason: 'unknown-component' };
+  const html = component.metadata?.html;
+  if (typeof html !== 'string' || html.length === 0) {
+    return { state, applied: false, reason: 'missing-content' };
+  }
+  if (!Array.isArray(targetPath) || targetPath.length === 0 || !targetPath.every((k) => Number.isInteger(k) && k >= 0)) {
+    return { state, applied: false, reason: 'invalid-path' };
+  }
+  const trimmed = newSrc.trim();
+  if (trimmed.length === 0) return { state, applied: false, reason: 'empty-src' };
+  const loc = locateElement(html, targetPath);
+  if ('reason' in loc) return { state, applied: false, reason: loc.reason };
+  const el = loc.el;
+  if (el.tagName !== 'img') return { state, applied: false, reason: 'not-image' };
+  const openTag = html.slice(el.openStart, el.openEnd);
+  const match = openTag.match(/\bsrc\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'>]+))/i);
+  const currentSrc = match ? (match[2] ?? match[3] ?? match[4] ?? '') : null;
+  if (currentSrc !== null && currentSrc === trimmed) {
+    return { state, applied: false, reason: 'unchanged' };
+  }
+  const escaped = escapeHtmlAttr(trimmed);
+  let newTag: string;
+  if (match && match.index !== undefined) {
+    // Remplacement de la VALEUR uniquement — les autres attributs intacts.
+    newTag = openTag.slice(0, match.index) + 'src="' + escaped + '"' + openTag.slice(match.index + match[0].length);
+  } else {
+    // Aucun src : ajouté comme attribut (jamais comme HTML libre).
+    const inner = openTag.slice(1, -1);
+    const at = inner.endsWith('/') ? inner.length - 1 : inner.length;
+    newTag = '<' + inner.slice(0, at) + ' src="' + escaped + '"' + (at === inner.length - 1 ? ' /' : '') + '>';
+  }
+  const updated: ComponentState = {
+    ...component,
+    metadata: { ...component.metadata, html: html.slice(0, el.openStart) + newTag + html.slice(el.openEnd) }
   };
   const components = new Map(state.components);
   components.set(componentId, updated);

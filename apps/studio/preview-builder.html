@@ -359,8 +359,8 @@
 
     /* ===== É16 — ÉDITION DU LABEL : l'unique champ éditable + Apply ===== */
     .insp-editrow { display: flex; gap: 8px; align-items: center; padding: 10px 14px; border-bottom: 1px solid rgba(28,39,67,.5); background: rgba(34,211,238,.05); }
-    #inspLabelInput, #inspContentInput { flex: 1; min-width: 0; background: #090d1a; border: 1px solid #223052; color: #e8edf9; border-radius: 8px; padding: 7px 10px; font-size: 11px; font-weight: 600; }
-    #inspLabelInput:focus, #inspContentInput:focus { outline: none; border-color: #22d3ee; box-shadow: 0 0 0 2px rgba(34,211,238,.15); }
+    #inspLabelInput, #inspContentInput, #inspImageInput { flex: 1; min-width: 0; background: #090d1a; border: 1px solid #223052; color: #e8edf9; border-radius: 8px; padding: 7px 10px; font-size: 11px; font-weight: 600; }
+    #inspLabelInput:focus, #inspContentInput:focus, #inspImageInput:focus { outline: none; border-color: #22d3ee; box-shadow: 0 0 0 2px rgba(34,211,238,.15); }
     #inspApplyLabel { flex: none; background: linear-gradient(135deg, #0891b2, #0e7490); padding: 7px 14px; font-size: 10px; letter-spacing: .06em; }
     #inspApplyLabel:hover { filter: brightness(1.12); }
     #inspLabelMsg { font-size: 9px; color: #fb7185; text-align: right; flex: 1; }
@@ -484,7 +484,7 @@
   <script type="module">
     import { applyBuildEvent, createPreviewBuildState, BUILD_STAGES, PRESENTATION_VARIANTS, RESIZE_BOUNDS } from '/preview-builder/engine.js';
     import { renderPreview, buildTimeline, shouldRefreshNode, previewNodeId, resolvePreviewTarget, buildInspector, resolveDropTarget } from '/preview-builder/renderer.js';
-    import { updateComponentLabel, updateComponentVariant, moveComponent, computeDropTarget, applyDragIntent, resizeComponent, updateTextContent } from '/preview-builder/editing.js';
+    import { updateComponentLabel, updateComponentVariant, moveComponent, computeDropTarget, applyDragIntent, resizeComponent, updateTextContent, updateImageSource } from '/preview-builder/editing.js';
     import { layoutTree } from '/preview-builder/layout.js';
     import { renderComponentVisual } from '/preview-builder/visuals.js';
     import { demoBuildScript, scriptToEvents } from '/preview-builder/mocks.js';
@@ -794,6 +794,22 @@
         return;
       }
       const row = (key, val) => '<div class="insp-row"><span class="insp-key">' + key + '</span><span class="insp-val">' + val + '</span></div>';
+      // É23 — IMAGE : édition du src de l'image réelle cliquée (valeur
+      // d'attribut échappée — jamais interprétée comme HTML).
+      if (imageCtx && imageCtx.componentId === inspector.id) {
+        const prevImg = body.querySelector('#inspImageInput');
+        const keepImg = document.activeElement === prevImg ? prevImg.value : null;
+        body.innerHTML = '<div class="insp-card">'
+          + '<div class="insp-head"><div class="insp-title">' + canonicalize(inspector.label) + '</div><div class="insp-sub">image réelle IA — src</div></div>'
+          + '<div class="insp-rows">' + row('Src actuel', canonicalize(imageCtx.src.length > 60 ? imageCtx.src.slice(0, 60) + '…' : imageCtx.src)) + '</div>'
+          + '<div class="insp-editrow"><input id="inspImageInput" maxlength="600" value="' + canonicalize(imageCtx.src) + '"><button id="inspImageApply">APPLY</button><span id="inspImageMsg"></span></div>'
+          + '</div>';
+        if (keepImg !== null) {
+          const imgInput = body.querySelector('#inspImageInput');
+          if (imgInput) { imgInput.value = keepImg; imgInput.focus(); imgInput.setSelectionRange(imgInput.value.length, imgInput.value.length); }
+        }
+        return;
+      }
       // É22 — CONTENT : édition du TEXTE de l'élément réel IA cliqué (élément
       // textuel uniquement). La valeur est échappée dans l'attribut — jamais
       // injectée comme HTML — et survit aux re-rendus comme le champ Label.
@@ -899,6 +915,28 @@
       idx.innerHTML = Array.from({ length: count }, (_, i) => '<option value="' + (i + 1) + '">position ' + (i + 1) + '</option>').join('');
     });
     el('inspectorBody').addEventListener('click', (e) => {
+      // É23 — APPLY du src image : UI → updateImageSource() → nouveau state
+      // → renderCurrent() (canal dirtyReal). La valeur reste une VALEUR
+      // D'ATTRIBUT échappée — jamais interprétée comme HTML.
+      if (e.target.id === 'inspImageApply') {
+        const msgI = el('inspImageMsg');
+        if (!imageCtx) return;
+        const imgInput = el('inspImageInput');
+        const resultImg = updateImageSource(state, imageCtx.componentId, imageCtx.path, imgInput.value);
+        if (!resultImg.applied) {
+          if (msgI) msgI.textContent = resultImg.reason === 'empty-src' ? 'Src vide refusé'
+            : resultImg.reason === 'not-image' ? 'Cible non image'
+            : resultImg.reason === 'invalid-path' ? 'Cible introuvable'
+            : resultImg.reason === 'missing-content' ? 'Aucun contenu réel'
+            : 'Src déjà identique';
+          return;
+        }
+        state = resultImg.state;
+        dirtyReal.add(imageCtx.componentId);
+        imageCtx = null;
+        renderCurrent();
+        return;
+      }
       // É22 — APPLY du texte réel : UI → updateTextContent() → nouveau state
       // → renderCurrent() (le canal dirtyReal rafraîchit le contenu du nœud).
       // Le texte est échappé dans la commande — jamais injecté comme HTML.
@@ -1001,15 +1039,16 @@
       if (suppressNextClick) { suppressNextClick = false; return; }
       selectedComponentId = resolvePreviewTarget(e.target);
       // É22 — cible TEXTUELLE réelle : élément du realHtml sans enfant
-      // élément et avec du texte (les images/conteneurs ne donnent jamais
-      // de champ texte). Le chemin est dérivé du CONTENU (index d'éléments
-      // jusqu'au .pvz-real), jamais d'une position DOM globale.
+      // élément et avec du texte (les conteneurs ne donnent jamais de champ
+      // texte). Le chemin est dérivé du CONTENU (index d'éléments jusqu'au
+      // .pvz-real), jamais d'une position DOM globale.
+      // É23 — cible IMAGE réelle : une <img> du realHtml ouvre la section
+      // Image (src courant). Les deux contextes s'excluent mutuellement.
       textCtx = null;
+      imageCtx = null;
       const realRoot = e.target.closest ? e.target.closest('.pvz-real') : null;
       const hostNode = e.target.closest ? e.target.closest('[data-pv-id]') : null;
-      if (selectedComponentId && realRoot && hostNode && hostNode.contains(e.target)
-        && e.target.children && e.target.children.length === 0
-        && e.target.tagName !== 'IMG' && e.target.textContent && e.target.textContent.trim().length > 0) {
+      if (selectedComponentId && realRoot && hostNode && hostNode.contains(e.target)) {
         const path = [];
         let cur = e.target;
         while (cur && cur !== realRoot) {
@@ -1018,7 +1057,12 @@
           path.unshift(Array.prototype.indexOf.call(p.children, cur));
           cur = p;
         }
-        if (path.length > 0) textCtx = { componentId: hostNode.dataset.pvId, path: path, text: e.target.textContent.trim() };
+        if (e.target.tagName === 'IMG') {
+          if (path.length > 0) imageCtx = { componentId: hostNode.dataset.pvId, path: path, src: e.target.getAttribute('src') || '' };
+        } else if (e.target.children && e.target.children.length === 0
+          && e.target.textContent && e.target.textContent.trim().length > 0) {
+          if (path.length > 0) textCtx = { componentId: hostNode.dataset.pvId, path: path, text: e.target.textContent.trim() };
+        }
       }
       renderCurrent();
     });
@@ -1037,6 +1081,8 @@
     // É22 — contexte d'édition texte : composant + chemin dans le HTML réel
     // + texte capturé au clic. État d'interaction UI, jamais du state.
     let textCtx = null;
+    // É23 — contexte d'édition image : composant + chemin + src courant.
+    let imageCtx = null;
 
     el('canvas').addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
