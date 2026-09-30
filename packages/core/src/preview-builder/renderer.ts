@@ -17,7 +17,7 @@
  * PreviewRenderModel → DOM (mapping trivial, sans logique métier).
  */
 
-import { BUILD_STAGES, type PresentationVariant } from './engine.js';
+import { BUILD_STAGES, type ComponentSize, type PresentationVariant } from './engine.js';
 import type { DragIntent } from './editing.js';
 import type { AnyStage, BuildStage, PreviewBuildState } from './engine.js';
 import type { ComponentState } from './engine.js';
@@ -46,6 +46,8 @@ export interface RenderNode {
    * en attribut/classes et le CSS dérive la présentation. Absent = default.
    */
   variant?: PresentationVariant | undefined;
+  /** ÉTAPE 21 — dimensions éditées (dérivées du state). Absent = naturel. */
+  size?: ComponentSize | undefined;
   /** ÉTAPE 05 — données de démonstration transportées telles quelles. */
   metadata?: Record<string, unknown>;
 }
@@ -249,6 +251,8 @@ export interface InspectorModel {
   hasRealHtml: boolean;
   /** ÉTAPE 17 — variant de présentation courant ('default' en l'absence). */
   variant: PresentationVariant;
+  /** ÉTAPE 21 — dimensions éditées (absent = naturelles du layout). */
+  size?: ComponentSize | undefined;
   error?: string | undefined;
   metadata?: Record<string, unknown>;
 }
@@ -276,6 +280,7 @@ export function buildInspector(
     children,
     hasRealHtml,
     variant: component.variant ?? 'default',
+    ...(component.size !== undefined ? { size: component.size } : {}),
     ...(component.error !== undefined ? { error: component.error } : {}),
     ...(component.metadata !== undefined ? { metadata: component.metadata } : {})
   };
@@ -344,6 +349,7 @@ function buildNode(
     isBuildFocus: focusId !== undefined && component.id === focusId,
     isUserSelected: selectedId != null && component.id === selectedId,
     ...(component.variant !== undefined ? { variant: component.variant } : {}),
+    ...(component.size !== undefined ? { size: component.size } : {}),
     ...(component.metadata !== undefined ? { metadata: component.metadata } : {})
   };
 }

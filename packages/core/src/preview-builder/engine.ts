@@ -46,6 +46,20 @@ export type ComponentStatus = 'pending' | 'building' | 'completed' | 'error';
 export const PRESENTATION_VARIANTS = ['default', 'compact', 'featured', 'wide'] as const;
 export type PresentationVariant = (typeof PRESENTATION_VARIANTS)[number];
 
+/** ÉTAPE 21 — dimensions éditées d'un composant (strictement additif). */
+export interface ComponentSize {
+  width: number;
+  height: number;
+}
+
+/** ÉTAPE 21 — bornes explicites du resize (px). */
+export const RESIZE_BOUNDS = {
+  minWidth: 80,
+  maxWidth: 1200,
+  minHeight: 48,
+  maxHeight: 1200
+} as const;
+
 export interface ComponentState {
   id: string;
   type: string;
@@ -66,6 +80,12 @@ export interface ComponentState {
    * une nouvelle construction repart sans variant (aucune fuite).
    */
   variant?: PresentationVariant | undefined;
+  /**
+   * ÉTAPE 21 — dimensions éditées (px, bornées par RESIZE_BOUNDS).
+   * Absent = dimensions naturelles du layout. Préservé par les handlers ;
+   * une nouvelle construction repart sans taille (aucune fuite).
+   */
+  size?: ComponentSize | undefined;
 }
 
 /** Événements de construction consommés par le moteur. */

@@ -398,6 +398,14 @@
     #inspMoveApply:hover { filter: brightness(1.12); }
     #inspMoveMsg { flex-basis: 100%; font-size: 9px; color: #fb7185; text-align: right; }
 
+    /* ===== É21 — POIGNÉES DE RESIZE (composant sélectionné uniquement) ===== */
+    .pv-resize-handle { position: absolute; z-index: 9; background: #22d3ee; border: 1px solid #0e7490; box-shadow: 0 1px 6px rgba(8,145,178,.5); }
+    .pv-rh-se { right: -7px; bottom: -7px; width: 13px; height: 13px; border-radius: 4px; cursor: nwse-resize; }
+    .pv-rh-e { right: -5px; top: 50%; width: 8px; height: 30px; margin-top: -15px; border-radius: 4px; cursor: ew-resize; }
+    .pv-rh-s { left: 50%; bottom: -5px; width: 30px; height: 8px; margin-left: -15px; border-radius: 4px; cursor: ns-resize; }
+    body.pv-resizing { cursor: nwse-resize !important; user-select: none; }
+    body.pv-resizing .pv-node { cursor: inherit; }
+
     /* STATUSBAR */
     .statusbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 20px; border-top: 1px solid #1a2238; background: #0a0e1c; font-size: 12px; color: #94a3b8; }
     .statusbar .err { color: #fb7185; }
@@ -474,9 +482,9 @@
   </div>
 
   <script type="module">
-    import { applyBuildEvent, createPreviewBuildState, BUILD_STAGES, PRESENTATION_VARIANTS } from '/preview-builder/engine.js';
+    import { applyBuildEvent, createPreviewBuildState, BUILD_STAGES, PRESENTATION_VARIANTS, RESIZE_BOUNDS } from '/preview-builder/engine.js';
     import { renderPreview, buildTimeline, shouldRefreshNode, previewNodeId, resolvePreviewTarget, buildInspector, resolveDropTarget } from '/preview-builder/renderer.js';
-    import { updateComponentLabel, updateComponentVariant, moveComponent, computeDropTarget, applyDragIntent } from '/preview-builder/editing.js';
+    import { updateComponentLabel, updateComponentVariant, moveComponent, computeDropTarget, applyDragIntent, resizeComponent } from '/preview-builder/editing.js';
     import { layoutTree } from '/preview-builder/layout.js';
     import { renderComponentVisual } from '/preview-builder/visuals.js';
     import { demoBuildScript, scriptToEvents } from '/preview-builder/mocks.js';
@@ -605,6 +613,16 @@
       // contenu, aucun rebuild) — le CSS dérive la présentation de l'attribut.
       const variant = c.variant || 'default';
       if (nodeEl.dataset.pvVariant !== variant) nodeEl.dataset.pvVariant = variant;
+      // É21 — dimensions éditées : style inline seul (aucun contenu réécrit)
+      const size = c.size;
+      if (size) {
+        nodeEl.style.width = size.width + 'px';
+        nodeEl.style.height = size.height + 'px';
+      } else if (nodeEl.dataset.resized === '1') {
+        nodeEl.style.width = '';
+        nodeEl.style.height = '';
+      }
+      nodeEl.dataset.resized = size ? '1' : '';
       // Wrapper de composition des enfants (kind dérivé du state)
       let wrap = nodeEl.querySelector(':scope > .pv-children');
       const kind = ln.layout.kind;
@@ -702,11 +720,21 @@
         n.classList.remove('selected');
         n.removeAttribute('data-selected-label');
       });
+      // É21 — les poignées de resize sont retirées à chaque rendu puis
+      // recréées sur le composant sélectionné (jamais accumulées).
+      document.querySelectorAll('.pv-resize-handle').forEach((h) => h.remove());
       if (model.selectedId) {
         const selEl = canvasEl.querySelector('[data-pv-id="' + model.selectedId + '"]');
         if (selEl) {
           selEl.classList.add('selected');
           selEl.setAttribute('data-selected-label', canonicalize(model.selectedLabel || model.selectedId));
+          // É21 — poignées de resize : uniquement sur le composant sélectionné
+          ['e', 's', 'se'].forEach((dir) => {
+            const handle = document.createElement('div');
+            handle.className = 'pv-resize-handle pv-rh-' + dir;
+            handle.dataset.dir = dir;
+            selEl.appendChild(handle);
+          });
         }
       }
 
@@ -769,7 +797,8 @@
         row('Parent', inspector.parentId ? canonicalize(inspector.parentId) : '—'),
         row('Status', '<span class="insp-status ' + inspector.status + '">' + canonicalize(inspector.status) + '</span>'),
         row('Étape', canonicalize(inspector.stage)),
-        row('Enfants', inspector.children.length ? inspector.children.map(canonicalize).join(', ') : '—')
+        row('Enfants', inspector.children.length ? inspector.children.map(canonicalize).join(', ') : '—'),
+        row('Dimensions', inspector.size ? Math.round(inspector.size.width) + ' × ' + Math.round(inspector.size.height) + ' px' : '—')
       ];
       // É16 — Apply : l'unique action d'édition du label (label uniquement)
       rows.splice(1, 0, '<div class="insp-editrow"><button id="inspApplyLabel" title="Appliquer le label au composant sélectionné">APPLY</button><span id="inspLabelMsg"></span></div>');
@@ -1031,6 +1060,69 @@
         indicator.style.width = '3px';
       }
     }
+
+    /* ===== ÉTAPE 21 — RESIZE INTERACTIF (pointer events, poignées) =====
+       Poignées e/s/se affichées UNIQUEMENT sur le composant sélectionné.
+       Écouteur en CAPTURE + stopPropagation : le pointerdown d'une poignée
+       n'atteint JAMAIS le DnD É20. Pendant le resize : aperçu visuel LOCAL
+       (style inline du nœud) — aucune mutation du state, aucun déplacement
+       DOM. Au pointerup : resizeComponent() → nouveau state →
+       renderCurrent(). pointercancel : nettoyage + restauration du state. */
+    let resizeCtx = null;
+
+    document.addEventListener('pointerdown', (e) => {
+      const handle = e.target.closest ? e.target.closest('.pv-resize-handle') : null;
+      if (!handle) return;
+      e.stopPropagation();
+      e.preventDefault();
+      const componentId = resolvePreviewTarget(handle);
+      if (!componentId) return;
+      const nodeEl = el('canvas').querySelector('[data-pv-id="' + componentId + '"]');
+      if (!nodeEl) return;
+      const rect = nodeEl.getBoundingClientRect();
+      resizeCtx = {
+        componentId: componentId,
+        mode: handle.dataset.dir,
+        startX: e.clientX,
+        startY: e.clientY,
+        baseW: rect.width,
+        baseH: rect.height,
+        nodeEl: nodeEl
+      };
+      document.body.classList.add('pv-resizing');
+    }, true);
+
+    document.addEventListener('pointermove', (e) => {
+      if (!resizeCtx) return;
+      // Aperçu visuel LOCAL : style inline du nœud — le state reste intact.
+      const clamped = (v, min, max) => Math.min(max, Math.max(min, v));
+      const w = clamped(Math.round(resizeCtx.baseW + (resizeCtx.mode !== 's' ? e.clientX - resizeCtx.startX : 0)), RESIZE_BOUNDS.minWidth, RESIZE_BOUNDS.maxWidth);
+      const h = clamped(Math.round(resizeCtx.baseH + (resizeCtx.mode !== 'e' ? e.clientY - resizeCtx.startY : 0)), RESIZE_BOUNDS.minHeight, RESIZE_BOUNDS.maxHeight);
+      resizeCtx.previewW = w;
+      resizeCtx.previewH = h;
+      resizeCtx.nodeEl.style.width = w + 'px';
+      resizeCtx.nodeEl.style.height = h + 'px';
+    });
+
+    document.addEventListener('pointerup', (e) => {
+      if (!resizeCtx) return;
+      const ctx = resizeCtx;
+      resizeCtx = null;
+      document.body.classList.remove('pv-resizing');
+      const clamped = (v, min, max) => Math.min(max, Math.max(min, v));
+      const w = clamped(Math.round(ctx.baseW + (ctx.mode !== 's' ? e.clientX - ctx.startX : 0)), RESIZE_BOUNDS.minWidth, RESIZE_BOUNDS.maxWidth);
+      const h = clamped(Math.round(ctx.baseH + (ctx.mode !== 'e' ? e.clientY - ctx.startY : 0)), RESIZE_BOUNDS.minHeight, RESIZE_BOUNDS.maxHeight);
+      const result = resizeComponent(state, ctx.componentId, w, h);
+      if (result.applied) state = result.state; // SEUL changement : au pointerup
+      renderCurrent(); // applique la taille du state OU restaure l'ancienne
+    });
+
+    document.addEventListener('pointercancel', () => {
+      if (!resizeCtx) return;
+      resizeCtx = null;
+      document.body.classList.remove('pv-resizing');
+      renderCurrent(); // restaure les dimensions du state
+    });
 
     // ÉTAPE 08 — DEUX SOURCES interchangeables, le moteur ne voit que des
     // PreviewBuildEvents (BuildEventSource, spec §problème 2) :

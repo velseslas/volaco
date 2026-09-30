@@ -17,6 +17,7 @@
 
 import {
   PRESENTATION_VARIANTS,
+  RESIZE_BOUNDS,
   type ComponentState,
   type PresentationVariant,
   type PreviewBuildState
@@ -270,4 +271,46 @@ export function applyDragIntent(state: PreviewBuildState, intent: DragIntent): M
     return { state, applied: false, reason: 'invalid-target' };
   }
   return moveComponent(state, intent.componentId, target.parentId, target.index);
+}
+
+/* =====================================================================
+ * ÉTAPE 21 — resizeComponent : dimensions éditées (présentation seule).
+ *
+ * Commande pure, immuable, mêmes garanties que les autres : le composant
+ * modifié ne voit QUE size changer — id, type, label É16, variant É17,
+ * parentId, order, statut, stage et metadata.html intacts ; les autres
+ * composants gardent leurs références. Dimensions non finies → refus ;
+ * dimensions bornées par RESIZE_BOUNDS (clamp explicite).
+ * ===================================================================== */
+
+export interface ResizeComponentResult {
+  /** Nouvel état (ou la MÊME référence si rien n'a changé). */
+  state: PreviewBuildState;
+  /** Vrai uniquement quand un nouveau state a été produit. */
+  applied: boolean;
+  reason?: 'unknown-component' | 'invalid-dimensions' | 'unchanged' | undefined;
+}
+
+export function resizeComponent(
+  state: PreviewBuildState,
+  componentId: string,
+  width: number,
+  height: number
+): ResizeComponentResult {
+  if (!Number.isFinite(width) || !Number.isFinite(height)) {
+    return { state, applied: false, reason: 'invalid-dimensions' };
+  }
+  const component = state.components.get(componentId);
+  if (!component) {
+    return { state, applied: false, reason: 'unknown-component' };
+  }
+  const w = Math.min(RESIZE_BOUNDS.maxWidth, Math.max(RESIZE_BOUNDS.minWidth, Math.round(width)));
+  const h = Math.min(RESIZE_BOUNDS.maxHeight, Math.max(RESIZE_BOUNDS.minHeight, Math.round(height)));
+  if (component.size && component.size.width === w && component.size.height === h) {
+    return { state, applied: false, reason: 'unchanged' };
+  }
+  const updated: ComponentState = { ...component, size: { width: w, height: h } };
+  const components = new Map(state.components);
+  components.set(componentId, updated);
+  return { state: { ...state, components }, applied: true };
 }
