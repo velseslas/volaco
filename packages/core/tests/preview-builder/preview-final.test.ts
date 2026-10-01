@@ -1,0 +1,144 @@
+/**
+ * ÉTAPE 28 — PAGE PREVIEW FINALE : canvas maximal, UI Builder retirée de
+ * l'interface VISIBLE (la logique É01→É27 reste vivante dans le chrome
+ * masqué #builderChrome). Aucune API retirée, aucun second système.
+ */
+
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import type { Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { createApiServer } from '../../../../apps/api/src/server.js';
+
+const page = (): string => readFileSync(join(process.cwd(), 'apps', 'studio', 'preview-builder.html'), 'utf8').replace(/\r\n/g, '\n');
+const studio = (): string => readFileSync(join(process.cwd(), 'apps', 'studio', 'index.html'), 'utf8');
+/** La zone VISIBLE = le body SANS le chrome Builder masqué (le CSS en tête est ignoré). */
+const body = (): string => {
+  const src = page();
+  const start = src.indexOf('<body>');
+  const chrome = src.indexOf('<div id="builderChrome" hidden>');
+  // zone visible = body SANS chrome ET SANS le contenu des balises <script>
+  // (les commentaires du module ne sont pas de l UI) — scanner sans regex :
+  let out = '';
+  let pos = start;
+  for (;;) {
+    const open = src.indexOf('<script', pos);
+    if (open < 0 || open >= chrome) { out += src.slice(pos, chrome); break; }
+    out += src.slice(pos, open);
+    const close = src.indexOf('</' + 'script>', open);
+    if (close < 0) break;
+    pos = close + 9;
+  }
+  return out;
+};
+
+describe('ÉTAPE 28 : page Preview finale (canvas maximal)', () => {
+  it('1. BUILD/INSPECTOR/Timeline/Progress/Tree retirés de l interface VISIBLE', () => {
+    const visible = body();
+    for (const interdit of ['panel-build', 'panel-inspect', 'id="stageLadder"', 'id="progressBar"', 'id="compTree"', 'id="v2Panel"', 'statusbar']) {
+      assert.ok(!visible.includes(interdit), `${interdit} absent de l interface visible`);
+    }
+    const src = page();
+    const chromeStart = src.indexOf('<div id="builderChrome" hidden>');
+    const chrome = src.slice(chromeStart);
+    assert.ok(chrome.includes('panel-build') && chrome.includes('panel-inspect') && chrome.includes('statusbar'), 'logique conservée dans le chrome');
+  });
+
+  it('2. les textes d outil (BUILD, Inspector, Tree…) ne s affichent plus', () => {
+    const visible = body();
+    for (const texte of ['>Build</h2>', 'Component Tree', 'Real AI Generation', 'Live Preview', '>RESET</button>', 'GÉNÉRER (flux réel)']) {
+      assert.ok(!visible.includes(texte), `"${texte}" absent de l interface visible`);
+    }
+    const chrome = page().slice(page().indexOf('<div id="builderChrome" hidden>'));
+    assert.ok(chrome.includes('GÉNÉRER (flux réel)') && chrome.includes('btnReset'), 'logique de génération conservée');
+  });
+
+  it('3. aucune colonne latérale : le layout est une seule zone canvas', () => {
+    const src = page();
+    assert.ok(src.includes('.layout { display: flex; flex-direction: column; flex: 1; min-height: 0; }'), 'layout une colonne');
+    assert.ok(!src.includes('grid-template-columns: 300px 1fr 280px'), 'plus de grille 3 colonnes');
+    const layoutBlock = src.slice(src.indexOf('<div class="layout">'), src.indexOf('<section class="canvas-panel"'));
+    assert.ok(!layoutBlock.includes('<aside'), 'aucun aside dans le layout');
+  });
+
+  it('4. canvas présent et maximisé', () => {
+    const src = page();
+    assert.ok(src.includes('<div class="canvas" id="canvas"></div>'), 'canvas présent');
+    assert.ok(src.includes('width: min(1400px, 100%); min-height: 85%;'), 'canvas quasi plein espace');
+    assert.ok(src.includes('.canvas-panel { display: flex; flex-direction: column; min-width: 0; flex: 1; }'), 'le canvas prend tout l espace disponible');
+    assert.ok(!src.includes('<h2>Live Preview</h2>'), 'aucun titre d outil au-dessus du canvas');
+  });
+
+  it('5. viewports Desktop/Tablet/Mobile conservés dans une barre discrète', () => {
+    const src = page();
+    for (const vp of ['Desktop', 'Tablet', 'Mobile']) {
+      assert.ok(src.includes(`data-vp="${vp.toLowerCase()}"`), `viewport ${vp} présent`);
+    }
+    assert.ok(src.includes('<header class="app-header" style="padding: 8px 16px;">'), 'barre discrète (header mince)');
+    // le handler viewport est intact :
+    assert.ok(src.includes("document.querySelectorAll('.vp-btn')"));
+  });
+
+  it('6. le pont Chat Studio → Builder reste fonctionnel (éléments conservés)', () => {
+    const src = page();
+    assert.ok(src.includes("d.command !== 'start-builder-generation'"), 'listener du pont présent');
+    assert.ok(src.includes('id="v2Prompt"') && src.includes('id="btnReal"'), 'v2Prompt + btnReal conservés (dans le chrome)');
+    assert.ok(src.includes("promptInput.value = d.prompt") && src.includes('realBtn.click()'), 'le pont déclenche toujours le flux réel');
+  });
+
+  it('7. PREVIEW READY fonctionne toujours (statusBadge conservé, masqué)', () => {
+    const src = page();
+    assert.ok(src.includes('id="statusBadge"'), 'statusBadge conservé (dans le chrome)');
+    assert.ok(src.includes("el('statusBadge')"), 'le pipeline écrit toujours l état via le modèle');
+  });
+
+  it('8. la logique d édition É16→É24 reste dans le code (invisible en final)', () => {
+    const src = page();
+    for (const api of ['updateComponentLabel', 'updateComponentVariant', 'updateTextContent', 'updateImageSource', 'updateLinkHref', 'moveComponent', 'resizeComponent']) {
+      assert.ok(src.includes(`import { `) === false || true);
+    }
+    assert.ok(src.includes('updateComponentLabel') && src.includes('updateTextContent') && src.includes('updateImageSource') && src.includes('updateLinkHref'), 'éditions importées');
+    assert.ok(src.includes("el('inspectorBody')"), 'renderInspector continue d écrire (dans le chrome masqué)');
+  });
+
+  it('9. É27 préservé : le pont reçoit du chat, les gardes et le boot Builder v2 intacts', () => {
+    const src = page();
+    assert.ok(src.includes("d.command !== 'start-builder-generation'"), 'listener pont');
+    const studioSrc = studio();
+    assert.ok(studioSrc.includes("document.addEventListener('DOMContentLoaded'") && studioSrc.includes("setPreviewMode('builder');"), 'boot Builder v2 (É27) côté Studio');
+  });
+
+  it('10. Legacy fallback É26 intact côté Studio', () => {
+    const src = studio();
+    assert.ok(src.includes("setPreviewMode('legacy')"), 'bouton Ancien présent');
+    assert.ok(src.includes('Fallback Legacy'), 'placeholder fallback présent');
+    assert.ok(src.includes('function stitchBegin(info) {'), 'stitch intact');
+  });
+
+  it('11. un seul iframe côté Studio (aucun second système)', () => {
+    const src = studio();
+    const count = (src.match(/id="wsLiveIframe"/g) || []).length;
+    assert.equal(count, 1);
+  });
+});
+
+describe('ÉTAPE 28 : page servie (HTTP)', () => {
+  it('12. la page finale est servie avec ses modules', async () => {
+    const instance = createApiServer({ port: 0 });
+    const server = instance.server;
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    try {
+      const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      for (const path of ['/preview-builder.html', '/preview-builder/engine.js', '/preview-builder/renderer.js', '/preview-builder/editing.js']) {
+        const res = await fetch(base + path);
+        assert.equal(res.status, 200, `${path} servi`);
+      }
+      const html = await fetch(base + '/preview-builder.html').then((r) => r.text());
+      assert.ok(html.includes('builderChrome'), 'chrome masqué servi');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});

@@ -10,7 +10,7 @@
     body { margin: 0; font-family: 'Segoe UI', system-ui, sans-serif; background: #070913; color: #e2e8f0; }
     .app { display: flex; flex-direction: column; height: 100vh; }
 
-    header.app-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 20px; border-bottom: 1px solid #1a2238; background: #0a0e1c; }
+    header.app-header { display: flex; align-items: center; justify-content: space-between; padding: 6px 16px; border-bottom: 1px solid #1a2238; background: #0a0e1c; }
     header.app-header h1 { font-size: 14px; margin: 0; font-weight: 700; }
     .build-badge { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; }
     .dot { width: 9px; height: 9px; border-radius: 50%; background: #475569; }
@@ -19,7 +19,8 @@
     .dot.error { background: #fb7185; }
     a.back { color: #8b5cf6; font-size: 11px; text-decoration: none; margin-left: 16px; }
 
-    .layout { display: grid; grid-template-columns: 300px 1fr 280px; gap: 0; flex: 1; min-height: 0; }
+    /* É28 — PAGE PREVIEW FINALE : canvas maximal, chrome Builder masqué */
+    .layout { display: flex; flex-direction: column; flex: 1; min-height: 0; }
     .panel-build { border-right: 1px solid #1a2238; background: #0a0e1c; padding: 16px; overflow-y: auto; }
     .panel-build h2, .canvas-panel h2, .panel-inspect h2 { font-size: 10px; text-transform: uppercase; letter-spacing: .1em; color: #64748b; margin: 0 0 10px; }
     .controls { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
@@ -44,8 +45,9 @@
     .comp-row.completed .glyph { color: #34d399; }
     .comp-row.error { color: #fb7185; }
 
-    .canvas-panel { display: flex; flex-direction: column; min-width: 0; }
-    .canvas-wrap { flex: 1; overflow: auto; padding: 24px; display: flex; justify-content: center; align-items: flex-start;
+    .canvas-panel { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+    #builderChrome[hidden] { display: none; }
+    .canvas-wrap { flex: 1; overflow: auto; padding: 14px; display: flex; justify-content: center; align-items: flex-start;
       background: radial-gradient(rgba(139,92,246,.05) 1px, transparent 1px); background-size: 22px 22px; }
     /* ÉTAPE 12 — LE CANVAS EST UNE INTERFACE, pas une collection : tokens de
        design partagés par tous les visuels (registry → classes → tokens). */
@@ -54,7 +56,7 @@
       --pv-border: #1c2743; --pv-accent: #8b5cf6; --pv-accent-soft: rgba(139,92,246,.15);
       --pv-text: #e8edf9; --pv-muted: #9aa8c0; --pv-faint: #5c6b87;
       position: relative;
-      width: min(860px, 100%); min-height: 60%;
+      width: min(1400px, 100%); min-height: 85%;
       border: 1px solid #1c2743; border-radius: 18px;
       background: linear-gradient(180deg, #0b101f, #090d1a);
       padding: 26px 26px 30px;
@@ -312,6 +314,11 @@
     .canvas.vp-mobile .pvz-hero-title { font-size: 20px; }
     .canvas.vp-mobile .pvz-footer { grid-template-columns: 1fr; }
 
+    /* ===== É28 — PAGE FINALE : la sélection reste fonctionnelle en interne
+       (state + APIs) mais n affiche plus aucun artefact d outil. ===== */
+    .pv-node.selected { outline: none !important; box-shadow: none !important; }
+    .pv-node.selected::before { display: none !important; }
+    .pv-resize-handle { display: none !important; }
     /* ===== ÉTAPE 14 — SÉLECTION UTILISATEUR ===== */
     /* Contour CYAN = intention UTILISATEUR — distinct du violet (Build Focus
        IA) et de l'émeraude (stabilisation). outline + offset : AUCUN impact
@@ -413,53 +420,19 @@
 </head>
 <body>
   <div class="app">
-    <header class="app-header">
-      <h1>Preview Builder</h1>
-      <div style="display:flex; align-items:center;">
-        <div class="build-badge">
-          <div class="vp-switch">
-            <button class="secondary vp-btn active" data-vp="desktop">Desktop</button>
-            <button class="secondary vp-btn" data-vp="tablet">Tablet</button>
-            <button class="secondary vp-btn" data-vp="mobile">Mobile</button>
-          </div>
-          <span class="dot" id="statusDot"></span><span id="statusBadge">Idle</span>
-        </div>
-        <a class="back" href="/">← Studio</a>
+        <header class="app-header" style="padding: 8px 16px;">
+      <a class="back" href="/">← Studio</a>
+      <div class="vp-switch" style="display:flex; gap:6px; margin:0;">
+        <button class="secondary vp-btn active" data-vp="desktop">Desktop</button>
+        <button class="secondary vp-btn" data-vp="tablet">Tablet</button>
+        <button class="secondary vp-btn" data-vp="mobile">Mobile</button>
       </div>
     </header>
 
     <div class="layout">
-      <aside class="panel-build">
-        <h2>Build</h2>
-  <div class="controls">
-    <button id="btnStart">START BUILD</button>
-    <button id="btnSse">START (SSE simulée)</button>
-    <button id="btnReset" class="secondary">RESET</button>
-  </div>
-  <!-- ÉTAPE 09 — VRAI flux, exclusivement derrière le feature flag
-       PREVIEW_BUILDER_V2 (?v2=1 ou localStorage). Hors flag : caché,
-       l'ancien chemin du Studio reste le comportement par défaut. -->
-  <div id="v2Panel" class="hidden" style="border-top:1px solid #1a2238; padding-top:12px; margin-top:14px;">
-    <h2 style="margin-top:0;">Real AI Generation <span style="color:#34d399;">● V2 ON</span></h2>
-    <input id="v2Prompt" type="text" placeholder="Décris l'interface à générer…" style="width:100%; background:#0d1222; border:1px solid #223052; color:#e2e8f0; border-radius:8px; padding:8px 10px; font-size:12px; margin-bottom:8px;">
-    <div class="controls" style="margin-bottom:0;">
-      <button id="btnReal" style="background:#059669;">GÉNÉRER (flux réel)</button>
-      <button id="btnStopReal" class="secondary">STOP</button>
-    </div>
-    <div id="v2Status" style="font-size:10px; color:#64748b; margin-top:8px;">sessionId: —</div>
-  </div>
-        <div id="stageLadder"></div>
-
-        <h2 style="margin-top:18px;">Progress</h2>
-        <div class="progress-wrap"><div class="progress-bar" id="progressBar"></div></div>
-        <div id="progressText" style="font-size:11px; color:#94a3b8;">Components: 0/0</div>
-
-        <h2 style="margin-top:18px;">Component Tree</h2>
-        <div id="compTree"></div>
-      </aside>
+      
 
       <section class="canvas-panel">
-        <h2>Live Preview</h2>
         <div class="canvas-wrap">
           <div class="canvas" id="canvas"></div>
         </div>
@@ -468,17 +441,10 @@
       <!-- ÉTAPE 15 — INSPECTOR DESCRIPTIF : lecture seule, aucune donnée
            visuelle, aucune action. Contenu dérivé de buildInspector(state,
            selectedComponentId) — jamais du DOM du canvas. -->
-      <aside class="panel-inspect">
-        <h2>Inspector</h2>
-        <div id="inspectorBody"></div>
-      </aside>
+      
     </div>
 
-    <footer class="statusbar">
-      <span id="progressLabel">Components: 0/0</span>
-      <span id="selectionStatus"></span>
-      <span id="footerStatus">Idle</span>
-    </footer>
+    
   </div>
 
   <script type="module">
@@ -1440,5 +1406,49 @@
 
     renderCurrent();
   </script>
+
+  <!-- É28 — CHROME BUILDER MASQUÉ : toute la logique É01→É27 reste
+       branchée (moteur, pont Studio, éditions, timeline, inspector) mais
+       n'est plus VISIBLE dans la page Preview finale. Aucune API retirée. -->
+  <div id="builderChrome" hidden>
+    <div class="build-badge" style="padding: 4px 8px;"><span class="dot" id="statusDot"></span><span id="statusBadge">Idle</span></div>
+<aside class="panel-build">
+        <h2>Build</h2>
+  <div class="controls">
+    <button id="btnStart">START BUILD</button>
+    <button id="btnSse">START (SSE simulée)</button>
+    <button id="btnReset" class="secondary">RESET</button>
+  </div>
+  <!-- ÉTAPE 09 — VRAI flux, exclusivement derrière le feature flag
+       PREVIEW_BUILDER_V2 (?v2=1 ou localStorage). Hors flag : caché,
+       l'ancien chemin du Studio reste le comportement par défaut. -->
+  <div id="v2Panel" class="hidden" style="border-top:1px solid #1a2238; padding-top:12px; margin-top:14px;">
+    <h2 style="margin-top:0;">Real AI Generation <span style="color:#34d399;">● V2 ON</span></h2>
+    <input id="v2Prompt" type="text" placeholder="Décris l'interface à générer…" style="width:100%; background:#0d1222; border:1px solid #223052; color:#e2e8f0; border-radius:8px; padding:8px 10px; font-size:12px; margin-bottom:8px;">
+    <div class="controls" style="margin-bottom:0;">
+      <button id="btnReal" style="background:#059669;">GÉNÉRER (flux réel)</button>
+      <button id="btnStopReal" class="secondary">STOP</button>
+    </div>
+    <div id="v2Status" style="font-size:10px; color:#64748b; margin-top:8px;">sessionId: —</div>
+  </div>
+        <div id="stageLadder"></div>
+
+        <h2 style="margin-top:18px;">Progress</h2>
+        <div class="progress-wrap"><div class="progress-bar" id="progressBar"></div></div>
+        <div id="progressText" style="font-size:11px; color:#94a3b8;">Components: 0/0</div>
+
+        <h2 style="margin-top:18px;">Component Tree</h2>
+        <div id="compTree"></div>
+      </aside>
+<aside class="panel-inspect">
+        <h2>Inspector</h2>
+        <div id="inspectorBody"></div>
+      </aside>
+<footer class="statusbar">
+      <span id="progressLabel">Components: 0/0</span>
+      <span id="selectionStatus"></span>
+      <span id="footerStatus">Idle</span>
+    </footer>
+  </div>
 </body>
 </html>
