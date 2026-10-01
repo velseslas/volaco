@@ -3689,6 +3689,7 @@
         }
 
         function sendCanvasState(state) {
+          if (__builderModeActive()) return; // É28 — aucun écriture legacy dans le Builder principal
           const f = document.getElementById('wsLiveIframe');
           if (f && f.contentWindow) f.contentWindow.postMessage({ source: 'vibecode-studio', command: 'canvas-state', state }, '*');
         }
@@ -3888,6 +3889,7 @@
         // ÉTAPE 6bis — Focus manager (§4 du brief UX) : quand l'IA annonce une
         // section, le preview défile dessus et l'entoure d'un halo lumineux.
         function focusPreviewSection(name, badge) {
+          if (__builderModeActive()) return; // É28 — aucun écriture legacy dans le Builder principal
           const frame = document.getElementById('wsLiveIframe');
           if (frame && frame.contentWindow) {
             frame.contentWindow.postMessage({ source: 'vibecode-studio', command: 'focus-section', name: String(name || ''), badge: badge === true }, '*');
