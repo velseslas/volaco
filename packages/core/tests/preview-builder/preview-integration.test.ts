@@ -77,6 +77,40 @@ describe('ÉTAPE 27 : Builder v2 = Preview principal, Legacy = fallback', () => 
 });
 
 
+describe('ÉTAPE 30 : mode intégré au Studio (canvas plein + resizable)', () => {
+  it('1. détection embedded : la page sait qu elle tourne dans l iframe du Studio', () => {
+    const page = builderPage();
+    assert.ok(page.includes('window.parent && window.parent !== window'), 'détection iframe parent');
+    assert.ok(page.includes("classList.add('embedded')"), 'classe html.embedded posée');
+  });
+
+  it('2. mode embedded : canvas PLEIN espace (100 % de l iframe, sans marge outil)', () => {
+    const page = builderPage();
+    assert.ok(page.includes('html.embedded .canvas { width: 100%;'), 'canvas 100 % en embedded');
+    assert.ok(page.includes('min-height: calc(100vh - 96px);'), 'hauteur maximisée');
+    assert.ok(page.includes('html.embedded .canvas-wrap { padding: 10px 14px 14px; }'), 'marges réduites');
+  });
+
+  it('3. mode embedded : le retour « ← Studio » est masqué (le chat est le point d entrée)', () => {
+    const page = builderPage();
+    assert.ok(page.includes('html.embedded .back { display: none !important; }'), 'retour Studio masqué en embedded');
+  });
+
+  it('4. Studio : la toolbar legacy de l aperçu est masquée en mode Builder', () => {
+    const src = studio();
+    assert.ok(src.includes("document.body.classList.toggle('pv-builder-active', mode === 'builder');"), 'classe posée par setPreviewMode');
+    assert.ok(src.includes('body.pv-builder-active #topPreviewToolbar { display: none !important; }'), 'toolbar legacy masquée');
+  });
+
+  it('5. resizable : le panelResizer natif du Studio est toujours branché', () => {
+    const src = studio();
+    assert.ok(src.includes("const resizerEl = document.getElementById('panelResizer');"), 'le resizer existe');
+    assert.ok(src.includes("resizerEl.addEventListener('mousedown'"), 'le drag du resizer est branché');
+    assert.ok(src.includes("iframeEl.style.pointerEvents = 'none'"), 'l iframe ne capture pas le pointeur pendant le drag');
+  });
+});
+
+
 describe('ÉTAPE 26 : intégration progressive du Preview Builder', () => {
   it('1. l ancien Preview reste accessible et son flux est intact', () => {
     const src = studio();

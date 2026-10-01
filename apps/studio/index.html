@@ -199,6 +199,9 @@
     }
 
     /* Barre d'outils d'aperçu dans le header */
+    /* É30 — mode Builder actif : la toolbar legacy de l aperçu est masquée */
+    body.pv-builder-active #topPreviewToolbar { display: none !important; }
+
     body.studio-light-mode #topPreviewToolbar {
       background-color: #f8fafc !important;
       border-color: #cbd5e1 !important;
@@ -6105,6 +6108,9 @@ npx serve .
             frame.srcdoc = legacyHtmlBackup || '<!DOCTYPE html><html><body style="margin:0;font-family:system-ui,sans-serif;background:#0b0f1a;color:#64748b;display:flex;align-items:center;justify-content:center;min-height:100vh"><div style="text-align:center"><p style="font-size:13px;margin:0 0 8px;font-weight:600">Fallback Legacy</p><p style="font-size:11px;opacity:.75;margin:0;line-height:1.6">Lancez une génération depuis le chat,<br>puis revenez en Legacy pour voir le rendu.</p></div></body></html>';
           }
           window.__previewMode = mode;
+          // É30 — en mode Builder, les contrôles legacy de la zone preview
+          // (toolbar Ancien) sont masqués : le Builder est seul à l écran.
+          document.body.classList.toggle('pv-builder-active', mode === 'builder');
         }
         window.setPreviewMode = setPreviewMode;
         // É27 — BUILDER V2 = PREVIEW PRINCIPAL : chargé automatiquement à

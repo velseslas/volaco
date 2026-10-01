@@ -19,6 +19,14 @@
     .dot.error { background: #fb7185; }
     a.back { color: #8b5cf6; font-size: 11px; text-decoration: none; margin-left: 16px; }
 
+    /* ===== É30 — MODE INTÉGRÉ AU STUDIO : quand la page est chargée dans
+       l iframe du Studio, le canvas occupe 100 % de l espace et le retour
+       « ← Studio » disparaît (le chat du Studio est le point d entrée). ===== */
+    html.embedded .back { display: none !important; }
+    html.embedded header.app-header { padding: 6px 16px; background: transparent; border-bottom-color: transparent; }
+    html.embedded .canvas-wrap { padding: 10px 14px 14px; }
+    html.embedded .canvas { width: 100%; min-height: calc(100vh - 96px); border-radius: 14px; }
+
     /* É28 — PAGE PREVIEW FINALE : canvas maximal, chrome Builder masqué */
     .layout { display: flex; flex-direction: column; flex: 1; min-height: 0; }
     .panel-build { border-right: 1px solid #1a2238; background: #0a0e1c; padding: 16px; overflow-y: auto; }
@@ -461,6 +469,11 @@
     const H = { 'Content-Type': 'application/json', 'x-tenant-id': 'studio-local', 'x-user-role': 'ENGINEER' };
 
     const el = (id) => document.getElementById(id);
+    // É30 — mode INTÉGRÉ : la page tourne dans l iframe du Studio
+    // (window.parent !== window) → classe html.embedded (canvas plein).
+    if (window.parent && window.parent !== window) {
+      document.documentElement.classList.add('embedded');
+    }
     let state = createPreviewBuildState();
     let lastFocusId = null;
     let timer = null;
