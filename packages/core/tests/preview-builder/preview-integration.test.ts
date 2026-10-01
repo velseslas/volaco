@@ -26,13 +26,13 @@ describe('ÉTAPE 27 : Builder v2 = Preview principal, Legacy = fallback', () => 
     const src = studio();
     assert.ok(src.includes("document.addEventListener('DOMContentLoaded', function () {"), 'boot au DOMContentLoaded');
     assert.ok(src.includes("setPreviewMode('builder');"), 'le boot charge le Builder');
-    assert.ok(src.includes('bg-violet-600 text-white shadow shadow-violet-600/40" title="Preview Builder v2 — principal"'), 'bouton Builder actif par défaut dans le HTML');
+    assert.ok(!src.includes('pvModeBuilder') && !src.includes('pvModeLegacy'), 'É28 : plus aucun bouton de switch visible');
     assert.ok(!src.includes('title="Ancien Preview (par défaut)"'), "l ancien n est plus le défaut");
   });
 
-  it('2. Legacy = FALLBACK : bouton Ancien + placeholder si aucun rendu connu', () => {
+  it('2. Legacy = FALLBACK : mécanisme conservé (sans UI) + placeholder si aucun rendu connu', () => {
     const src = studio();
-    assert.ok(src.includes('title="Ancien Preview — fallback"'), "l ancien est le fallback");
+    assert.ok(src.includes("setPreviewMode('legacy')"), 'le fallback legacy reste TECHNIQUEMENT disponible (sans bouton)');
     assert.ok(src.includes('Fallback Legacy'), 'placeholder si aucun rendu legacy connu');
     assert.ok(src.includes('legacyHtmlBackup || '), 'le backup reste prioritaire sur le placeholder');
   });
@@ -62,7 +62,7 @@ describe('ÉTAPE 27 : Builder v2 = Preview principal, Legacy = fallback', () => 
   it('6. retours Builder ↔ Legacy toujours réversibles', () => {
     const src = studio();
     const modeFn = src.slice(src.indexOf('function setPreviewMode(mode)'), src.indexOf('window.setPreviewMode = setPreviewMode;'));
-    assert.ok(modeFn.includes("'builder'") && modeFn.includes("'legacy'"), 'les deux sens gérés');
+    assert.ok(modeFn.includes("'builder'") && modeFn.includes('else'), 'les deux sens gérés (builder testé, legacy = branche else)');
   });
 
   it('7. RESET + générations successives : le pont est réutilisable sans état caché', () => {

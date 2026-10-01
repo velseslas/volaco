@@ -1403,14 +1403,10 @@
         <div id="wsSubPanel-preview" class="flex-1 w-full h-full flex items-center justify-center overflow-hidden relative select-none">
           <!-- Animated Device Frame Wrapper -->
           <div id="previewFrameWrapper" class="w-full h-full rounded-3xl bg-[#090b14] border border-[#151928] overflow-hidden flex flex-col relative shadow-2xl transition-all duration-300 ease-out">
-            <!-- É26 — SWITCH RÉVERSIBLE : Ancien Preview (défaut) ←→ Preview Builder.
-                 Opt-in uniquement : le mode legacy reste le comportement par défaut
-                 et le Builder est chargé TEL QUEL (page autonome É01→É25) dans le
-                 MÊME iframe — aucun double montage, aucune duplication de renderer. -->
-            <div id="previewModeSwitch" class="absolute top-3 right-4 z-40 flex items-center gap-1 bg-[#0c1020]/90 border border-[#1e2642] rounded-full px-1.5 py-1 select-none">
-              <button id="pvModeLegacy" onclick="setPreviewMode('legacy')" class="pv-mode-btn px-2.5 py-0.5 rounded-full text-[10px] font-bold transition text-slate-400 hover:text-white" title="Ancien Preview — fallback">Ancien</button>
-              <button id="pvModeBuilder" onclick="setPreviewMode('builder')" class="pv-mode-btn px-2.5 py-0.5 rounded-full text-[10px] font-bold transition bg-violet-600 text-white shadow shadow-violet-600/40" title="Preview Builder v2 — principal">Builder v2</button>
-            </div>
+            <!-- É28 — le switch Ancien/Builder v2 est retiré de l UI : le Builder
+                 est le Preview principal (auto-chargé au boot). Le fallback
+                 legacy reste TECHNIQUEMENT disponible via setPreviewMode('legacy')
+                 (console), mais sans bouton visible. -->
             <iframe
               id="wsLiveIframe"
               title="Preview Canvas"
@@ -6107,14 +6103,6 @@ npx serve .
             frame.srcdoc = legacyHtmlBackup || '<!DOCTYPE html><html><body style="margin:0;font-family:system-ui,sans-serif;background:#0b0f1a;color:#64748b;display:flex;align-items:center;justify-content:center;min-height:100vh"><div style="text-align:center"><p style="font-size:13px;margin:0 0 8px;font-weight:600">Fallback Legacy</p><p style="font-size:11px;opacity:.75;margin:0;line-height:1.6">Lancez une génération depuis le chat,<br>puis revenez en Legacy pour voir le rendu.</p></div></body></html>';
           }
           window.__previewMode = mode;
-          const on = document.getElementById('pvModeBuilder');
-          const off = document.getElementById('pvModeLegacy');
-          if (on && off) {
-            const active = 'bg-violet-600 text-white shadow shadow-violet-600/40';
-            const idle = 'text-slate-400 hover:text-white';
-            on.className = 'pv-mode-btn px-2.5 py-0.5 rounded-full text-[10px] font-bold transition ' + (mode === 'builder' ? active : idle);
-            off.className = 'pv-mode-btn px-2.5 py-0.5 rounded-full text-[10px] font-bold transition ' + (mode === 'legacy' ? active : idle);
-          }
         }
         window.setPreviewMode = setPreviewMode;
         // É27 — BUILDER V2 = PREVIEW PRINCIPAL : chargé automatiquement à
