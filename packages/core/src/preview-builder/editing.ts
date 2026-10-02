@@ -733,3 +733,45 @@ export function updateLinkHref(
   components.set(componentId, updated);
   return { state: { ...state, components }, applied: true };
 }
+
+/* =====================================================================
+ * E42 — restoreComponentHtml : annulation d'une édition (undo).
+ *
+ * Les éditions du Builder (manuelles et IA) sont persistées à chaque
+ * application (É38) : l'annulation doit donc restituer le HTML PRÉCÉDENT du
+ * composant, pas re-jouer une commande inverse. Contrat identique aux autres
+ * commandes : pure, immuable, refus explicites. Le HTML de restauration est
+ * posé TEL QUEL (c'est un état antérieur réellement appliqué, jamais une
+ * entrée utilisateur) — tous les autres composants gardent leurs références.
+ * ===================================================================== */
+
+export interface RestoreHtmlResult {
+  /** Nouvel état (ou la MÊME référence si rien n'a changé). */
+  state: PreviewBuildState;
+  /** Vrai uniquement quand un nouveau state a été produit. */
+  applied: boolean;
+  reason?: 'unknown-component' | 'missing-content' | 'unchanged' | undefined;
+}
+
+export function restoreComponentHtml(
+  state: PreviewBuildState,
+  componentId: string,
+  previousHtml: string
+): RestoreHtmlResult {
+  const component = state.components.get(componentId);
+  if (!component) return { state, applied: false, reason: 'unknown-component' };
+  if (typeof previousHtml !== 'string' || previousHtml.trim().length === 0) {
+    return { state, applied: false, reason: 'missing-content' };
+  }
+  const currentHtml = component.metadata?.html;
+  if (currentHtml === previousHtml) {
+    return { state, applied: false, reason: 'unchanged' };
+  }
+  const updated: ComponentState = {
+    ...component,
+    metadata: { ...component.metadata, html: previousHtml }
+  };
+  const components = new Map(state.components);
+  components.set(componentId, updated);
+  return { state: { ...state, components }, applied: true };
+}

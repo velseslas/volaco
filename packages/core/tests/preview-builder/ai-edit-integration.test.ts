@@ -225,3 +225,39 @@ describe('E41 : reprise de session au chargement du Builder', () => {
     assert.ok(fn.includes('} catch {'), 'échec réseau silencieux (mode démo)');
   });
 });
+
+describe('E42 : annulation des éditions (undo par lots)', () => {
+  it('1. bouton ↩ ANNULER + Ctrl+Z (hors champs de saisie)', () => {
+    const src = appJs();
+    assert.ok(src.includes("getElementById('btnUndo')"), 'bouton branché');
+    const keyBlock = src.slice(src.indexOf("document.addEventListener('keydown'"));
+    assert.ok(keyBlock.includes("e.key === 'z' || e.key === 'Z'"), 'Ctrl+Z écouté');
+    assert.ok(keyBlock.includes("t.tagName === 'INPUT' || t.tagName === 'TEXTAREA'"), 'undo natif conservé dans les champs');
+  });
+
+  it('2. les CINQ chemins d édition poussent un lot d annulation', () => {
+    const src = appJs();
+    assert.ok(src.includes("pushUndoBatch('Édition du lien'"), 'APPLY lien');
+    assert.ok(src.includes("pushUndoBatch('Édition de l image'"), 'APPLY image');
+    assert.ok(src.includes("pushUndoBatch('Édition du texte'"), 'APPLY texte');
+    assert.ok(src.includes("pushUndoBatch('Édition IA du composant', undoSnapshots)"), 'lot IA composant');
+    assert.ok(src.includes("pushUndoBatch('Édition IA de la page', undoPageSnapshots)"), 'lot IA page');
+  });
+
+  it('3. l annulation restitue via la commande PURE et resynchronise le serveur', () => {
+    const src = appJs();
+    const fn = src.slice(src.indexOf('async function undoLastEdit'), src.indexOf('function rebuildCanvasFromHtml'));
+    assert.ok(fn.includes('restoreComponentHtml(state, snap.componentId, snap.html)'), 'commande pure');
+    assert.ok(fn.includes('await persistSection(componentId)'), 'resynchronisation serveur (E38)');
+    assert.ok(fn.includes("'Rien à annuler.'"), 'pile vide → message honnête');
+  });
+
+  it('4. les lots IA captent le HTML antérieur PAR APPEL (un lot unique par action)', () => {
+    const src = appJs();
+    const compFn = src.slice(src.indexOf('async function startAiComponentEdit'), src.indexOf('async function startAiPageEdit'));
+    assert.ok(compFn.includes('undoSnapshots.push({ componentId: componentId, html: prevHtml })'), 'capture par appel');
+    assert.ok(compFn.includes('const prevHtml = previousHtmlOf(componentId);'), 'capture AVANT application');
+    const pageFn = src.slice(src.indexOf('async function startAiPageEdit'), src.indexOf('async function restoreRevision'));
+    assert.ok(pageFn.includes('const prevSectionHtml = previousHtmlOf(sectionId);'), 'capture par section');
+  });
+});

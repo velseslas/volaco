@@ -491,6 +491,9 @@
          rollback serveur réécrit index.html (E40) ET le canvas local est
          reconstruit depuis le HTML restauré. -->
     <div class="controls" style="margin-top:6px;">
+      <!-- E42 — annulation par lots : défait la dernière action ( APPLY
+           manuel ou lot IA entier), resynchronise le serveur. -->
+      <button id="btnUndo" class="secondary" title="Annuler la dernière édition (Ctrl+Z)">↩ ANNULER</button>
       <button id="btnHistory" class="secondary">🕘 HISTORIQUE</button>
     </div>
     <div id="historyPanel" class="hidden" style="margin-top:6px; font-size:11px;">

@@ -1,6 +1,6 @@
     import { applyBuildEvent, createPreviewBuildState, BUILD_STAGES, PRESENTATION_VARIANTS, RESIZE_BOUNDS } from '/preview-builder/engine.js';
     import { renderPreview, buildTimeline, shouldRefreshNode, previewNodeId, resolvePreviewTarget, buildInspector, resolveDropTarget } from '/preview-builder/renderer.js';
-    import { updateComponentLabel, updateComponentVariant, moveComponent, computeDropTarget, applyDragIntent, resizeComponent, updateTextContent, updateImageSource, updateLinkHref, inventoryEditableElements } from '/preview-builder/editing.js';
+    import { updateComponentLabel, updateComponentVariant, moveComponent, computeDropTarget, applyDragIntent, resizeComponent, updateTextContent, updateImageSource, updateLinkHref, inventoryEditableElements, restoreComponentHtml } from '/preview-builder/editing.js';
     import { runAiEditLoop, runAiComponentEditLoop, runAiPageEditLoop } from '/preview-builder/ai-edit.js';
     import { extractSections } from '/preview-builder/section-parse.js';
     import { layoutTree } from '/preview-builder/layout.js';
@@ -553,6 +553,7 @@
           : 'IA indisponible (' + (outcome.detail || outcome.reason) + ')';
         return;
       }
+      const prevAiHtml = previousHtmlOf(ctx.componentId); // E42 — capturé avant application
       const result = kind === 'text' ? updateTextContent(state, ctx.componentId, ctx.path, outcome.value)
         : kind === 'image' ? updateImageSource(state, ctx.componentId, ctx.path, outcome.value)
         : updateLinkHref(state, ctx.componentId, ctx.path, outcome.value);
@@ -560,6 +561,7 @@
         msgEl.textContent = 'Modification refusée: ' + result.reason;
         return;
       }
+      pushUndoBatch('Édition IA', prevAiHtml ? [{ componentId: ctx.componentId, html: prevAiHtml }] : []);
       state = result.state;
       dirtyReal.add(ctx.componentId);
       const persistedAiId = ctx.componentId; // É38 — capturé avant reset
@@ -590,6 +592,7 @@
       aiCompEditBusy = true;
       msgEl.textContent = 'IA en cours…';
       const componentId = selectedComponentId;
+      const undoSnapshots = []; // E42 — un lot unique pour tout le lot IA
       let outcome;
       try {
         outcome = await runAiComponentEditLoop({
@@ -603,10 +606,12 @@
           apply: (call) => {
             const value = call.args.text ?? call.args.src ?? call.args.href;
             const path = call.args.path;
+            const prevHtml = previousHtmlOf(componentId); // E42 — avant application
             const result = call.name === 'set_text' ? updateTextContent(state, componentId, path, String(value))
               : call.name === 'set_image_src' ? updateImageSource(state, componentId, path, String(value))
               : updateLinkHref(state, componentId, path, String(value));
             if (!result.applied) return 'ERREUR: modification refusée (' + (result.reason || 'inconnue') + ')';
+            if (prevHtml !== null) undoSnapshots.push({ componentId: componentId, html: prevHtml });
             state = result.state;
             dirtyReal.add(componentId);
             return 'OK';
@@ -615,6 +620,7 @@
       } finally {
         aiCompEditBusy = false;
       }
+      if (outcome.ok && outcome.appliedCount > 0) pushUndoBatch('Édition IA du composant', undoSnapshots);
       renderCurrent();
       const msgEl2 = el('inspAiCompMsg');
       if (outcome.ok && outcome.appliedCount > 0) persistSection(componentId); // É38 — une révision par lot d'éditions
@@ -636,6 +642,7 @@
         const msgL = el('inspLinkMsg');
         if (!linkCtx) return;
         const linkInput = el('inspLinkInput');
+        const prevLinkHtml = previousHtmlOf(linkCtx.componentId); // E42 — capturé avant application
         const resultLink = updateLinkHref(state, linkCtx.componentId, linkCtx.path, linkInput.value);
         if (!resultLink.applied) {
           if (msgL) msgL.textContent = resultLink.reason === 'empty-href' ? 'Href vide refusé'
@@ -646,6 +653,7 @@
             : 'Href déjà identique';
           return;
         }
+        pushUndoBatch('Édition du lien', prevLinkHtml ? [{ componentId: linkCtx.componentId, html: prevLinkHtml }] : []);
         state = resultLink.state;
         dirtyReal.add(linkCtx.componentId);
         const persistedLinkId = linkCtx.componentId; // É38 — capturé avant reset
@@ -661,6 +669,7 @@
         const msgI = el('inspImageMsg');
         if (!imageCtx) return;
         const imgInput = el('inspImageInput');
+        const prevImgHtml = previousHtmlOf(imageCtx.componentId); // E42 — capturé avant application
         const resultImg = updateImageSource(state, imageCtx.componentId, imageCtx.path, imgInput.value);
         if (!resultImg.applied) {
           if (msgI) msgI.textContent = resultImg.reason === 'empty-src' ? 'Src vide refusé'
@@ -670,6 +679,7 @@
             : 'Src déjà identique';
           return;
         }
+        pushUndoBatch('Édition de l image', prevImgHtml ? [{ componentId: imageCtx.componentId, html: prevImgHtml }] : []);
         state = resultImg.state;
         dirtyReal.add(imageCtx.componentId);
         const persistedImageId = imageCtx.componentId; // É38 — capturé avant reset
@@ -685,6 +695,7 @@
         const msgC = el('inspContentMsg');
         if (!textCtx) return;
         const contentInput = el('inspContentInput');
+        const prevTextHtml = previousHtmlOf(textCtx.componentId); // E42 — capturé avant application
         const resultText = updateTextContent(state, textCtx.componentId, textCtx.path, contentInput.value);
         if (!resultText.applied) {
           if (msgC) msgC.textContent = resultText.reason === 'empty-text' ? 'Texte vide refusé'
@@ -694,6 +705,7 @@
             : 'Texte déjà identique';
           return;
         }
+        pushUndoBatch('Édition du texte', prevTextHtml ? [{ componentId: textCtx.componentId, html: prevTextHtml }] : []);
         state = resultText.state;
         dirtyReal.add(textCtx.componentId);
         const persistedTextId = textCtx.componentId; // É38 — capturé avant reset
@@ -1071,6 +1083,42 @@
       resumeSession(); // E41 — reprise de session (site existant → canvas)
     }
 
+    // E42 — PILE D'ANNULATION PAR LOTS : chaque action utilisateur (APPLY
+    // manuel, édition IA mono-élément, lot IA composant/page) pousse UN lot
+    // des HTML antérieurs des composants touchés. L'annulation restitue le
+    // HTML antérieur via la commande PURE restoreComponentHtml, puis
+    // resynchronise le serveur (persistSection — une révision « annulation »).
+    const editUndoStack = [];
+    function pushUndoBatch(label, snapshots) {
+      if (snapshots.length > 0) editUndoStack.push({ label: label, snapshots: snapshots });
+    }
+    // Capture du HTML antérieur : à appeler AVANT l'application, pendant que
+    // `state` référence encore l'état d'avant l'édition.
+    function previousHtmlOf(componentId) {
+      const comp = state.components.get(componentId);
+      const html = comp && comp.metadata ? comp.metadata.html : null;
+      return typeof html === 'string' ? html : null;
+    }
+    async function undoLastEdit() {
+      if (historyBusy) return;
+      const batch = editUndoStack.pop();
+      if (!batch) { if (v2Status) v2Status.textContent = 'Rien à annuler.'; return; }
+      const restored = [];
+      for (const snap of batch.snapshots) {
+        const result = restoreComponentHtml(state, snap.componentId, snap.html);
+        if (result.applied) {
+          state = result.state;
+          dirtyReal.add(snap.componentId);
+          restored.push(snap.componentId);
+        }
+      }
+      renderCurrent();
+      for (const componentId of restored) {
+        await persistSection(componentId);
+      }
+      if (v2Status) v2Status.textContent = '↩ Annulé : ' + batch.label + ' (' + restored.length + ' section(s) resynchronisée(s))';
+    }
+
     // E41 — RECONSTRUCTION DU CANVAS depuis un index.html serveur : utilisée
     // par la restauration d'historique (E40) ET par la reprise de session
     // (boot). Séquence obligatoire RESET → STARTED → CREATED/READY →
@@ -1183,6 +1231,7 @@
       if (inventory.length === 0) { if (statusEl) statusEl.textContent = 'Aucun élément éditable : génère d abord un site.'; return; }
       aiPageEditBusy = true;
       if (statusEl) statusEl.textContent = 'IA page en cours… (' + inventory.length + ' éléments inventoriés)';
+      const undoPageSnapshots = []; // E42 — un lot unique pour toute l'action page
       let outcome;
       try {
         outcome = await runAiPageEditLoop({
@@ -1197,10 +1246,12 @@
             const sectionId = String(call.args.section);
             const path = call.args.path;
             const value = String(call.args.text ?? call.args.src ?? call.args.href);
+            const prevSectionHtml = previousHtmlOf(sectionId); // E42 — avant application
             const result = call.name === 'set_text' ? updateTextContent(state, sectionId, path, value)
               : call.name === 'set_image_src' ? updateImageSource(state, sectionId, path, value)
               : updateLinkHref(state, sectionId, path, value);
             if (!result.applied) return 'ERREUR: modification refusée (' + (result.reason || 'inconnue') + ') — vérifie section et path de l inventaire';
+            if (prevSectionHtml !== null) undoPageSnapshots.push({ componentId: sectionId, html: prevSectionHtml });
             state = result.state;
             dirtyReal.add(sectionId);
             return 'OK';
@@ -1209,6 +1260,7 @@
       } finally {
         aiPageEditBusy = false;
       }
+      if (outcome.ok && outcome.appliedCount > 0) pushUndoBatch('Édition IA de la page', undoPageSnapshots);
       renderCurrent();
       if (!outcome.ok) {
         if (statusEl) statusEl.textContent = 'IA page indisponible (' + (outcome.detail || outcome.reason) + ')';
@@ -1284,6 +1336,17 @@
       if (!panel) return;
       if (panel.classList.contains('hidden')) { panel.classList.remove('hidden'); loadHistory(); }
       else panel.classList.add('hidden');
+    });
+    // E42 — annulation : bouton + raccourci Ctrl+Z (hors champs de saisie,
+    // où Ctrl+Z reste l'undo natif du navigateur).
+    document.getElementById('btnUndo').addEventListener('click', () => { undoLastEdit(); });
+    document.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
+        const t = e.target;
+        if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+        e.preventDefault();
+        undoLastEdit();
+      }
     });
     el('historyList').addEventListener('click', (e) => {
       const revId = e.target.getAttribute && e.target.getAttribute('data-restore');

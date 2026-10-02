@@ -231,7 +231,7 @@ describe('ÉTAPE 25 — GATE DE ROBUSTESSE UI (cycles de vie)', () => {
     // Borne ajustée É39 (bouton ✨ IA page, lui aussi au niveau module) :
     // l'intention reste « fixe et raisonnable », jamais d'accumulation.
     const topListenerCount = (source.match(/addEventListener\(/g) || []).length;
-    assert.ok(topListenerCount >= 8 && topListenerCount <= 24, 'nombre de listeners fixe et raisonnable: ' + topListenerCount);
+    assert.ok(topListenerCount >= 8 && topListenerCount <= 26, 'nombre de listeners fixe et raisonnable: ' + topListenerCount);
     // et renderInspector (appelé à chaque rendu) n'en registre aucun :
     const inspStart = source.indexOf('function renderInspector');
     const inspEnd = source.indexOf("el('inspectorBody').addEventListener('change'", inspStart);
