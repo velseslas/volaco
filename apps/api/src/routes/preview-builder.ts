@@ -29,6 +29,8 @@ const adapterJsPath = join(repoRoot, 'dist', 'packages', 'core', 'src', 'preview
 const flagsJsPath = join(repoRoot, 'dist', 'packages', 'core', 'src', 'preview-builder', 'flags.js');
 // ÉTAPE 16 — commandes d'édition (module séparé du moteur)
 const editingJsPath = join(repoRoot, 'dist', 'packages', 'core', 'src', 'preview-builder', 'editing.js');
+// ÉTAPE 35 — boucle d'édition IA par outils (module isomorphe)
+const aiEditJsPath = join(repoRoot, 'dist', 'packages', 'core', 'src', 'preview-builder', 'ai-edit.js');
 
 function serveFile(res: ServerResponse, filePath: string, contentType: string, notFound: string): boolean {
   if (!existsSync(filePath)) {
@@ -79,6 +81,9 @@ export async function handlePreviewBuilderRoutes(
   }
   if (pathname === '/preview-builder/editing.js') {
     return serveFile(res, editingJsPath, 'text/javascript; charset=utf-8', 'Editing Preview Builder non compilé (npm run build)');
+  }
+  if (pathname === '/preview-builder/ai-edit.js') {
+    return serveFile(res, aiEditJsPath, 'text/javascript; charset=utf-8', 'AI Edit Preview Builder non compilé (npm run build)');
   }
   return false;
 }

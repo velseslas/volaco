@@ -1,6 +1,7 @@
     import { applyBuildEvent, createPreviewBuildState, BUILD_STAGES, PRESENTATION_VARIANTS, RESIZE_BOUNDS } from '/preview-builder/engine.js';
     import { renderPreview, buildTimeline, shouldRefreshNode, previewNodeId, resolvePreviewTarget, buildInspector, resolveDropTarget } from '/preview-builder/renderer.js';
     import { updateComponentLabel, updateComponentVariant, moveComponent, computeDropTarget, applyDragIntent, resizeComponent, updateTextContent, updateImageSource, updateLinkHref } from '/preview-builder/editing.js';
+    import { runAiEditLoop } from '/preview-builder/ai-edit.js';
     import { layoutTree } from '/preview-builder/layout.js';
     import { renderComponentVisual } from '/preview-builder/visuals.js';
     import { demoBuildScript, scriptToEvents } from '/preview-builder/mocks.js';
@@ -324,6 +325,9 @@
           + '<div class="insp-head"><div class="insp-title">' + canonicalize(inspector.label) + '</div><div class="insp-sub">lien réel IA — href</div></div>'
           + '<div class="insp-rows">' + row('Href actuel', canonicalize(linkCtx.href.length > 60 ? linkCtx.href.slice(0, 60) + '…' : linkCtx.href)) + '</div>'
           + '<div class="insp-editrow"><input id="inspLinkInput" maxlength="600" value="' + canonicalize(linkCtx.href) + '"><button id="inspLinkApply">APPLY</button><span id="inspLinkMsg"></span></div>'
+          // É35 — édition IA du lien : consigne libre → outil set_link_href →
+          // commande PURE updateLinkHref (la valeur ne quitte jamais l attribut).
+          + '<div class="insp-editrow insp-ai"><input id="inspAiLinkInput" maxlength="300" placeholder="Décris la modification IA…"><button id="inspAiLink" title="Modifier ce lien avec l IA">✨ IA</button><span id="inspAiLinkMsg"></span></div>'
           + '</div>';
         if (keepLink !== null) {
           const linkInput = body.querySelector('#inspLinkInput');
@@ -340,6 +344,9 @@
           + '<div class="insp-head"><div class="insp-title">' + canonicalize(inspector.label) + '</div><div class="insp-sub">image réelle IA — src</div></div>'
           + '<div class="insp-rows">' + row('Src actuel', canonicalize(imageCtx.src.length > 60 ? imageCtx.src.slice(0, 60) + '…' : imageCtx.src)) + '</div>'
           + '<div class="insp-editrow"><input id="inspImageInput" maxlength="600" value="' + canonicalize(imageCtx.src) + '"><button id="inspImageApply">APPLY</button><span id="inspImageMsg"></span></div>'
+          // É35 — édition IA de l image : consigne libre → outil set_image_src
+          // → commande PURE updateImageSource (valeur d attribut échappée).
+          + '<div class="insp-editrow insp-ai"><input id="inspAiImageInput" maxlength="300" placeholder="Décris la modification IA…"><button id="inspAiImage" title="Modifier cette image avec l IA">✨ IA</button><span id="inspAiImageMsg"></span></div>'
           + '</div>';
         if (keepImg !== null) {
           const imgInput = body.querySelector('#inspImageInput');
@@ -357,6 +364,9 @@
           + '<div class="insp-head"><div class="insp-title">' + canonicalize(inspector.label) + '</div><div class="insp-sub">contenu réel IA — texte</div></div>'
           + '<div class="insp-rows">' + row('Élément texte', canonicalize(textCtx.text.slice(0, 60)) + (textCtx.text.length > 60 ? '…' : '')) + '</div>'
           + '<div class="insp-editrow"><input id="inspContentInput" maxlength="400" value="' + canonicalize(textCtx.text) + '"><button id="inspContentApply">APPLY</button><span id="inspContentMsg"></span></div>'
+          // É35 — édition IA du texte : consigne libre → outil set_text →
+          // commande PURE updateTextContent (texte échappé, jamais du HTML).
+          + '<div class="insp-editrow insp-ai"><input id="inspAiTextInput" maxlength="300" placeholder="Décris la modification IA…"><button id="inspAiText" title="Modifier ce texte avec l IA">✨ IA</button><span id="inspAiTextMsg"></span></div>'
           + '</div>';
         if (keepContent !== null) {
           const contentInput = body.querySelector('#inspContentInput');
@@ -451,6 +461,53 @@
         .length + 1;
       idx.innerHTML = Array.from({ length: count }, (_, i) => '<option value="' + (i + 1) + '">position ' + (i + 1) + '</option>').join('');
     });
+    // É35 — ÉDITION IA PAR OUTILS : le modèle répond EXCLUSIVEMENT via un
+    // appel d'outil structuré (set_text / set_image_src / set_link_href)
+    // relayé par le proxy (la clé API reste côté serveur). La valeur produite
+    // est appliquée par la COMMANDE PURE correspondante — même canal qu'un
+    // APPLY manuel, jamais injectée comme HTML, jamais écrite en direct.
+    let aiEditBusy = false;
+    async function startAiEdit(kind, ctx, inputId, msgEl) {
+      if (!ctx || aiEditBusy || !msgEl) return;
+      const input = el(inputId);
+      const instruction = input ? input.value.trim() : '';
+      if (!instruction) { msgEl.textContent = 'Décris d abord la modification.'; return; }
+      aiEditBusy = true;
+      msgEl.textContent = 'IA en cours…';
+      const currentValue = kind === 'text' ? ctx.text : kind === 'image' ? ctx.src : ctx.href;
+      let outcome;
+      try {
+        outcome = await runAiEditLoop({
+          fetchImpl: fetch,
+          url: '/api/v1/ai/chat/completions',
+          request: { kind: kind, instruction: instruction, currentValue: currentValue },
+          headers: H
+        });
+      } finally {
+        aiEditBusy = false;
+      }
+      if (!outcome.ok) {
+        msgEl.textContent = outcome.reason === 'no-tool-call' ? 'IA: réponse sans outil (réessaie)'
+          : outcome.reason === 'invalid-args' ? 'IA: arguments invalides (réessaie)'
+          : outcome.reason === 'empty-instruction' ? 'Consigne vide'
+          : 'IA indisponible (' + (outcome.detail || outcome.reason) + ')';
+        return;
+      }
+      const result = kind === 'text' ? updateTextContent(state, ctx.componentId, ctx.path, outcome.value)
+        : kind === 'image' ? updateImageSource(state, ctx.componentId, ctx.path, outcome.value)
+        : updateLinkHref(state, ctx.componentId, ctx.path, outcome.value);
+      if (!result.applied) {
+        msgEl.textContent = 'Modification refusée: ' + result.reason;
+        return;
+      }
+      state = result.state;
+      dirtyReal.add(ctx.componentId);
+      if (kind === 'text') textCtx = null;
+      else if (kind === 'image') imageCtx = null;
+      else linkCtx = null;
+      renderCurrent();
+    }
+
     el('inspectorBody').addEventListener('click', (e) => {
       // É24 — APPLY du href lien : UI → updateLinkHref() → nouveau state →
       // renderCurrent() (canal dirtyReal). Schémas dangereux refusés par la
@@ -519,6 +576,12 @@
         renderCurrent();
         return;
       }
+      // É35 — boutons ✨ IA (texte / image / lien) : consigne → boucle
+      // d'outils → commande PURE. Le contexte de clic est relu À CHAQUE
+      // appel (les re-rendus recréent le DOM mais les ctx sont conservés).
+      if (e.target.id === 'inspAiText') { startAiEdit('text', textCtx, 'inspAiTextInput', el('inspAiTextMsg')); return; }
+      if (e.target.id === 'inspAiImage') { startAiEdit('image', imageCtx, 'inspAiImageInput', el('inspAiImageMsg')); return; }
+      if (e.target.id === 'inspAiLink') { startAiEdit('link', linkCtx, 'inspAiLinkInput', el('inspAiLinkMsg')); return; }
       // É18 — déplacement structurel (moveComponent)
       if (e.target.id === 'inspMoveApply') {
         const msg = el('inspMoveMsg');
