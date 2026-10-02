@@ -1333,7 +1333,7 @@
         </div>
 
         <!-- Messages thread (Épuré, sans message d'accueil superflu) -->
-        <div id="wsChatHistory" class="flex-1 p-4 overflow-y-auto space-y-4 text-xs"></div>
+        <div id="wsChatHistory" class="flex-1 px-4 py-3 overflow-y-auto space-y-3 text-[13px]"></div>
 
         <!-- Suggestion Carousel Bar (Mis à jour dynamiquement par l'IA) -->
         <div id="suggestionCarouselBar" class="px-3 py-1.5 flex items-center justify-between space-x-2 hidden">
@@ -2846,13 +2846,11 @@
     }
 
     function updateAuthBannerUI() {
+      // E46 — le popup « Compte VibeCode » est SUPPRIMÉ : le mode local
+      // (fallback dev) est le comportement par défaut, sans solicitation.
       const banner = document.getElementById('authBanner');
       if (!banner) return;
-      if (getAuthToken()) {
-        banner.classList.add('hidden');
-      } else {
-        banner.classList.remove('hidden');
-      }
+      banner.classList.add('hidden');
     }
 
     async function submitAuth(mode) {
@@ -6257,15 +6255,37 @@ function renderWorkspaceIframe(htmlCode) {
       const iframe = document.getElementById('wsLiveIframe');
       if (!iframe) return;
       setWorkspaceSubTab('preview');
-      iframe.srcdoc = '';
-      setTimeout(() => {
-        renderWorkspaceIframe(currentAppHtml);
-        showCaptureToast("Aperçu rafraîchi avec succès !");
-      }, 30);
+      // E46 — le preview EST la page Builder : un vrai rechargement de
+      // l'iframe (la reprise de session E41 recharge le site au boot).
+      // L'ancien chemin srcdoc + renderWorkspaceIframe est mort (E45).
+      try {
+        if (iframe.getAttribute('src') && iframe.contentWindow) {
+          iframe.contentWindow.location.reload();
+        } else {
+          iframe.src = '/preview-builder.html?v2=1';
+        }
+      } catch (e) {
+        iframe.src = '/preview-builder.html?v2=1';
+      }
+      setTimeout(() => showCaptureToast("Aperçu rafraîchi avec succès !"), 400);
     }
 
-    function popoutPreview() {
-      const blob = new Blob([currentAppHtml || pulseAiExactTemplate], { type: 'text/html;charset=utf-8' });
+    async function popoutPreview() {
+      // E46 — ouvre le index.html À JOUR du serveur (les éditions Builder
+      // sont persistées) ; repli sur le HTML connu si le serveur est absent.
+      let html = currentAppHtml || pulseAiExactTemplate;
+      try {
+        const proj = (typeof userProjects !== 'undefined') ? userProjects.find(p => p.id === activeProjectId) : null;
+        const pid = proj && proj.serverProjectId;
+        if (pid) {
+          const res = await fetch('/api/v1/projects/' + pid + '/files/content?path=index.html', { headers: studioApiHeaders() });
+          if (res.ok) {
+            const data = await res.json();
+            if (data && data.file && typeof data.file.content === 'string' && data.file.content.length > 100) html = data.file.content;
+          }
+        }
+      } catch (e) { /* repli silencieux sur currentAppHtml */ }
+      const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       window.open(url, '_blank');
       setTimeout(() => URL.revokeObjectURL(url), 15000);
@@ -9314,7 +9334,7 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
       const history = document.getElementById('wsChatHistory');
       if (history) {
         const uDiv = document.createElement('div');
-        uDiv.className = "p-3 rounded-2xl bg-[#141828] border border-[#1e243c] text-white ml-6 text-xs leading-relaxed";
+        uDiv.className = "py-1.5 pl-3 border-l-2 border-violet-500/50 text-white text-[13px] leading-relaxed";
         uDiv.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles text-amber-400 mr-2"></i>Harmoniser et corriger automatiquement les anomalies d\'audit (AINT-013)';
         history.appendChild(uDiv);
       }
@@ -10532,18 +10552,21 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
       if (!history) return null;
 
       const div = document.createElement('div');
+      // E46 — style ÉPURÉ : pas de bulle, pas de bordure, pas d'ombre —
+      // un texte fluide sur fond transparent, police plus grande (13px).
+      // La distinction des rôles reste lisible par la couleur et l'alignement.
       if (role === 'user') {
-        div.className = "p-3 rounded-2xl bg-[#141828] border border-[#1e243c] text-white ml-6 text-xs leading-relaxed shadow-md animate-in fade-in slide-in-from-bottom-2 duration-150 select-text";
+        div.className = "py-1.5 pl-3 border-l-2 border-violet-500/50 text-white text-[13px] leading-relaxed animate-in fade-in duration-150 select-text";
         if (typeof content === 'string' && (content.includes('<') || content.includes('&lt;') || content.includes('&gt;'))) {
           div.innerHTML = content;
         } else {
           div.innerText = content;
         }
       } else if (role === 'system') {
-        div.className = "p-2.5 rounded-xl bg-[#0c1020] border border-[#1a2238] text-slate-300 text-xs shadow-sm select-text";
+        div.className = "py-1 text-slate-400 text-[12px] leading-relaxed select-text";
         div.innerHTML = content;
       } else {
-        div.className = "p-4 rounded-2xl bg-[#0c0f1d] border border-[#191f33] text-slate-200 mr-4 space-y-2 text-xs shadow-xl animate-in fade-in slide-in-from-bottom-2 duration-150 select-text";
+        div.className = "py-1.5 text-slate-200 text-[13px] leading-relaxed space-y-2 select-text";
         div.innerHTML = content;
       }
 
