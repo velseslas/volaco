@@ -3689,11 +3689,6 @@
           }
         }
 
-        function sendCanvasState(state) {
-          if (__builderModeActive()) return; // É28 — aucun écriture legacy dans le Builder principal
-          const f = document.getElementById('wsLiveIframe');
-          if (f && f.contentWindow) f.contentWindow.postMessage({ source: 'vibecode-studio', command: 'canvas-state', state }, '*');
-        }
 
         /** Restaure le document vivant à l'état d'avant génération (annulation
          * ou erreur en plein construction) — honnête : rien n'est sauvegardé. */
@@ -4213,8 +4208,7 @@ ${sections}
                     if (ap2) { ap2.code = currentAppHtml; saveUserProjects(); }
                     if (statusEl) statusEl.innerHTML = '<span style="color:#fbbf24;">⚠ Modification rejetée : des sections ont disparu sans demande.</span>';
                   }
-                  setTimeout(() => sendCanvasState('ready'), 350);
-                  // Carte Write — UNIQUEMENT en mode legacy ; en mode Activity
+                  setTimeout(() =>                   // Carte Write — UNIQUEMENT en mode legacy ; en mode Activity
                   // Stream, le diff vit dans les items du flux (une seule fois)
                   // et les actions sont portées par la synthèse ci-dessous.
                   if (!activityFeed) {
@@ -4291,8 +4285,7 @@ ${sections}
                 const info = COMPASS_INFO[event.state];
                 if (info) setCompassState(event.state, info[0], info[1], info[2]);
                 const canvasStateMap = { UNDERSTANDING: 'thinking', PLANNING: 'thinking', EXECUTING: 'writing', REPAIRING: 'writing', VALIDATING: 'validating', COMPLETED: 'ready' };
-                if (canvasStateMap[event.state]) sendCanvasState(canvasStateMap[event.state]);
-                // T3 — la timeline suit les transitions réelles du Compass
+                if (canvasStateMap[event.state])                 // T3 — la timeline suit les transitions réelles du Compass
                 if (event.state === 'WAITING_CONFIRMATION') {
                   timelineEnterPhase('PLAN', { waiting: true });
                 } else if (event.state === 'UNDERSTANDING') {
@@ -4334,14 +4327,12 @@ ${sections}
                 // STITCH v2 — le preview revient à l'état d'avant génération
                 stitchRestoreSane();
                 // Overlays : voile + laser doivent partir, sinon preview « cassé »
-                sendCanvasState('reset');
-              } else if (event.type === 'error') {
+                              } else if (event.type === 'error') {
                 if (statusEl) statusEl.innerHTML = '<span style="color:#f87171;">Erreur: ' + (event.error || '') + '</span>';
                 timelineFailCurrent();
                 removeStopBtn();
                 stitchRestoreSane();
-                sendCanvasState('reset');
-              }
+                              }
             } catch (e) { (window.__vibeHandlerErrors = window.__vibeHandlerErrors || []).push(String((e && e.message) || e)); }
           }
         }
@@ -6087,33 +6078,30 @@ npx serve .
       if (targetB) targetB.className = 'px-4 py-2 rounded-xl bg-violet-600 text-white transition';
     }
 
-            // É26 — MODE D'INTÉGRATION : 'legacy' par défaut (aucun changement de
-        // comportement). 'builder' = l'iframe charge la page autonome du
-        // Preview Builder (É01→É25 gelé) ; le flux stitch ne doit alors PAS
-        // écraser cette page (gardes dans stitchBegin/renderWorkspaceIframe).
-        window.__previewMode = 'legacy';
-        let legacyHtmlBackup = '';
-        function setPreviewMode(mode) {
+            // E45 — MODE BUILDER PERMANENT : le Preview Builder est le SEUL
+            // preview. Le mode legacy (Stitch) n'est plus atteignable — même
+            // depuis la console (setPreviewMode('legacy') = no-op averti).
+            // Les gardes __builderModeActive() restent en place tant que le
+            // moteur de rendu legacy n'est pas physiquement retiré.
+            window.__previewMode = 'builder';
+        function ensureBuilderLoaded() {
           const frame = document.getElementById('wsLiveIframe');
-          if (!frame || mode === window.__previewMode) return;
-          if (mode === 'builder') {
-            try { legacyHtmlBackup = frame.contentDocument && frame.contentDocument.documentElement
-              ? frame.contentDocument.documentElement.outerHTML : ''; } catch (e) { legacyHtmlBackup = ''; }
-            frame.removeAttribute('srcdoc');
-            frame.src = '/preview-builder.html?v2=1';
-          } else {
-            frame.removeAttribute('src');
-            frame.srcdoc = legacyHtmlBackup || '<!DOCTYPE html><html><body style="margin:0;font-family:system-ui,sans-serif;background:#0b0f1a;color:#64748b;display:flex;align-items:center;justify-content:center;min-height:100vh"><div style="text-align:center"><p style="font-size:13px;margin:0 0 8px;font-weight:600">Fallback Legacy</p><p style="font-size:11px;opacity:.75;margin:0;line-height:1.6">Lancez une génération depuis le chat,<br>puis revenez en Legacy pour voir le rendu.</p></div></body></html>';
+          if (!frame) return;
+          if (frame.getAttribute('src') === '/preview-builder.html?v2=1') return;
+          frame.removeAttribute('srcdoc');
+          frame.src = '/preview-builder.html?v2=1';
+        }
+        function setPreviewMode(mode) {
+          if (mode !== 'builder') {
+            console.warn('[E45] mode "' + mode + '" supprimé — le Builder est le seul preview.');
+            return;
           }
-          window.__previewMode = mode;
+          ensureBuilderLoaded();
         }
         window.setPreviewMode = setPreviewMode;
-        // É27 — BUILDER V2 = PREVIEW PRINCIPAL : chargé automatiquement à
-        // l'ouverture du Studio. Legacy devient le FALLBACK (bouton Ancien :
-        // restaure le dernier rendu legacy, ou un placeholder si aucun).
+        // E45 — chargement direct du Builder à l'ouverture du Studio.
         document.addEventListener('DOMContentLoaded', function () {
-          if (window.__previewMode === 'builder') return; // déjà actif
-          setPreviewMode('builder');
+          ensureBuilderLoaded();
         });
         function __builderModeActive() { return window.__previewMode === 'builder'; }
 
@@ -6161,46 +6149,7 @@ function renderWorkspaceIframe(htmlCode) {
   });
   var haloStyle = document.createElement('style');
   haloStyle.textContent = '.vibe-focus-halo { outline: 2px solid rgba(139,92,246,.95) !important; outline-offset: 4px; box-shadow: 0 0 0 6px rgba(139,92,246,.22), 0 0 34px rgba(139,92,246,.5) !important; border-radius: 8px; transition: box-shadow .3s ease, outline-offset .3s ease; }';
-  haloStyle.textContent += '#vibe-laser { position:fixed; left:0; right:0; top:0; height:3px; background:linear-gradient(90deg, transparent, #8b5cf6, transparent); box-shadow:0 0 18px 4px rgba(139,92,246,.55); z-index:9998; display:none; }';
-  haloStyle.textContent += '#vibe-laser.on { display:block; animation: vibeLaser 1.4s ease-in-out infinite; }';
-  haloStyle.textContent += '@keyframes vibeLaser { 0% { transform: translateY(0); } 100% { transform: translateY(100vh); } }';
-  haloStyle.textContent += '#vibe-dim { position:fixed; inset:0; background:rgba(7,9,19,.55); z-index:9997; display:none; }';
-  haloStyle.textContent += '#vibe-dim.on { display:block; }';
-  haloStyle.textContent += '#vibe-ready { position:fixed; top:14px; left:50%; transform:translateX(-50%); z-index:9999; background:rgba(16,185,129,.95); color:#04140d; font-weight:800; font-size:12px; padding:6px 14px; border-radius:999px; display:none; }';
-  haloStyle.textContent += '#vibe-ready.on { display:block; }';
-  haloStyle.textContent += '#vibe-sweep { position:fixed; top:0; bottom:0; width:80px; background:linear-gradient(90deg, transparent, rgba(255,255,255,.18), transparent); z-index:9996; left:-100px; display:none; }';
-  haloStyle.textContent += '#vibe-sweep.on { display:block; animation: vibeSweep .9s ease-out forwards; }';
-  haloStyle.textContent += '@keyframes vibeSweep { to { transform: translateX(120vw); } }';
-  haloStyle.textContent += '.vibe-el-in { animation: stitchReveal .45s ease-out both; }';
   document.head.appendChild(haloStyle);
-  var vibeCanvasEls = {};
-  function vibeEnsureCanvasEls() {
-    ['vibe-laser','vibe-dim','vibe-ready','vibe-sweep'].forEach(function(id){
-      if (!vibeCanvasEls[id]) { var e = document.createElement('div'); e.id = id; document.body.appendChild(e); vibeCanvasEls[id] = e; }
-    });
-  }
-  window.addEventListener('message', function(ev){
-    var d = ev.data || {};
-    if (d.source !== 'vibecode-studio' || d.command !== 'canvas-state') return;
-    vibeEnsureCanvasEls();
-    if (d.state === 'thinking') { vibeCanvasEls['vibe-dim'].classList.add('on'); vibeCanvasEls['vibe-laser'].classList.remove('on'); }
-    else if (d.state === 'writing') { vibeCanvasEls['vibe-dim'].classList.remove('on'); vibeCanvasEls['vibe-laser'].classList.add('on'); }
-    else if (d.state === 'ready') {
-      vibeCanvasEls['vibe-dim'].classList.remove('on'); vibeCanvasEls['vibe-laser'].classList.remove('on');
-      vibeCanvasEls['vibe-sweep'].classList.add('on');
-      vibeCanvasEls['vibe-ready'].classList.add('on');
-      setTimeout(function(){ vibeCanvasEls['vibe-sweep'].classList.remove('on'); }, 1000);
-      setTimeout(function(){ vibeCanvasEls['vibe-ready'].classList.remove('on'); }, 3000);
-    }
-    else if (d.state === 'reset') {
-      // ERREUR / ANNULATION : TOUS les overlays doivent partir — un voile
-      // sombre ou un laser oublié rend le preview « cassé » définitivement.
-      vibeCanvasEls['vibe-dim'].classList.remove('on');
-      vibeCanvasEls['vibe-laser'].classList.remove('on');
-      vibeCanvasEls['vibe-sweep'].classList.remove('on');
-      vibeCanvasEls['vibe-ready'].classList.remove('on');
-    }
-  });
   document.head.appendChild(haloStyle);
   // Qualité preview — filet anti-images-cassées : les LLM hallucinent parfois
   // des URL d'images. Toute image en échec est remplacée par un placeholder

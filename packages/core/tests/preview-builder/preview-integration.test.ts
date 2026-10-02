@@ -23,19 +23,23 @@ const builderPage = (): string => readFileSync(join(process.cwd(), 'apps', 'stud
 const builderAppJs = (): string => readFileSync(join(process.cwd(), 'apps', 'studio', 'preview-builder-app.js'), 'utf8');
 
 describe('ÉTAPE 27 : Builder v2 = Preview principal, Legacy = fallback', () => {
-  it('1. Builder v2 est le DÉFAUT : chargé automatiquement à l ouverture du Studio', () => {
+  it('1. Builder v2 est le SEUL preview : chargé automatiquement à l ouverture du Studio (E45)', () => {
     const src = studio();
     assert.ok(src.includes("document.addEventListener('DOMContentLoaded', function () {"), 'boot au DOMContentLoaded');
-    assert.ok(src.includes("setPreviewMode('builder');"), 'le boot charge le Builder');
+    assert.ok(src.includes('ensureBuilderLoaded();'), 'le boot charge le Builder directement');
+    assert.ok(src.includes("window.__previewMode = 'builder';"), 'mode builder permanent dès le boot');
     assert.ok(!src.includes('pvModeBuilder') && !src.includes('pvModeLegacy'), 'É28 : plus aucun bouton de switch visible');
     assert.ok(!src.includes('title="Ancien Preview (par défaut)"'), "l ancien n est plus le défaut");
   });
 
-  it('2. Legacy = FALLBACK : mécanisme conservé (sans UI) + placeholder si aucun rendu connu', () => {
+  it('2. Legacy SUPPRIMÉ (E45) : plus de fallback, setPreviewMode refuse tout autre mode', () => {
     const src = studio();
-    assert.ok(src.includes("setPreviewMode('legacy')"), 'le fallback legacy reste TECHNIQUEMENT disponible (sans bouton)');
-    assert.ok(src.includes('Fallback Legacy'), 'placeholder si aucun rendu legacy connu');
-    assert.ok(src.includes('legacyHtmlBackup || '), 'le backup reste prioritaire sur le placeholder');
+    assert.ok(!src.includes('Fallback Legacy'), 'plus de placeholder fallback');
+    assert.ok(!src.includes('legacyHtmlBackup'), 'plus de backup legacy');
+    const modeFn = src.slice(src.indexOf('function setPreviewMode(mode)'), src.indexOf('window.setPreviewMode = setPreviewMode;'));
+    assert.ok(modeFn.includes("mode !== 'builder'"), 'tout mode autre que builder est refusé');
+    assert.ok(modeFn.includes('console.warn'), 'refus averti (honnête)');
+
   });
 
   it('3. PONT Chat Studio → Builder : postMessage conditionné au mode builder', () => {
@@ -60,10 +64,11 @@ describe('ÉTAPE 27 : Builder v2 = Preview principal, Legacy = fallback', () => 
     assert.ok(src.includes('if (__builderModeActive()) return;'));
   });
 
-  it('6. retours Builder ↔ Legacy toujours réversibles', () => {
+  it('6. E45 : plus de retour legacy — le Builder est irréversiblement le preview', () => {
     const src = studio();
     const modeFn = src.slice(src.indexOf('function setPreviewMode(mode)'), src.indexOf('window.setPreviewMode = setPreviewMode;'));
-    assert.ok(modeFn.includes("'builder'") && modeFn.includes('else'), 'les deux sens gérés (builder testé, legacy = branche else)');
+    assert.ok(modeFn.includes('ensureBuilderLoaded()'), 'le seul effet possible est (re)charger le Builder');
+    assert.ok(!modeFn.includes('srcdoc'), 'plus aucune écriture srcdoc legacy');
   });
 
   it('7. RESET + générations successives : le pont est réutilisable sans état caché', () => {
@@ -86,11 +91,11 @@ describe('ÉTAPE 30 : mode intégré au Studio (canvas plein + resizable)', () =
     assert.ok(page.includes("classList.add('embedded')"), 'classe html.embedded posée');
   });
 
-  it('2. mode embedded : canvas PLEIN espace (100 % de l iframe, sans marge outil)', () => {
+  it('2. E45 : mode embedded PLEIN BORD (100 % largeur et hauteur, zéro marge, header masqué)', () => {
     const page = builderPage();
-    assert.ok(page.includes('html.embedded .canvas { width: 100%;'), 'canvas 100 % en embedded');
-    assert.ok(page.includes('min-height: calc(100vh - 96px);'), 'hauteur maximisée');
-    assert.ok(page.includes('html.embedded .canvas-wrap { padding: 10px 14px 14px; }'), 'marges réduites');
+    assert.ok(page.includes('html.embedded .canvas { width: 100%; min-height: 100vh; border-radius: 0; }'), 'canvas plein bord');
+    assert.ok(page.includes('html.embedded .canvas-wrap { padding: 0; }'), 'zéro marge');
+    assert.ok(page.includes('html.embedded header.app-header { display: none !important; }'), 'header (badge PREVIEW READY) masqué');
   });
 
   it('3. mode embedded : le retour « ← Studio » est masqué (le chat est le point d entrée)', () => {
@@ -141,40 +146,36 @@ describe('ÉTAPE 26 : intégration progressive du Preview Builder', () => {
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
-    // et le switch du Studio pointe vers cette page :
-    assert.ok(studio().includes("frame.src = '/preview-builder.html?v2=1';"), 'le switch charge la page du Builder');
+    // et le boot du Studio charge cette page (E45) :
+    assert.ok(studio().includes("frame.src = '/preview-builder.html?v2=1';"), 'le boot charge la page du Builder');
   });
 
-  it('3. AUCUN changement quand le mode Builder n est pas activé : legacy est le défaut', () => {
+  it('3. E45 : builder est le défaut PERMANENT (legacy inaccessible)', () => {
     const src = studio();
-    assert.ok(src.includes("window.__previewMode = 'legacy';"), 'legacy = défaut');
-    // les gardes sont conditionnées au mode builder : sans activation, le
-    // flux stitch et le srcdoc final s'exécutent comme avant.
-    assert.ok(src.includes('if (__builderModeActive()) { stitch.fallbackRender = true; return; }'), 'garde stitch conditionnelle');
-    assert.ok(src.includes('if (__builderModeActive()) return;'), 'garde srcdoc conditionnelle');
-    assert.equal(src.includes("window.__previewMode = 'builder';"), false, 'jamais de mode builder par défaut');
+    assert.ok(src.includes("window.__previewMode = 'builder';"), 'builder = défaut');
+    assert.equal(src.includes("window.__previewMode = 'legacy';"), false, 'plus aucun boot legacy');
+    // les gardes restent en place tant que le moteur stitch n est pas
+    // physiquement retiré (E46) — elles sont désormais toujours vraies :
+    assert.ok(src.includes('if (__builderModeActive()) { stitch.fallbackRender = true; return; }'), 'garde stitch (toujours active)');
+    assert.ok(src.includes('if (__builderModeActive()) return;'), 'garde srcdoc (toujours active)');
   });
 
-  it('4. aucun double montage : le switch réutilise le MÊME iframe', () => {
+  it('4. E45 : aucun double montage — ensureBuilderLoaded réutilise le MÊME iframe', () => {
     const src = studio();
     const count = (src.match(/id="wsLiveIframe"/g) || []).length;
     assert.equal(count, 1, 'un seul iframe de preview');
-    assert.ok(!src.includes("createElement('iframe')") || !/setPreviewMode[\s\S]{0,600}createElement/.test(src), 'setPreviewMode ne crée aucun iframe');
-    // la bascule ne touche QUE src/srcdoc de l'iframe existant :
-    const modeFn = src.slice(src.indexOf('function setPreviewMode(mode)'), src.indexOf('window.setPreviewMode = setPreviewMode;'));
-    assert.ok(modeFn.includes("frame.removeAttribute('srcdoc')") && modeFn.includes("frame.removeAttribute('src')"), 'bascule par src/srcdoc');
-    assert.ok(!modeFn.includes('createElement'), 'aucun élément créé dans setPreviewMode');
+    const loadFn = src.slice(src.indexOf('function ensureBuilderLoaded()'), src.indexOf('function setPreviewMode(mode)'));
+    assert.ok(loadFn.includes("frame.getAttribute('src') === '/preview-builder.html?v2=1'"), 'garde anti-rechargement (src déjà posé → return)');
+    assert.ok(!loadFn.includes('createElement'), 'aucun élément créé');
   });
 
-  it('5. le state du Preview Builder n est pas muté par le changement de mode', () => {
+  it('5. E45 : plus de changement de mode — aucune écriture dans le document du Builder', () => {
     const src = studio();
-    const modeFn = src.slice(src.indexOf('function setPreviewMode(mode)'), src.indexOf('window.setPreviewMode = setPreviewMode;'));
-    // le Studio n'écrit JAMAIS dans le document du Builder : la seule
-    // occurrence de contentDocument est la SAUVEGARDE du document legacy
-    // (lecture outerHTML avant la bascule) — aucune affectation derrière :
-    const writes = (modeFn.match(/contentDocument[^;]*=[^=]/g) || []).filter((w) => !w.includes('legacyHtmlBackup ='));
-    assert.equal(writes.length, 0, 'aucune écriture dans un document');
-    assert.ok(modeFn.includes("frame.src = '/preview-builder.html?v2=1'"), 'la bascule = une NAVIGATION vers la page autonome');
+    const modeFn = src.slice(src.indexOf('function ensureBuilderLoaded()'), src.indexOf('window.setPreviewMode = setPreviewMode;'));
+    // le Studio n'écrit JAMAIS dans le document du Builder : le chargement
+    // est une NAVIGATION vers la page autonome, rien d'autre.
+    assert.equal((modeFn.match(/contentDocument/g) || []).length, 0, 'aucun accès contentDocument');
+    assert.ok(modeFn.includes("frame.src = '/preview-builder.html?v2=1'"), 'le chargement = une NAVIGATION vers la page autonome');
   });
 
   it('6. le RESET du Builder reste fonctionnel (page autonome inchangée)', () => {

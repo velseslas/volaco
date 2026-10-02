@@ -101,17 +101,18 @@ describe('ÉTAPE 28 : page Preview finale (canvas maximal)', () => {
     assert.ok(src.includes("el('inspectorBody')"), 'renderInspector continue d écrire (dans le chrome masqué)');
   });
 
-  it('9. É27 préservé : le pont reçoit du chat, les gardes et le boot Builder v2 intacts', () => {
+  it('9. E45 : le pont reçoit du chat, les gardes et le boot direct du Builder', () => {
     const studioSrc = studio();
     assert.ok(studioSrc.includes("command: 'start-builder-generation'"), 'pont côté Studio');
-    assert.ok(studioSrc.includes("document.addEventListener('DOMContentLoaded'") && studioSrc.includes("setPreviewMode('builder');"), 'boot Builder v2 (É27) côté Studio');
+    assert.ok(studioSrc.includes("document.addEventListener('DOMContentLoaded'") && studioSrc.includes('ensureBuilderLoaded();'), 'boot Builder (E45) côté Studio');
   });
 
-  it('10. Legacy fallback É26 intact côté Studio', () => {
+  it('10. E45 : legacy SUPPRIMÉ de l UI (stitch encore présent mais inert, purge E46)', () => {
     const src = studio();
-    assert.ok(src.includes("setPreviewMode('legacy')"), 'bouton Ancien présent');
-    assert.ok(src.includes('Fallback Legacy'), 'placeholder fallback présent');
-    assert.ok(src.includes('function stitchBegin(info) {'), 'stitch intact');
+    assert.ok(!src.includes('Fallback Legacy'), 'plus de placeholder fallback');
+    assert.ok(!src.includes("legacyHtmlBackup"), 'plus de backup legacy');
+    assert.ok(src.includes("mode !== 'builder'"), 'setPreviewMode refuse tout mode non-builder');
+    assert.ok(src.includes('function stitchBegin(info) {'), 'moteur stitch encore présent (inert — purge E46)');
   });
 
   it('11. un seul iframe côté Studio (aucun second système)', () => {
