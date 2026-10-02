@@ -641,9 +641,15 @@ export async function handleConversationRoutes(
     }
 
     // Détection du mode : CRÉATION vs MODIFICATION
-    // Si on a un HTML existant > 200 chars, on est en mode modification.
-    // Sinon, on est en mode création (comportement actuel).
-    const isModificationMode = isModification || (currentHtml.trim().length > 200);
+    // E48 — un isModification EXPLICITE du client est RESPECTÉ : « crée un
+    // site » alors qu'un fichier existe doit REMPLACER le fichier (site
+    // frais), pas fusionner dedans (c'est l'accumulation de sections
+    // obsolètes constatée en production). L'heuristique de repli (fichier
+    // > 200 caractères → modification) ne s'applique que si le client n'a
+    // rien explicité.
+    const isModificationMode = body.isModification !== undefined
+      ? Boolean(body.isModification)
+      : (currentHtml.trim().length > 200);
 
     // === SYSTÈME PROMPT MODE CRÉATION ===
     // (comportement actuel : génère un site complet section par section)
