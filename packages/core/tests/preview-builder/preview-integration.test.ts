@@ -96,10 +96,12 @@ describe('ÉTAPE 30 : mode intégré au Studio (canvas plein + resizable)', () =
     assert.ok(page.includes('html.embedded .back { display: none !important; }'), 'retour Studio masqué en embedded');
   });
 
-  it('4. Studio : la toolbar legacy de l aperçu est masquée en mode Builder', () => {
+  it('4. Studio : la toolbar legacy de l aperçu reste VISIBLE (réintégrée É30-bis)', () => {
     const src = studio();
-    assert.ok(src.includes("document.body.classList.toggle('pv-builder-active', mode === 'builder');"), 'classe posée par setPreviewMode');
-    assert.ok(src.includes('body.pv-builder-active #topPreviewToolbar { display: none !important; }'), 'toolbar legacy masquée');
+    assert.ok(src.includes('id="topPreviewToolbar"'), 'la toolbar existe toujours');
+    assert.ok(src.includes('btnTopPreviewRefresh'), 'bouton Actualiser conservé');
+    assert.ok(src.includes('btnTopPreviewCompare'), 'bouton Comparer conservé');
+    assert.ok(!src.includes('pv-builder-active'), 'aucun masquage résiduel de la toolbar');
   });
 
   it('5. resizable : le panelResizer natif du Studio est toujours branché', () => {
