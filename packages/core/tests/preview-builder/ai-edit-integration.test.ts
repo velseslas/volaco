@@ -179,15 +179,18 @@ describe('E40 : historique des révisions dans le Builder', () => {
     assert.ok(src.includes("import { extractSections } from '/preview-builder/section-parse.js';"), 'parseur de sections importé');
   });
 
-  it('2. la restauration reconstruit le canvas par le PIPELINE consume() (jamais en direct)', () => {
+  it('2. la restauration reconstruit le canvas par le PIPELINE consume() (helper partagé E41)', () => {
     const src = appJs();
     const fn = src.slice(src.indexOf('async function restoreRevision'), src.indexOf("document.getElementById('btnHistory')"));
-    assert.ok(fn.includes("consume({ kind: 'BUILD_RESET'"), 'reset par événement');
-    assert.ok(fn.includes("consume({ kind: 'BUILD_STARTED'"), 'STARTED obligatoire (moteur : statut building)');
-    assert.ok(fn.includes("consume({ kind: 'COMPONENT_CREATED'"), 'composants recréés par événement');
-    assert.ok(fn.includes('COMPONENT_READY'), 'prêt avec metadata.html');
+    assert.ok(fn.includes('rebuildCanvasFromHtml(content)'), 'passe par le helper partagé');
     assert.ok(fn.includes('/rollback'), 'rollback serveur appelé');
     assert.ok(!fn.includes('.innerHTML'), 'aucune écriture DOM directe du canvas');
+    // le helper porte la séquence complète (convention du moteur)
+    const helper = src.slice(src.indexOf('function rebuildCanvasFromHtml'), src.indexOf('async function resumeSession'));
+    assert.ok(helper.includes("consume({ kind: 'BUILD_RESET'"), 'reset par événement');
+    assert.ok(helper.includes("consume({ kind: 'BUILD_STARTED'"), 'STARTED obligatoire (moteur : statut building)');
+    assert.ok(helper.includes("consume({ kind: 'COMPONENT_CREATED'"), 'composants recréés par événement');
+    assert.ok(helper.includes('COMPONENT_READY'), 'prêt avec metadata.html');
   });
 
   it('3. échecs de restauration signalés honnêtement', () => {
@@ -195,5 +198,30 @@ describe('E40 : historique des révisions dans le Builder', () => {
     const fn = src.slice(src.indexOf('async function restoreRevision'), src.indexOf("document.getElementById('btnHistory')"));
     assert.ok(fn.includes('⚠ Contenu de la révision indisponible'), 'contenu manquant');
     assert.ok(fn.includes('⚠ Rollback échoué'), 'échec HTTP');
+  });
+});
+
+describe('E41 : reprise de session au chargement du Builder', () => {
+  it('1. resumeSession appelée au boot quand le flag v2 est ON', () => {
+    const src = appJs();
+    assert.ok(src.includes('async function resumeSession'), 'fonction présente');
+    const bootBlock = src.slice(src.indexOf("if (v2Flag === 'on' && v2Panel)"), src.indexOf("if (v2Flag === 'on' && v2Panel)") + 200);
+    assert.ok(bootBlock.includes('resumeSession()'), 'appelée au boot (dans le bloc v2)');
+  });
+
+  it('2. le projet serveur est résolu dès le boot (clé de persistance prête)', () => {
+    const src = appJs();
+    const fn = src.slice(src.indexOf('async function resumeSession'), src.indexOf('function rebuildCanvasFromHtml') > src.indexOf('async function resumeSession') ? src.indexOf('function rebuildCanvasFromHtml') : undefined);
+    assert.ok(fn.includes('/api/v1/projects'), 'liste des projets');
+    assert.ok(fn.includes('currentProjectId = proj.id;'), 'currentProjectId fixé au boot');
+    assert.ok(fn.includes('files/content?path=index.html'), 'contenu du site existant');
+  });
+
+  it('3. gardes : jamais écraser un build en cours, rien si pas de sections, échec silencieux', () => {
+    const src = appJs();
+    const fn = src.slice(src.indexOf('async function resumeSession'), src.indexOf('async function resumeSession') + 1400);
+    assert.ok(fn.includes('if (state.components.size > 0) return;'), 'build en cours respecté');
+    assert.ok(fn.includes('if (sectionCount > 0 && v2Status)'), 'statut seulement si sections');
+    assert.ok(fn.includes('} catch {'), 'échec réseau silencieux (mode démo)');
   });
 });

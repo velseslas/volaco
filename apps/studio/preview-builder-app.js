@@ -1066,7 +1066,52 @@
     const v2Flag = resolvePreviewBuilderV2({ search: location.search, storageGet: (k) => localStorage.getItem(k) });
     const v2Panel = document.getElementById('v2Panel');
     const v2Status = document.getElementById('v2Status');
-    if (v2Flag === 'on' && v2Panel) v2Panel.classList.remove('hidden');
+    if (v2Flag === 'on' && v2Panel) {
+      v2Panel.classList.remove('hidden');
+      resumeSession(); // E41 — reprise de session (site existant → canvas)
+    }
+
+    // E41 — RECONSTRUCTION DU CANVAS depuis un index.html serveur : utilisée
+    // par la restauration d'historique (E40) ET par la reprise de session
+    // (boot). Séquence obligatoire RESET → STARTED → CREATED/READY →
+    // COMPLETED (le moteur ignore les composants hors statut 'building').
+    function rebuildCanvasFromHtml(content) {
+      consume({ kind: 'BUILD_RESET', timestamp: Date.now() });
+      consume({ kind: 'BUILD_STARTED', stage: 'content', timestamp: Date.now() });
+      const sections = extractSections(content);
+      sections.forEach((s) => {
+        consume({ kind: 'COMPONENT_CREATED', component: { id: s.name, type: s.name, label: s.name }, timestamp: Date.now() });
+        consume({ kind: 'COMPONENT_READY', componentId: s.name, metadata: { html: s.html }, timestamp: Date.now() });
+      });
+      consume({ kind: 'BUILD_COMPLETED', timestamp: Date.now() });
+      return sections.length;
+    }
+
+    // E41 — REPRISE DE SESSION : au chargement (mode v2), le site existant du
+    // premier projet serveur est rechargé dans le canvas — un rafraîchissement
+    // ne perd plus le site (les éditions, elles, sont déjà persistées É38).
+    // Silencieux en mode démo/offline ; n'écrase JAMAIS un build en cours.
+    async function resumeSession() {
+      try {
+        const pres = await fetch('/api/v1/projects', { headers: H });
+        const pdata = await pres.json();
+        const proj = (pdata.projects || pdata)[0];
+        if (!proj) return;
+        currentProjectId = proj.id;
+        const fres = await fetch('/api/v1/projects/' + proj.id + '/files/content?path=index.html', { headers: H });
+        if (!fres.ok) return;
+        const fdata = await fres.json();
+        const content = fdata && fdata.file ? fdata.file.content : null;
+        if (typeof content !== 'string' || content.length === 0) return;
+        if (state.components.size > 0) return;
+        const sectionCount = rebuildCanvasFromHtml(content);
+        if (sectionCount > 0 && v2Status) {
+          v2Status.textContent = 'Site existant rechargé (' + sectionCount + ' section(s)) — édite-le, ou 🕘 HISTORIQUE pour une version antérieure.';
+        }
+      } catch {
+        // pas de serveur / mode démo : démarrage à blanc, comme avant
+      }
+    }
 
     let realSource = null;
     // É38 — le projet serveur utilisé par la dernière génération réelle :
@@ -1228,18 +1273,9 @@
       });
       if (!res.ok) { v2Status.textContent = '⚠ Rollback échoué (HTTP ' + res.status + ')'; return; }
       // Reconstruction du canvas local depuis le HTML restauré — par
-      // consume(), le pipeline UNIQUE des événements (comme un flux SSE).
-      // BUILD_STARTED est OBLIGATOIRE : le moteur ignore CREATED/READY hors
-      // du statut 'building' (convention des flux de génération).
-      consume({ kind: 'BUILD_RESET', timestamp: Date.now() });
-      consume({ kind: 'BUILD_STARTED', stage: 'content', timestamp: Date.now() });
-      const sections = extractSections(content);
-      sections.forEach((s) => {
-        consume({ kind: 'COMPONENT_CREATED', component: { id: s.name, type: s.name, label: s.name }, timestamp: Date.now() });
-        consume({ kind: 'COMPONENT_READY', componentId: s.name, metadata: { html: s.html }, timestamp: Date.now() });
-      });
-      consume({ kind: 'BUILD_COMPLETED', timestamp: Date.now() });
-      v2Status.textContent = 'Restauré : révision #' + target.revisionNumber + ' (' + sections.length + ' section(s), index.html réécrit côté serveur)';
+      // consume(), le pipeline UNIQUE des événements (helper partagé E41).
+      const sectionCount = rebuildCanvasFromHtml(content);
+      v2Status.textContent = 'Restauré : révision #' + target.revisionNumber + ' (' + sectionCount + ' section(s), index.html réécrit côté serveur)';
       loadHistory();
     }
 
