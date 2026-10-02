@@ -493,6 +493,9 @@
           if (v2Status) v2Status.textContent = '⚠ Édition non sauvegardée côté serveur (HTTP ' + res.status + ')';
         } else if (data && data.applied === false) {
           if (v2Status) v2Status.textContent = '⚠ Section non trouvée dans le HTML serveur (' + componentId + ')';
+        } else {
+          // succès : on efface tout avertissement stale d'un échec antérieur
+          if (v2Status && v2Status.textContent.indexOf('⚠') === 0) v2Status.textContent = 'Édition sauvegardée côté serveur ✓';
         }
       } catch (err) {
         if (v2Status) v2Status.textContent = '⚠ Édition non sauvegardée côté serveur (' + (err instanceof Error ? err.message : String(err)) + ')';
