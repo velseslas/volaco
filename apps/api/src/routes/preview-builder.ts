@@ -43,6 +43,7 @@ function serveFile(res: ServerResponse, filePath: string, contentType: string, n
   }
   res.statusCode = 200;
   res.setHeader('Content-Type', contentType);
+  res.setHeader('Cache-Control', 'no-cache'); // E47 — code vivant : toujours revalidé
   res.end(readFileSync(filePath, 'utf8'));
   return true;
 }

@@ -1304,6 +1304,83 @@
 
     document.getElementById('btnReal').addEventListener('click', () => { startRealGeneration(); });
 
+    /* ===== P1/P2 — GÉNÉRATION D'UN VRAI PROJET REACT (standard premium) =====
+       L'IA écrit un projet Vite+React+TS+Tailwind multi-fichiers côté serveur
+       (tool-calling), le serveur le CONSTRUIT (build < 1 s) et le canvas
+       embarque le BUNDLE exécutable — scripts, imports, styles : tout vit.
+       Progression en SSE (fichiers créés, build, auto-réparation). */
+    let appSource = null;
+    function showAppBundle(projectId, buildId) {
+      const canvas = el('canvas');
+      const prev = canvas.querySelector('#appBundleFrame');
+      if (prev) prev.remove();
+      const frame = document.createElement('iframe');
+      frame.id = 'appBundleFrame';
+      frame.setAttribute('sandbox', 'allow-scripts allow-modals allow-forms allow-popups');
+      frame.src = '/preview-bundle/' + encodeURIComponent(projectId) + '/?v=' + encodeURIComponent(buildId);
+      frame.style.cssText = 'width:100%;height:100%;min-height:100vh;border:0;background:#0b0f1a;';
+      canvas.appendChild(frame);
+    }
+
+    async function startAppGeneration() {
+      const promptInput = document.getElementById('v2Prompt');
+      const message = promptInput ? promptInput.value.trim() : '';
+      if (!message) { if (v2Status) v2Status.textContent = "Décris d'abord l'application à générer."; return; }
+      const pres = await fetch('/api/v1/projects', { headers: H });
+      const pdata = await pres.json();
+      const proj = (pdata.projects || pdata)[0];
+      if (!proj) { if (v2Status) v2Status.textContent = 'Aucun projet serveur.'; return; }
+      currentProjectId = proj.id;
+      if (v2Status) v2Status.textContent = 'Génération du projet React en cours…';
+      if (realSource) realSource.stop();
+      state = createPreviewBuildState();
+      renderCurrent();
+      const res = await fetch('/api/v1/projects/' + proj.id + '/app/generate', {
+        method: 'POST',
+        headers: H,
+        body: JSON.stringify({ prompt: message })
+      });
+      if (!res.ok || !res.body) { if (v2Status) v2Status.textContent = 'HTTP ' + res.status; return; }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let done = false;
+      while (!done) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        buffer += decoder.decode(chunk.value, { stream: true });
+        let idx;
+        while ((idx = buffer.indexOf('\n\n')) >= 0) {
+          const raw = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 2);
+          const line = raw.split('\n').find((l) => l.startsWith('data: '));
+          if (!line) continue;
+          let ev;
+          try { ev = JSON.parse(line.slice(6)); } catch { continue; }
+          if (ev.type === 'file') { if (v2Status) v2Status.textContent = 'Fichier créé : ' + ev.path; }
+          else if (ev.type === 'generation-done') { if (v2Status) v2Status.textContent = 'Projet écrit — build en cours…'; }
+          else if (ev.type === 'build-ok') { if (v2Status) v2Status.textContent = 'Build réussi (' + ev.durationMs + ' ms)'; }
+          else if (ev.type === 'repair') { if (v2Status) v2Status.textContent = 'Auto-réparation du build (tour ' + ev.round + ')…'; }
+          else if (ev.type === 'build-error') { if (v2Status) v2Status.textContent = 'Build en échec — correction automatique…'; }
+          else if (ev.type === 'done') {
+            done = true;
+            if (ev.ok) {
+              appSource = { projectId: proj.id };
+              showAppBundle(proj.id, ev.buildId);
+              if (v2Status) v2Status.textContent = 'App React générée et exécutée (' + ev.durationMs + ' ms, ' + (ev.files || []).length + ' fichiers).';
+            } else if (v2Status) {
+              v2Status.textContent = 'La génération a échoué après auto-réparation — réessaie.';
+            }
+          } else if (ev.type === 'error') {
+            done = true;
+            if (v2Status) v2Status.textContent = 'Erreur : ' + (ev.error || 'inconnue');
+          }
+        }
+      }
+    }
+    const btnAppReal = document.getElementById('btnAppReal');
+    if (btnAppReal) btnAppReal.addEventListener('click', () => { startAppGeneration(); });
+
     // É39 — ÉDITION IA PAR PAGE : l'inventaire de TOUS les composants à HTML
     // réel (section = id du composant) est envoyé au modèle, qui enchaîne
     // des set_text / set_image_src / set_link_href avec section+path. Chaque

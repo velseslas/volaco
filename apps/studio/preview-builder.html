@@ -466,7 +466,8 @@
     
   </div>
 
-  <script type="module" src="/preview-builder/app.js"></script>
+  <script>window.__errs=[];window.addEventListener("error",function(e){window.__errs.push((e.message||"?")+" @ ligne "+e.lineno);});</script>
+<script type="module" src="/preview-builder/app.js"></script>
 
   <!-- É28 — CHROME BUILDER MASQUÉ : toute la logique É01→É27 reste
        branchée (moteur, pont Studio, éditions, timeline, inspector) mais
@@ -487,6 +488,8 @@
     <input id="v2Prompt" type="text" placeholder="Décris l'interface à générer…" style="width:100%; background:#0d1222; border:1px solid #223052; color:#e2e8f0; border-radius:8px; padding:8px 10px; font-size:12px; margin-bottom:8px;">
     <div class="controls" style="margin-bottom:0;">
       <button id="btnReal" style="background:#059669;">GÉNÉRER (flux réel)</button>
+      <!-- P1/P2 — génération d'un VRAI projet React (bundle exécuté) -->
+      <button id="btnAppReal" style="background:#7c3aed;">GÉNÉRER (Projet React)</button>
       <button id="btnStopReal" class="secondary">STOP</button>
     </div>
     <!-- É39 — édition IA PAR PAGE : l'inventaire de TOUS les composants est
