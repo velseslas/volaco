@@ -1,5 +1,6 @@
 ﻿import type { IncomingMessage, ServerResponse } from 'node:http';
 import { revisionStore } from '../../../../packages/core/src/model/revision-store.js';
+import { fileStore } from '../../../../packages/core/src/file-explorer/index.js';
 import { projectStore } from '../../../../packages/core/src/identity/project.js';
 import { assertPermission } from '../../../../packages/core/src/identity/permissions.js';
 import { NotFoundError, ValidationError } from '../../../../packages/core/src/errors.js';
@@ -81,8 +82,22 @@ export async function handleRevisionsRoutes(
       requestId
     );
 
+    // E40 — le rollback est HONNÊTE : les fichiers restaurés sont écrits
+    // dans le FileStore (sinon l'index.html réel resterait sur l'état
+    // antérieur et seule l'historique aurait changé).
+    let restoredFiles = 0;
+    for (const [path, artifact] of Object.entries(rollbackRevision.files)) {
+      const content = typeof artifact === 'string'
+        ? artifact
+        : (artifact as { content?: string }).content;
+      if (typeof content === 'string' && content.length > 0) {
+        fileStore.saveFile(context.tenantId, projectId, path, content);
+        restoredFiles += 1;
+      }
+    }
+
     res.statusCode = 200;
-    res.end(JSON.stringify({ success: true, rollbackRevision, requestId }));
+    res.end(JSON.stringify({ success: true, rollbackRevision, restoredFiles, requestId }));
     return true;
   }
 

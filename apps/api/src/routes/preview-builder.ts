@@ -31,6 +31,8 @@ const flagsJsPath = join(repoRoot, 'dist', 'packages', 'core', 'src', 'preview-b
 const editingJsPath = join(repoRoot, 'dist', 'packages', 'core', 'src', 'preview-builder', 'editing.js');
 // ÉTAPE 35 — boucle d'édition IA par outils (module isomorphe)
 const aiEditJsPath = join(repoRoot, 'dist', 'packages', 'core', 'src', 'preview-builder', 'ai-edit.js');
+// E40 — extraction des sections d'un HTML restauré (historique)
+const sectionParseJsPath = join(repoRoot, 'dist', 'packages', 'core', 'src', 'preview-builder', 'section-parse.js');
 
 function serveFile(res: ServerResponse, filePath: string, contentType: string, notFound: string): boolean {
   if (!existsSync(filePath)) {
@@ -84,6 +86,9 @@ export async function handlePreviewBuilderRoutes(
   }
   if (pathname === '/preview-builder/ai-edit.js') {
     return serveFile(res, aiEditJsPath, 'text/javascript; charset=utf-8', 'AI Edit Preview Builder non compilé (npm run build)');
+  }
+  if (pathname === '/preview-builder/section-parse.js') {
+    return serveFile(res, sectionParseJsPath, 'text/javascript; charset=utf-8', 'Section Parse Preview Builder non compilé (npm run build)');
   }
   return false;
 }

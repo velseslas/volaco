@@ -169,3 +169,30 @@ describe('ÉTAPE 39 : édition IA par page (multi-sections)', () => {
     assert.ok(fn.includes("modification(s) dans ' + outcome.touchedSections.length + ' section(s)"), 'bilan affiché');
   });
 });
+
+describe('E40 : historique des révisions dans le Builder', () => {
+  it('1. bloc Historique : bouton + panneau + liste + restauration', () => {
+    const src = appJs();
+    assert.ok(src.includes("getElementById('btnHistory')"), 'bouton Historique branché');
+    assert.ok(src.includes('async function loadHistory'), 'chargement de la liste');
+    assert.ok(src.includes('async function restoreRevision'), 'restauration');
+    assert.ok(src.includes("import { extractSections } from '/preview-builder/section-parse.js';"), 'parseur de sections importé');
+  });
+
+  it('2. la restauration reconstruit le canvas par le PIPELINE consume() (jamais en direct)', () => {
+    const src = appJs();
+    const fn = src.slice(src.indexOf('async function restoreRevision'), src.indexOf("document.getElementById('btnHistory')"));
+    assert.ok(fn.includes("consume({ kind: 'BUILD_RESET'"), 'reset par événement');
+    assert.ok(fn.includes("consume({ kind: 'COMPONENT_CREATED'"), 'composants recréés par événement');
+    assert.ok(fn.includes('COMPONENT_READY'), 'prêt avec metadata.html');
+    assert.ok(fn.includes('/rollback'), 'rollback serveur appelé');
+    assert.ok(!fn.includes('.innerHTML'), 'aucune écriture DOM directe du canvas');
+  });
+
+  it('3. échecs de restauration signalés honnêtement', () => {
+    const src = appJs();
+    const fn = src.slice(src.indexOf('async function restoreRevision'), src.indexOf("document.getElementById('btnHistory')"));
+    assert.ok(fn.includes('⚠ Contenu de la révision indisponible'), 'contenu manquant');
+    assert.ok(fn.includes('⚠ Rollback échoué'), 'échec HTTP');
+  });
+});

@@ -1,0 +1,58 @@
+/**
+ * E40 — EXTRACTION DES SECTIONS D'UN HTML SERVEUR (extractSections).
+ *
+ * Sert à reconstruire le canvas du Builder depuis un HTML restauré par
+ * rollback. Le découpage DOIT réutiliser la convention de blocs du serveur
+ * (conversation.ts) : ce qui est extrait est ce que le serveur remplacerait.
+ */
+
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { extractSections } from '../../src/preview-builder/section-parse.js';
+
+const wrap = (name: string, inner: string): string => `<div class="vibe-stitched" data-section="${name}">${inner}</div>`;
+
+describe('E40 : extractSections', () => {
+  it('1. deux sections : noms et intérieurs exacts', () => {
+    const html = '<html><body>\n'
+      + wrap('header', '<header><span>Logo</span></header>') + '\n'
+      + wrap('hero', '<section><h1>Titre</h1></section>') + '\n'
+      + '</body></html>';
+    const sections = extractSections(html);
+    assert.deepEqual(sections.map((s) => s.name), ['header', 'hero']);
+    assert.equal(sections[0]?.html, '<header><span>Logo</span></header>');
+    assert.equal(sections[1]?.html, '<section><h1>Titre</h1></section>');
+  });
+
+  it('2. divs imbriqués dans la section : l intérieur reste complet', () => {
+    const inner = '<section><div class="a"><div class="b">x</div></div><p>fin</p></section>';
+    const sections = extractSections('<body>' + wrap('hero', inner) + '</body>');
+    assert.equal(sections[0]?.html, inner);
+  });
+
+  it('3. section unique en fin de document (avant </body>)', () => {
+    const sections = extractSections('<body>' + wrap('footer', '<footer>bas</footer>') + '\n</body>');
+    assert.deepEqual(sections.map((s) => s.name), ['footer']);
+    assert.equal(sections[0]?.html, '<footer>bas</footer>');
+  });
+
+  it('4. aucun wrapper data-section → tableau vide', () => {
+    assert.deepEqual(extractSections('<html><body><div>rien</div></body></html>'), []);
+    assert.deepEqual(extractSections(''), []);
+  });
+
+  it('5. cap maxSections : ne diverge jamais', () => {
+    const html = Array.from({ length: 10 }, (_, i) => wrap('s' + i, '<p>x' + i + '</p>')).join('');
+    assert.equal(extractSections(html, 5).length, 5);
+  });
+
+  it('6. cohérence aller-retour avec le format d assemblage serveur', () => {
+    // un HTML généré par le serveur → extractSections → les intérieurs
+    // ré-assemblés avec wrapper redonnent le même document section par section
+    const inner = '<header class="h"><nav>x</nav></header>';
+    const html = '<body>' + wrap('header', inner) + '</body>';
+    const sections = extractSections(html);
+    assert.equal(sections.length, 1);
+    assert.ok(html.includes('data-section="header">' + sections[0]!.html + '</div>'));
+  });
+});

@@ -486,6 +486,16 @@
       <button id="btnPageAi" style="background:#7c3aed;">✨ IA page</button>
     </div>
     <div id="v2Status" style="font-size:10px; color:#64748b; margin-top:8px;">sessionId: —</div>
+    <!-- E40 — historique des révisions : liste des dernières versions
+         (générations + éditions Builder) et restauration en un clic. Le
+         rollback serveur réécrit index.html (E40) ET le canvas local est
+         reconstruit depuis le HTML restauré. -->
+    <div class="controls" style="margin-top:6px;">
+      <button id="btnHistory" class="secondary">🕘 HISTORIQUE</button>
+    </div>
+    <div id="historyPanel" class="hidden" style="margin-top:6px; font-size:11px;">
+      <div id="historyList"></div>
+    </div>
   </div>
         <div id="stageLadder"></div>
 

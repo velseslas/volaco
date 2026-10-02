@@ -2,6 +2,7 @@
     import { renderPreview, buildTimeline, shouldRefreshNode, previewNodeId, resolvePreviewTarget, buildInspector, resolveDropTarget } from '/preview-builder/renderer.js';
     import { updateComponentLabel, updateComponentVariant, moveComponent, computeDropTarget, applyDragIntent, resizeComponent, updateTextContent, updateImageSource, updateLinkHref, inventoryEditableElements } from '/preview-builder/editing.js';
     import { runAiEditLoop, runAiComponentEditLoop, runAiPageEditLoop } from '/preview-builder/ai-edit.js';
+    import { extractSections } from '/preview-builder/section-parse.js';
     import { layoutTree } from '/preview-builder/layout.js';
     import { renderComponentVisual } from '/preview-builder/visuals.js';
     import { demoBuildScript, scriptToEvents } from '/preview-builder/mocks.js';
@@ -1177,6 +1178,78 @@
       if (input) input.value = '';
     }
     document.getElementById('btnPageAi').addEventListener('click', () => { startAiPageEdit(); });
+
+    // E40 — HISTORIQUE DES RÉVISIONS : les 8 dernières versions (générations
+    // + éditions Builder), avec restauration en un clic. Le rollback serveur
+    // réécrit le index.html réel (correction E40) ; le canvas local est
+    // reconstruit depuis le HTML restauré (un composant par data-section).
+    let revisionsCache = [];
+    let historyBusy = false;
+    async function loadHistory() {
+      const panel = el('historyPanel');
+      const list = el('historyList');
+      if (!panel || !list) return;
+      if (!currentProjectId) { v2Status.textContent = 'Historique indisponible en mode démo (aucun projet serveur).'; return; }
+      if (historyBusy) return;
+      historyBusy = true;
+      list.textContent = 'Chargement…';
+      try {
+        const res = await fetch('/api/v1/projects/' + currentProjectId + '/revisions', { headers: H });
+        const data = await res.json();
+        revisionsCache = (data.revisions || []).slice(-8).reverse();
+        if (revisionsCache.length === 0) { list.textContent = 'Aucune révision.'; return; }
+        list.innerHTML = revisionsCache.map((r) => {
+          const time = String(r.createdAt).slice(11, 19);
+          const label = '#' + r.revisionNumber + ' · ' + time + ' · ' + canonicalize(String(r.message).slice(0, 70));
+          return '<div class="hist-row" style="display:flex; gap:6px; align-items:center; padding:3px 0; border-bottom:1px solid #1a2238;">'
+            + '<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + canonicalize(String(r.message)) + '">' + label + '</span>'
+            + '<button data-restore="' + canonicalize(r.id) + '" style="background:#1d4ed8; padding:2px 8px; font-size:10px;">RESTAURER</button>'
+            + '</div>';
+        }).join('');
+      } catch (err) {
+        list.textContent = 'Impossible de charger l historique (' + (err instanceof Error ? err.message : String(err)) + ')';
+      } finally {
+        historyBusy = false;
+      }
+    }
+
+    async function restoreRevision(revId) {
+      const target = revisionsCache.find((r) => r.id === revId);
+      const artifact = target && target.files ? target.files['index.html'] : null;
+      const content = artifact ? (typeof artifact === 'string' ? artifact : artifact.content) : null;
+      if (!target || typeof content !== 'string' || content.length === 0) {
+        v2Status.textContent = '⚠ Contenu de la révision indisponible.';
+        return;
+      }
+      v2Status.textContent = 'Restauration de la révision #' + target.revisionNumber + '…';
+      const res = await fetch('/api/v1/projects/' + currentProjectId + '/revisions/' + encodeURIComponent(revId) + '/rollback', {
+        method: 'POST',
+        headers: H
+      });
+      if (!res.ok) { v2Status.textContent = '⚠ Rollback échoué (HTTP ' + res.status + ')'; return; }
+      // Reconstruction du canvas local depuis le HTML restauré — par
+      // consume(), le pipeline UNIQUE des événements (comme un flux SSE).
+      consume({ kind: 'BUILD_RESET', timestamp: Date.now() });
+      const sections = extractSections(content);
+      sections.forEach((s) => {
+        consume({ kind: 'COMPONENT_CREATED', component: { id: s.name, type: s.name, label: s.name, metadata: { html: s.html } }, timestamp: Date.now() });
+        consume({ kind: 'COMPONENT_READY', componentId: s.name, metadata: { html: s.html }, timestamp: Date.now() });
+      });
+      consume({ kind: 'BUILD_COMPLETED', timestamp: Date.now() });
+      v2Status.textContent = 'Restauré : révision #' + target.revisionNumber + ' (' + sections.length + ' section(s), index.html réécrit côté serveur)';
+      loadHistory();
+    }
+
+    document.getElementById('btnHistory').addEventListener('click', () => {
+      const panel = el('historyPanel');
+      if (!panel) return;
+      if (panel.classList.contains('hidden')) { panel.classList.remove('hidden'); loadHistory(); }
+      else panel.classList.add('hidden');
+    });
+    el('historyList').addEventListener('click', (e) => {
+      const revId = e.target.getAttribute && e.target.getAttribute('data-restore');
+      if (revId) restoreRevision(revId);
+    });
     document.getElementById('btnStopReal').addEventListener('click', () => {
       if (realSource) { realSource.stop(); realSource = null; }
       if (v2Status) v2Status.textContent = '⏹ Flux réel interrompu (les composants construits restent affichés)';
