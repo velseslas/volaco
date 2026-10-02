@@ -1229,10 +1229,13 @@
       if (!res.ok) { v2Status.textContent = '⚠ Rollback échoué (HTTP ' + res.status + ')'; return; }
       // Reconstruction du canvas local depuis le HTML restauré — par
       // consume(), le pipeline UNIQUE des événements (comme un flux SSE).
+      // BUILD_STARTED est OBLIGATOIRE : le moteur ignore CREATED/READY hors
+      // du statut 'building' (convention des flux de génération).
       consume({ kind: 'BUILD_RESET', timestamp: Date.now() });
+      consume({ kind: 'BUILD_STARTED', stage: 'content', timestamp: Date.now() });
       const sections = extractSections(content);
       sections.forEach((s) => {
-        consume({ kind: 'COMPONENT_CREATED', component: { id: s.name, type: s.name, label: s.name, metadata: { html: s.html } }, timestamp: Date.now() });
+        consume({ kind: 'COMPONENT_CREATED', component: { id: s.name, type: s.name, label: s.name }, timestamp: Date.now() });
         consume({ kind: 'COMPONENT_READY', componentId: s.name, metadata: { html: s.html }, timestamp: Date.now() });
       });
       consume({ kind: 'BUILD_COMPLETED', timestamp: Date.now() });

@@ -55,4 +55,30 @@ describe('E40 : extractSections', () => {
     assert.equal(sections.length, 1);
     assert.ok(html.includes('data-section="header">' + sections[0]!.html + '</div>'));
   });
+
+  it('7. reconstruction d état : RESET → STARTED → CREATED/READY par section (séquence E40)', async () => {
+    // la séquence du Builder après restauration : sans BUILD_STARTED, le
+    // moteur ignore CREATED/READY (statut 'building' requis).
+    const engine = await import('../../src/preview-builder/engine.js');
+    const html = '<body>'
+      + wrap('header', '<header><span>Logo</span></header>') + '\n'
+      + wrap('hero', '<section><h1>Titre</h1></section>')
+      + '</body>';
+    const sections = extractSections(html);
+    let state = engine.createPreviewBuildState();
+    state = engine.applyBuildEvent(state, { kind: 'BUILD_RESET', timestamp: 1 });
+    state = engine.applyBuildEvent(state, { kind: 'BUILD_STARTED', stage: 'content', timestamp: 2 });
+    for (const s of sections) {
+      state = engine.applyBuildEvent(state, { kind: 'COMPONENT_CREATED', component: { id: s.name, type: s.name, label: s.name }, timestamp: 3 });
+      state = engine.applyBuildEvent(state, { kind: 'COMPONENT_READY', componentId: s.name, metadata: { html: s.html }, timestamp: 4 });
+    }
+    state = engine.applyBuildEvent(state, { kind: 'BUILD_COMPLETED', timestamp: 5 });
+    assert.equal(state.components.size, 2);
+    assert.equal(state.components.get('hero')?.metadata?.html, '<section><h1>Titre</h1></section>');
+    // et SANS BUILD_STARTED : rien n'est créé (garde du moteur respectée)
+    let empty = engine.createPreviewBuildState();
+    empty = engine.applyBuildEvent(empty, { kind: 'BUILD_RESET', timestamp: 1 });
+    empty = engine.applyBuildEvent(empty, { kind: 'COMPONENT_CREATED', component: { id: 'x', type: 'x', label: 'x' }, timestamp: 2 });
+    assert.equal(empty.components.size, 0);
+  });
 });

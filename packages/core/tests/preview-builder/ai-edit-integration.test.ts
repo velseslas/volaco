@@ -183,6 +183,7 @@ describe('E40 : historique des révisions dans le Builder', () => {
     const src = appJs();
     const fn = src.slice(src.indexOf('async function restoreRevision'), src.indexOf("document.getElementById('btnHistory')"));
     assert.ok(fn.includes("consume({ kind: 'BUILD_RESET'"), 'reset par événement');
+    assert.ok(fn.includes("consume({ kind: 'BUILD_STARTED'"), 'STARTED obligatoire (moteur : statut building)');
     assert.ok(fn.includes("consume({ kind: 'COMPONENT_CREATED'"), 'composants recréés par événement');
     assert.ok(fn.includes('COMPONENT_READY'), 'prêt avec metadata.html');
     assert.ok(fn.includes('/rollback'), 'rollback serveur appelé');
