@@ -295,7 +295,6 @@
     .pvz-ghosts .pv-ghost { height: 12px; }
 
     /* ===== ÉTAPE 07 — COMPOSITIONS + VIEWPORTS (mode d'affichage pur) ===== */
-    .vp-switch { display: flex; gap: 6px; margin-right: 18px; }
     .vp-btn { padding: 5px 12px; font-size: 11px; background: #1e293b; color: #94a3b8; }
     .vp-btn.active { background: #7c3aed; color: #fff; }
 
@@ -430,10 +429,8 @@
   <div class="app">
         <header class="app-header" style="padding: 8px 16px;">
       <a class="back" href="/">← Studio</a>
-      <div class="vp-switch" style="display:flex; gap:6px; margin:0;">
-        <button class="secondary vp-btn active" data-vp="desktop">Desktop</button>
-        <button class="secondary vp-btn" data-vp="tablet">Tablet</button>
-        <button class="secondary vp-btn" data-vp="mobile">Mobile</button>
+      <div class="build-badge">
+        <span class="dot" id="statusDot"></span><span id="statusBadge">Idle</span>
       </div>
     </header>
 
@@ -1048,7 +1045,6 @@
     document.addEventListener('click', (e) => {
       // Le sélecteur de viewport est du chrome d'affichage : changer de
       // viewport conserve la sélection (l'identité ne change jamais).
-      if (e.target.closest('.vp-switch')) return;
       // É16 — interagir avec l'édition du label (saisie / Apply) ne
       // désélectionne pas : le clic fait partie du flux d'édition.
       if (e.target.closest('.insp-editrow')) return;
@@ -1424,7 +1420,6 @@
        branchée (moteur, pont Studio, éditions, timeline, inspector) mais
        n'est plus VISIBLE dans la page Preview finale. Aucune API retirée. -->
   <div id="builderChrome" hidden>
-    <div class="build-badge" style="padding: 4px 8px;"><span class="dot" id="statusDot"></span><span id="statusBadge">Idle</span></div>
 <aside class="panel-build">
         <h2>Build</h2>
   <div class="controls">

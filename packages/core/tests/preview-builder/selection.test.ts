@@ -193,9 +193,10 @@ describe('ÉTAPE 14 : sélection interactive', () => {
     const model = renderPreview(scenario(), { selectedId: 'revenue' });
     const modelAgain = renderPreview(scenario(), { selectedId: 'revenue' });
     assert.deepEqual(model, modelAgain, 'le modèle n a AUCUN champ viewport : la sélection survit à un changement d affichage');
-    // La page : les boutons viewport ne désélectionnent pas (chrome d'affichage)
-    const source = readFileSync(join(process.cwd(), 'apps', 'studio', 'preview-builder.html'), 'utf8');
-    assert.ok(source.includes("closest('.vp-switch')"), 'le sélecteur de viewport préserve la sélection');
+    // É30 : les boutons viewport sont supprimés — la sélection ne peut plus
+    // être dérangée par un clic viewport (il n existe plus de bouton).
+    const pageSrc = readFileSync(join(process.cwd(), 'apps', 'studio', 'preview-builder.html'), 'utf8');
+    assert.ok(!pageSrc.includes('vp-switch'), 'aucun bouton viewport dans la page');
   });
 
   it('15. sélection DÉTERMINISTE : même entrée → même modèle', () => {
