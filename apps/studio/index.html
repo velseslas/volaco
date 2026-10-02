@@ -4208,7 +4208,7 @@ ${sections}
                     if (ap2) { ap2.code = currentAppHtml; saveUserProjects(); }
                     if (statusEl) statusEl.innerHTML = '<span style="color:#fbbf24;">⚠ Modification rejetée : des sections ont disparu sans demande.</span>';
                   }
-                  setTimeout(() =>                   // Carte Write — UNIQUEMENT en mode legacy ; en mode Activity
+                  // Carte Write — UNIQUEMENT en mode legacy ; en mode Activity
                   // Stream, le diff vit dans les items du flux (une seule fois)
                   // et les actions sont portées par la synthèse ci-dessous.
                   if (!activityFeed) {
@@ -4284,8 +4284,7 @@ ${sections}
                 };
                 const info = COMPASS_INFO[event.state];
                 if (info) setCompassState(event.state, info[0], info[1], info[2]);
-                const canvasStateMap = { UNDERSTANDING: 'thinking', PLANNING: 'thinking', EXECUTING: 'writing', REPAIRING: 'writing', VALIDATING: 'validating', COMPLETED: 'ready' };
-                if (canvasStateMap[event.state])                 // T3 — la timeline suit les transitions réelles du Compass
+                // T3 — la timeline suit les transitions réelles du Compass
                 if (event.state === 'WAITING_CONFIRMATION') {
                   timelineEnterPhase('PLAN', { waiting: true });
                 } else if (event.state === 'UNDERSTANDING') {
