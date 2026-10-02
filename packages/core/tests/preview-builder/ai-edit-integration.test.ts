@@ -256,11 +256,42 @@ describe('E43 : prévisualisation des éditions IA avant application', () => {
     const fn = src.slice(src.indexOf("el('aiDiffPanel').addEventListener"));
     assert.ok(fn.includes("action === 'reject'"), 'refus géré');
     assert.match(fn, /Éditions IA refusées — rien n a été appliqué./, 'refus honnête');
-    assert.ok(fn.includes('await pending.onConfirm()'), 'confirmation rejoue le lot');
+    assert.ok(fn.includes('await pending.onConfirm(checked)'), 'confirmation rejoue le lot avec les sections cochées (E44)');
     // le replay passe par les applyCall partagés (commandes pures) — vérifié
     // par la présence des pushes undo DANS les onConfirm
     assert.ok((src.match(/pushUndoBatch\('Édition IA du composant', undoSnapshots\)/g) || []).length >= 1);
     assert.ok((src.match(/pushUndoBatch\('Édition IA de la page', undoPageSnapshots\)/g) || []).length >= 1);
+  });
+});
+
+describe('E44 : application sélective par section dans la prévisualisation', () => {
+  it('1. le panneau groupe par section avec une case cochée par groupe', () => {
+    const src = appJs();
+    const fn = src.slice(src.indexOf('function showAiDiffPanel'));
+    assert.ok(fn.includes("data-section-check="), 'case par section');
+    assert.ok(fn.includes("[data-section-check]:checked"), 'lecture des cases au moment d appliquer');
+    assert.ok(fn.includes(' checked>'), 'cochées par défaut');
+  });
+
+  it('2. APPLIQUER ne rejoue que les sections cochées (filtrage avant replay)', () => {
+    const src = appJs();
+    const compFn = src.slice(src.indexOf('async function startAiComponentEdit'), src.indexOf('async function startAiPageEdit'));
+    const pageFn = src.slice(src.indexOf('async function startAiPageEdit'), src.indexOf('async function restoreRevision'));
+    assert.ok(compFn.includes("outcome.proposedCalls.filter(() => wanted.has(componentId))"), 'composant : filtrage');
+    assert.ok(pageFn.includes("outcome.proposedCalls.filter((c) => wanted.has(String(c.args.section)))"), 'page : filtrage par section');
+  });
+
+  it('3. aucune section cochée → rien appliqué (message honnête)', () => {
+    const src = appJs();
+    const fn = src.slice(src.indexOf("el('aiDiffPanel').addEventListener"));
+    assert.match(fn, /Aucune section cochée — rien n a été appliqué./);
+  });
+
+  it('4. la page regroupe les appels par section (groupOrder + Map)', () => {
+    const src = appJs();
+    const pageFn = src.slice(src.indexOf('async function startAiPageEdit'), src.indexOf('async function restoreRevision'));
+    assert.ok(pageFn.includes('groupOrder.push(section)'), 'ordre des groupes stable');
+    assert.ok(pageFn.includes('groupsBySection.set(section'), 'regroupement par section');
   });
 });
 

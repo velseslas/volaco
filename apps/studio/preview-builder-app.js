@@ -528,9 +528,16 @@
       return c ? c.checked : false;
     }
     let pendingAiDiff = null;
-    function showAiDiffPanel(title, lines, pending) {
+    function showAiDiffPanel(title, groups, pending) {
+      // E44 — groupes par section : chaque groupe a sa case (cochée par
+      // défaut) ; APPLIQUER ne rejoue que les groupes cochés.
       el('aiDiffTitle').textContent = title;
-      el('aiDiffList').innerHTML = lines.map((l) => '<div style="padding:2px 0; border-bottom:1px solid #1a2238;">' + l + '</div>').join('');
+      el('aiDiffList').innerHTML = groups.map((g) =>
+        '<div class="ai-diff-group" data-diff-section="' + canonicalize(g.section) + '" style="margin-bottom:6px;">'
+        + '<label style="display:flex; gap:6px; align-items:center; color:#c4b5fd;"><input type="checkbox" data-section-check="' + canonicalize(g.section) + '" checked> <b>' + canonicalize(g.section) + '</b> — ' + g.lines.length + ' modification(s)</label>'
+        + g.lines.map((l) => '<div style="padding:2px 0 2px 20px; border-bottom:1px solid #1a2238;">' + l + '</div>').join('')
+        + '</div>'
+      ).join('');
       pendingAiDiff = pending;
       el('aiDiffPanel').classList.remove('hidden');
     }
@@ -544,7 +551,13 @@
         if (v2Status) v2Status.textContent = 'Éditions IA refusées — rien n a été appliqué.';
         return;
       }
-      await pending.onConfirm();
+      const checked = Array.from(el('aiDiffList').querySelectorAll('[data-section-check]:checked'))
+        .map((c) => c.getAttribute('data-section-check'));
+      if (checked.length === 0) {
+        if (v2Status) v2Status.textContent = 'Aucune section cochée — rien n a été appliqué.';
+        return;
+      }
+      await pending.onConfirm(checked);
     });
 
     // É35 — ÉDITION IA PAR OUTILS : le modèle répond EXCLUSIVEMENT via un
@@ -663,18 +676,24 @@
           return '<b>' + canonicalize(c.name) + '</b> ' + JSON.stringify(c.args.path) + ' : '
             + (old !== undefined ? '« ' + canonicalize(String(old).slice(0, 60)) + ' »' : '(nouveau)') + ' → « ' + canonicalize(value.slice(0, 60)) + ' »';
         });
-        showAiDiffPanel('Édition IA du composant « ' + canonicalize(componentId) + ' » — ' + lines.length + ' modification(s) proposée(s)', lines, {
-          onConfirm: async () => {
-            let applied = 0;
-            for (const c of outcome.proposedCalls) {
-              if ((await applyCall(c)) === 'OK') applied += 1;
+        // E44 — un seul groupe (le composant) ; onConfirm applique SEULEMENT
+        // les groupes cochés.
+        showAiDiffPanel('Édition IA du composant « ' + canonicalize(componentId) + ' » — ' + lines.length + ' modification(s) proposée(s)',
+          [{ section: componentId, lines }],
+          {
+            onConfirm: async (checkedSections) => {
+              const wanted = new Set(checkedSections);
+              const calls = outcome.proposedCalls.filter(() => wanted.has(componentId));
+              let applied = 0;
+              for (const c of calls) {
+                if ((await applyCall(c)) === 'OK') applied += 1;
+              }
+              renderCurrent();
+              if (applied > 0) pushUndoBatch('Édition IA du composant', undoSnapshots);
+              if (applied > 0) await persistSection(componentId);
+              if (msgEl) msgEl.textContent = applied + ' modification(s) appliquée(s) après prévisualisation';
             }
-            renderCurrent();
-            if (applied > 0) pushUndoBatch('Édition IA du composant', undoSnapshots);
-            if (applied > 0) await persistSection(componentId);
-            if (msgEl) msgEl.textContent = applied + ' modification(s) appliquée(s) après prévisualisation';
-          }
-        });
+          });
         return;
       }
       if (outcome.ok && outcome.appliedCount > 0) pushUndoBatch('Édition IA du composant', undoSnapshots);
@@ -1324,17 +1343,26 @@
       if (outcome.ok && aiPreviewEnabled() && outcome.proposedCalls.length > 0) {
         // E43 — prévisualisation : rien n'a été appliqué ni persisté.
         const oldLookup = new Map(inventory.map((e2) => [e2.section + ':' + JSON.stringify(e2.path), e2.value]));
-        const lines = outcome.proposedCalls.map((c) => {
+        // E44 — regroupement PAR SECTION (une case à cocher par groupe).
+        const groupOrder = [];
+        const groupsBySection = new Map();
+        for (const c of outcome.proposedCalls) {
           const section = String(c.args.section);
+          if (!groupsBySection.has(section)) { groupsBySection.set(section, { section: section, calls: [], lines: [] }); groupOrder.push(section); }
+          const group = groupsBySection.get(section);
+          group.calls.push(c);
           const old = oldLookup.get(section + ':' + JSON.stringify(c.args.path));
           const value = String(c.args.text ?? c.args.src ?? c.args.href);
-          return '<b>' + canonicalize(section) + '</b> ' + canonicalize(c.name) + ' ' + JSON.stringify(c.args.path) + ' : '
-            + (old !== undefined ? '« ' + canonicalize(String(old).slice(0, 60)) + ' »' : '(nouveau)') + ' → « ' + canonicalize(value.slice(0, 60)) + ' »';
-        });
-        showAiDiffPanel('Édition IA de la page — ' + lines.length + ' modification(s) proposée(s)', lines, {
-          onConfirm: async () => {
+          group.lines.push('<b>' + canonicalize(c.name) + '</b> ' + JSON.stringify(c.args.path) + ' : '
+            + (old !== undefined ? '« ' + canonicalize(String(old).slice(0, 60)) + ' »' : '(nouveau)') + ' → « ' + canonicalize(value.slice(0, 60)) + ' »');
+        }
+        const groups = groupOrder.map((sec) => groupsBySection.get(sec));
+        showAiDiffPanel('Édition IA de la page — ' + outcome.proposedCalls.length + ' modification(s) dans ' + groups.length + ' section(s)', groups, {
+          onConfirm: async (checkedSections) => {
+            const wanted = new Set(checkedSections);
+            const calls = outcome.proposedCalls.filter((c) => wanted.has(String(c.args.section)));
             let applied = 0;
-            for (const c of outcome.proposedCalls) {
+            for (const c of calls) {
               if ((await applyCall(c)) === 'OK') applied += 1;
             }
             renderCurrent();
