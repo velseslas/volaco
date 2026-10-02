@@ -150,6 +150,15 @@ interface MistralChatResponse {
  */
 export type ImageUrlValidator = (url: string) => Promise<string | null> | string | null;
 
+/**
+ * E43 — appel d'outil validé COLLECTÉ en mode prévisualisation (deferApply) :
+ * rien n'est appliqué, l'appelant décide après confirmation humaine.
+ */
+export interface AiEditProposedCall {
+  readonly name: string;
+  readonly args: Record<string, unknown>;
+}
+
 /** Extrait la valeur du premier tool call ; null si absent/invalide/vide. */
 function extractValue(data: MistralChatResponse, kind: AiEditElementKind): { value: string } | { error: string } {
   const toolCalls = data?.choices?.[0]?.message?.tool_calls;
@@ -266,6 +275,8 @@ export interface AiComponentEditOutcome {
   readonly ok: boolean;
   /** Nombre d'appels d'outil exécutés avec succès par `apply`. */
   readonly appliedCount: number;
+  /** E43 — appels validés collectés en mode prévisualisation (non appliqués). */
+  readonly proposedCalls: readonly AiEditProposedCall[];
   /** Nombre de tours réellement passés au modèle. */
   readonly iterations: number;
   /** Résultats d'outils en échec (refus de commande, path invalide, …). */
@@ -371,14 +382,18 @@ export async function runAiComponentEditLoop(options: {
   headers?: Record<string, string> | undefined;
   /** É37 — validation des URL d'image proposées (image inaccessible → erreur nourrie au modèle, qui propose une autre URL). */
   validateImageUrl?: ImageUrlValidator | undefined;
+  /** E43 — prévisualisation : les appels validés sont COLLECTÉS (proposedCalls) sans être appliqués ; le modèle reçoit OK et l'appelant applique après confirmation humaine. */
+  deferApply?: boolean | undefined;
 }): Promise<AiComponentEditOutcome> {
   const instruction = options.instruction.trim();
   if (instruction.length === 0) {
-    return { ok: false, appliedCount: 0, iterations: 0, toolErrors: [], finalText: '', limitReached: false, reason: 'empty-instruction' };
+    return { ok: false, appliedCount: 0, proposedCalls: [], iterations: 0, toolErrors: [], finalText: '', limitReached: false, reason: 'empty-instruction' };
   }
   if (options.inventory.length === 0) {
-    return { ok: false, appliedCount: 0, iterations: 0, toolErrors: [], finalText: '', limitReached: false, reason: 'empty-inventory' };
+    return { ok: false, appliedCount: 0, proposedCalls: [], iterations: 0, toolErrors: [], finalText: '', limitReached: false, reason: 'empty-inventory' };
   }
+  const deferApply = options.deferApply === true;
+  const proposedCalls: AiEditProposedCall[] = [];
   const maxModelCalls = Math.max(1, options.maxModelCalls ?? 6);
   const model = options.model || 'codestral-latest';
 
@@ -408,13 +423,13 @@ export async function runAiComponentEditLoop(options: {
       });
     } catch (err) {
       return {
-        ok: false, appliedCount, iterations: iteration, toolErrors, finalText: '', limitReached: false,
+        ok: false, appliedCount, proposedCalls, iterations: iteration, toolErrors, finalText: '', limitReached: false,
         reason: 'http-error', detail: err instanceof Error ? err.message : String(err)
       };
     }
     if (!response.ok) {
       return {
-        ok: false, appliedCount, iterations: iteration, toolErrors, finalText: '', limitReached: false,
+        ok: false, appliedCount, proposedCalls, iterations: iteration, toolErrors, finalText: '', limitReached: false,
         reason: 'http-error', detail: 'HTTP ' + response.status
       };
     }
@@ -424,7 +439,7 @@ export async function runAiComponentEditLoop(options: {
       data = (await response.json()) as MistralChatResponse;
     } catch (err) {
       return {
-        ok: false, appliedCount, iterations: iteration, toolErrors, finalText: '', limitReached: false,
+        ok: false, appliedCount, proposedCalls, iterations: iteration, toolErrors, finalText: '', limitReached: false,
         reason: 'http-error', detail: 'réponse non JSON: ' + (err instanceof Error ? err.message : String(err))
       };
     }
@@ -434,7 +449,7 @@ export async function runAiComponentEditLoop(options: {
     if (!rawToolCalls || rawToolCalls.length === 0) {
       // Réponse en texte libre : fin naturelle de la boucle.
       return {
-        ok: true, appliedCount, iterations: iteration, toolErrors,
+        ok: true, appliedCount, proposedCalls, iterations: iteration, toolErrors,
         finalText: (message?.content ?? '').trim(), limitReached: false
       };
     }
@@ -481,10 +496,15 @@ export async function runAiComponentEditLoop(options: {
           // É37 — l'URL est testée AVANT application : une image qui ne
           // charge pas est refusée au modèle, qui propose une autre URL.
           const invalid = await options.validateImageUrl(value.trim());
-          result = invalid
-            ? toolError('image inaccessible (' + invalid + ') — propose une AUTRE URL https://images.unsplash.com/photo-...')
-            : await options.apply({ name, args: { ...args, [valueKey]: value.trim() } });
-          if (!invalid) {
+          if (invalid) {
+            result = toolError('image inaccessible (' + invalid + ') — propose une AUTRE URL https://images.unsplash.com/photo-...');
+          } else if (deferApply) {
+            // E43 — collecté, pas appliqué ; le modèle reçoit OK pour conclure.
+            const cleanArgs = { ...args, [valueKey]: value.trim() };
+            proposedCalls.push({ name, args: cleanArgs });
+            result = 'OK';
+          } else {
+            result = await options.apply({ name, args: { ...args, [valueKey]: value.trim() } });
             if (result.startsWith('ERREUR:')) {
               toolErrors.push(result.slice('ERREUR:'.length).trim());
             } else {
@@ -493,13 +513,19 @@ export async function runAiComponentEditLoop(options: {
           }
         } else {
           args[valueKey] = value.trim();
-          const applied = await options.apply({ name, args });
-          if (applied.startsWith('ERREUR:')) {
-            result = applied;
-            toolErrors.push(applied.slice('ERREUR:'.length).trim());
+          if (deferApply) {
+            // E43 — collecté, pas appliqué.
+            proposedCalls.push({ name, args });
+            result = 'OK';
           } else {
-            appliedCount += 1;
-            result = applied;
+            const applied = await options.apply({ name, args });
+            if (applied.startsWith('ERREUR:')) {
+              result = applied;
+              toolErrors.push(applied.slice('ERREUR:'.length).trim());
+            } else {
+              appliedCount += 1;
+              result = applied;
+            }
           }
         }
       }
@@ -509,7 +535,7 @@ export async function runAiComponentEditLoop(options: {
 
   // Borne atteinte : le dernier tour était sans outils, donc ce tour-ci a
   // répondu en texte libre et la boucle a déjà retourné. Garde compilateur.
-  return { ok: true, appliedCount, iterations: maxModelCalls, toolErrors, finalText: '', limitReached: true };
+  return { ok: true, appliedCount, proposedCalls, iterations: maxModelCalls, toolErrors, finalText: '', limitReached: true };
 }
 
 /* =====================================================================
@@ -535,6 +561,8 @@ export interface PageEditableElement {
 export interface AiPageEditOutcome {
   readonly ok: boolean;
   readonly appliedCount: number;
+  /** E43 — appels validés collectés en mode prévisualisation (non appliqués). */
+  readonly proposedCalls: readonly AiEditProposedCall[];
   /** Sections réellement modifiées (déduites des appels validés réussis). */
   readonly touchedSections: readonly string[];
   readonly iterations: number;
@@ -629,14 +657,18 @@ export async function runAiPageEditLoop(options: {
   maxModelCalls?: number | undefined;
   headers?: Record<string, string> | undefined;
   validateImageUrl?: ImageUrlValidator | undefined;
+  /** E43 — prévisualisation : les appels validés sont COLLECTÉS (proposedCalls) sans être appliqués. */
+  deferApply?: boolean | undefined;
 }): Promise<AiPageEditOutcome> {
   const instruction = options.instruction.trim();
   if (instruction.length === 0) {
-    return { ok: false, appliedCount: 0, touchedSections: [], iterations: 0, toolErrors: [], finalText: '', limitReached: false, reason: 'empty-instruction' };
+    return { ok: false, appliedCount: 0, proposedCalls: [], touchedSections: [], iterations: 0, toolErrors: [], finalText: '', limitReached: false, reason: 'empty-instruction' };
   }
   if (options.inventory.length === 0) {
-    return { ok: false, appliedCount: 0, touchedSections: [], iterations: 0, toolErrors: [], finalText: '', limitReached: false, reason: 'empty-inventory' };
+    return { ok: false, appliedCount: 0, proposedCalls: [], touchedSections: [], iterations: 0, toolErrors: [], finalText: '', limitReached: false, reason: 'empty-inventory' };
   }
+  const deferApply = options.deferApply === true;
+  const proposedCalls: AiEditProposedCall[] = [];
   const maxModelCalls = Math.max(1, options.maxModelCalls ?? 8);
   const model = options.model || 'codestral-latest';
 
@@ -666,13 +698,13 @@ export async function runAiPageEditLoop(options: {
       });
     } catch (err) {
       return {
-        ok: false, appliedCount, touchedSections: [...touched], iterations: iteration, toolErrors, finalText: '', limitReached: false,
+        ok: false, appliedCount, proposedCalls, touchedSections: [...touched], iterations: iteration, toolErrors, finalText: '', limitReached: false,
         reason: 'http-error', detail: err instanceof Error ? err.message : String(err)
       };
     }
     if (!response.ok) {
       return {
-        ok: false, appliedCount, touchedSections: [...touched], iterations: iteration, toolErrors, finalText: '', limitReached: false,
+        ok: false, appliedCount, proposedCalls, touchedSections: [...touched], iterations: iteration, toolErrors, finalText: '', limitReached: false,
         reason: 'http-error', detail: 'HTTP ' + response.status
       };
     }
@@ -682,7 +714,7 @@ export async function runAiPageEditLoop(options: {
       data = (await response.json()) as MistralChatResponse;
     } catch (err) {
       return {
-        ok: false, appliedCount, touchedSections: [...touched], iterations: iteration, toolErrors, finalText: '', limitReached: false,
+        ok: false, appliedCount, proposedCalls, touchedSections: [...touched], iterations: iteration, toolErrors, finalText: '', limitReached: false,
         reason: 'http-error', detail: 'réponse non JSON: ' + (err instanceof Error ? err.message : String(err))
       };
     }
@@ -691,7 +723,7 @@ export async function runAiPageEditLoop(options: {
     const rawToolCalls = message?.tool_calls;
     if (!rawToolCalls || rawToolCalls.length === 0) {
       return {
-        ok: true, appliedCount, touchedSections: [...touched], iterations: iteration, toolErrors,
+        ok: true, appliedCount, proposedCalls, touchedSections: [...touched], iterations: iteration, toolErrors,
         finalText: (message?.content ?? '').trim(), limitReached: false
       };
     }
@@ -738,10 +770,14 @@ export async function runAiPageEditLoop(options: {
           result = toolError('valeur "' + valueKey + '" manquante ou vide');
         } else if (name === 'set_image_src' && options.validateImageUrl) {
           const invalid = await options.validateImageUrl(value.trim());
-          result = invalid
-            ? toolError('image inaccessible (' + invalid + ') — propose une AUTRE URL https://images.unsplash.com/photo-...')
-            : await options.apply({ name, args: { ...args, section, [valueKey]: value.trim() } });
-          if (!invalid) {
+          if (invalid) {
+            result = toolError('image inaccessible (' + invalid + ') — propose une AUTRE URL https://images.unsplash.com/photo-...');
+          } else if (deferApply) {
+            // E43 — collecté, pas appliqué ; le modèle reçoit OK pour conclure.
+            proposedCalls.push({ name, args: { ...args, section, [valueKey]: value.trim() } });
+            result = 'OK';
+          } else {
+            result = await options.apply({ name, args: { ...args, section, [valueKey]: value.trim() } });
             if (result.startsWith('ERREUR:')) {
               toolErrors.push(result.slice('ERREUR:'.length).trim());
             } else {
@@ -752,14 +788,20 @@ export async function runAiPageEditLoop(options: {
         } else {
           args[valueKey] = value.trim();
           args.section = section;
-          const applied = await options.apply({ name, args });
-          if (applied.startsWith('ERREUR:')) {
-            result = applied;
-            toolErrors.push(applied.slice('ERREUR:'.length).trim());
+          if (deferApply) {
+            // E43 — collecté, pas appliqué.
+            proposedCalls.push({ name, args: { ...args } });
+            result = 'OK';
           } else {
-            appliedCount += 1;
-            touched.add(section);
-            result = applied;
+            const applied = await options.apply({ name, args });
+            if (applied.startsWith('ERREUR:')) {
+              result = applied;
+              toolErrors.push(applied.slice('ERREUR:'.length).trim());
+            } else {
+              appliedCount += 1;
+              touched.add(section);
+              result = applied;
+            }
           }
         }
       }
@@ -768,5 +810,5 @@ export async function runAiPageEditLoop(options: {
   }
 
   // Garde compilateur (le dernier tour part sans outils → retourne avant).
-  return { ok: true, appliedCount, touchedSections: [...touched], iterations: maxModelCalls, toolErrors, finalText: '', limitReached: true };
+  return { ok: true, appliedCount, proposedCalls, touchedSections: [...touched], iterations: maxModelCalls, toolErrors, finalText: '', limitReached: true };
 }

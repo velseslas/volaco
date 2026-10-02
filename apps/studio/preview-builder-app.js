@@ -517,6 +517,36 @@
       });
     }
 
+    // E43 — PRÉVISUALISATION DES ÉDITIONS IA : quand la case est cochée, les
+    // boucles composant/page tournent en mode diffféré (les appels validés
+    // sont collectés, RIEN n'est appliqué ni persisté) ; le récapitulatif
+    // lisible est affiché et l'utilisateur confirme ou refuse. La confirmation
+    // rejoue les appels via la MÊME commande pure (l'état n'a pas bougé) —
+    // undo et persistance suivent le chemin normal E42/E38.
+    function aiPreviewEnabled() {
+      const c = el('chkAiPreview');
+      return c ? c.checked : false;
+    }
+    let pendingAiDiff = null;
+    function showAiDiffPanel(title, lines, pending) {
+      el('aiDiffTitle').textContent = title;
+      el('aiDiffList').innerHTML = lines.map((l) => '<div style="padding:2px 0; border-bottom:1px solid #1a2238;">' + l + '</div>').join('');
+      pendingAiDiff = pending;
+      el('aiDiffPanel').classList.remove('hidden');
+    }
+    el('aiDiffPanel').addEventListener('click', async (e) => {
+      const action = e.target.getAttribute && e.target.getAttribute('data-action');
+      if (!action || !pendingAiDiff) return;
+      el('aiDiffPanel').classList.add('hidden');
+      const pending = pendingAiDiff;
+      pendingAiDiff = null;
+      if (action === 'reject') {
+        if (v2Status) v2Status.textContent = 'Éditions IA refusées — rien n a été appliqué.';
+        return;
+      }
+      await pending.onConfirm();
+    });
+
     // É35 — ÉDITION IA PAR OUTILS : le modèle répond EXCLUSIVEMENT via un
     // appel d'outil structuré (set_text / set_image_src / set_link_href)
     // relayé par le proxy (la clé API reste côté serveur). La valeur produite
@@ -593,6 +623,21 @@
       msgEl.textContent = 'IA en cours…';
       const componentId = selectedComponentId;
       const undoSnapshots = []; // E42 — un lot unique pour tout le lot IA
+      // E43 — le callback d'application est partagé : boucle (mode live) ET
+      // confirmation de la prévisualisation rejouent la MÊME commande pure.
+      const applyCall = (call) => {
+        const value = call.args.text ?? call.args.src ?? call.args.href;
+        const path = call.args.path;
+        const prevHtml = previousHtmlOf(componentId); // E42 — avant application
+        const result = call.name === 'set_text' ? updateTextContent(state, componentId, path, String(value))
+          : call.name === 'set_image_src' ? updateImageSource(state, componentId, path, String(value))
+          : updateLinkHref(state, componentId, path, String(value));
+        if (!result.applied) return 'ERREUR: modification refusée (' + (result.reason || 'inconnue') + ')';
+        if (prevHtml !== null) undoSnapshots.push({ componentId: componentId, html: prevHtml });
+        state = result.state;
+        dirtyReal.add(componentId);
+        return 'OK';
+      };
       let outcome;
       try {
         outcome = await runAiComponentEditLoop({
@@ -603,22 +648,34 @@
           inventory: inventory,
           headers: H,
           validateImageUrl: validateImageUrl,
-          apply: (call) => {
-            const value = call.args.text ?? call.args.src ?? call.args.href;
-            const path = call.args.path;
-            const prevHtml = previousHtmlOf(componentId); // E42 — avant application
-            const result = call.name === 'set_text' ? updateTextContent(state, componentId, path, String(value))
-              : call.name === 'set_image_src' ? updateImageSource(state, componentId, path, String(value))
-              : updateLinkHref(state, componentId, path, String(value));
-            if (!result.applied) return 'ERREUR: modification refusée (' + (result.reason || 'inconnue') + ')';
-            if (prevHtml !== null) undoSnapshots.push({ componentId: componentId, html: prevHtml });
-            state = result.state;
-            dirtyReal.add(componentId);
-            return 'OK';
-          }
+          deferApply: aiPreviewEnabled(),
+          apply: applyCall
         });
       } finally {
         aiCompEditBusy = false;
+      }
+      if (outcome.ok && aiPreviewEnabled() && outcome.proposedCalls.length > 0) {
+        // E43 — prévisualisation : rien n'a été appliqué ni persisté.
+        const oldLookup = new Map(inventory.map((e2) => [JSON.stringify(e2.path), e2.value]));
+        const lines = outcome.proposedCalls.map((c) => {
+          const old = oldLookup.get(JSON.stringify(c.args.path));
+          const value = String(c.args.text ?? c.args.src ?? c.args.href);
+          return '<b>' + canonicalize(c.name) + '</b> ' + JSON.stringify(c.args.path) + ' : '
+            + (old !== undefined ? '« ' + canonicalize(String(old).slice(0, 60)) + ' »' : '(nouveau)') + ' → « ' + canonicalize(value.slice(0, 60)) + ' »';
+        });
+        showAiDiffPanel('Édition IA du composant « ' + canonicalize(componentId) + ' » — ' + lines.length + ' modification(s) proposée(s)', lines, {
+          onConfirm: async () => {
+            let applied = 0;
+            for (const c of outcome.proposedCalls) {
+              if ((await applyCall(c)) === 'OK') applied += 1;
+            }
+            renderCurrent();
+            if (applied > 0) pushUndoBatch('Édition IA du composant', undoSnapshots);
+            if (applied > 0) await persistSection(componentId);
+            if (msgEl) msgEl.textContent = applied + ' modification(s) appliquée(s) après prévisualisation';
+          }
+        });
+        return;
       }
       if (outcome.ok && outcome.appliedCount > 0) pushUndoBatch('Édition IA du composant', undoSnapshots);
       renderCurrent();
@@ -1232,6 +1289,22 @@
       aiPageEditBusy = true;
       if (statusEl) statusEl.textContent = 'IA page en cours… (' + inventory.length + ' éléments inventoriés)';
       const undoPageSnapshots = []; // E42 — un lot unique pour toute l'action page
+      // E43 — callback partagé : boucle (live) ET confirmation rejouent la
+      // MÊME commande pure.
+      const applyCall = (call) => {
+        const sectionId = String(call.args.section);
+        const path = call.args.path;
+        const value = String(call.args.text ?? call.args.src ?? call.args.href);
+        const prevSectionHtml = previousHtmlOf(sectionId); // E42 — avant application
+        const result = call.name === 'set_text' ? updateTextContent(state, sectionId, path, value)
+          : call.name === 'set_image_src' ? updateImageSource(state, sectionId, path, value)
+          : updateLinkHref(state, sectionId, path, value);
+        if (!result.applied) return 'ERREUR: modification refusée (' + (result.reason || 'inconnue') + ') — vérifie section et path de l inventaire';
+        if (prevSectionHtml !== null) undoPageSnapshots.push({ componentId: sectionId, html: prevSectionHtml });
+        state = result.state;
+        dirtyReal.add(sectionId);
+        return 'OK';
+      };
       let outcome;
       try {
         outcome = await runAiPageEditLoop({
@@ -1242,23 +1315,38 @@
           inventory: inventory,
           headers: H,
           validateImageUrl: validateImageUrl,
-          apply: (call) => {
-            const sectionId = String(call.args.section);
-            const path = call.args.path;
-            const value = String(call.args.text ?? call.args.src ?? call.args.href);
-            const prevSectionHtml = previousHtmlOf(sectionId); // E42 — avant application
-            const result = call.name === 'set_text' ? updateTextContent(state, sectionId, path, value)
-              : call.name === 'set_image_src' ? updateImageSource(state, sectionId, path, value)
-              : updateLinkHref(state, sectionId, path, value);
-            if (!result.applied) return 'ERREUR: modification refusée (' + (result.reason || 'inconnue') + ') — vérifie section et path de l inventaire';
-            if (prevSectionHtml !== null) undoPageSnapshots.push({ componentId: sectionId, html: prevSectionHtml });
-            state = result.state;
-            dirtyReal.add(sectionId);
-            return 'OK';
-          }
+          deferApply: aiPreviewEnabled(),
+          apply: applyCall
         });
       } finally {
         aiPageEditBusy = false;
+      }
+      if (outcome.ok && aiPreviewEnabled() && outcome.proposedCalls.length > 0) {
+        // E43 — prévisualisation : rien n'a été appliqué ni persisté.
+        const oldLookup = new Map(inventory.map((e2) => [e2.section + ':' + JSON.stringify(e2.path), e2.value]));
+        const lines = outcome.proposedCalls.map((c) => {
+          const section = String(c.args.section);
+          const old = oldLookup.get(section + ':' + JSON.stringify(c.args.path));
+          const value = String(c.args.text ?? c.args.src ?? c.args.href);
+          return '<b>' + canonicalize(section) + '</b> ' + canonicalize(c.name) + ' ' + JSON.stringify(c.args.path) + ' : '
+            + (old !== undefined ? '« ' + canonicalize(String(old).slice(0, 60)) + ' »' : '(nouveau)') + ' → « ' + canonicalize(value.slice(0, 60)) + ' »';
+        });
+        showAiDiffPanel('Édition IA de la page — ' + lines.length + ' modification(s) proposée(s)', lines, {
+          onConfirm: async () => {
+            let applied = 0;
+            for (const c of outcome.proposedCalls) {
+              if ((await applyCall(c)) === 'OK') applied += 1;
+            }
+            renderCurrent();
+            if (applied > 0) pushUndoBatch('Édition IA de la page', undoPageSnapshots);
+            const touched = [...new Set(undoPageSnapshots.map((s2) => s2.componentId))];
+            for (const sectionId of touched) {
+              await persistSection(sectionId);
+            }
+            if (statusEl) statusEl.textContent = 'IA page : ' + applied + ' modification(s) appliquée(s) dans ' + touched.length + ' section(s) après prévisualisation';
+          }
+        });
+        return;
       }
       if (outcome.ok && outcome.appliedCount > 0) pushUndoBatch('Édition IA de la page', undoPageSnapshots);
       renderCurrent();

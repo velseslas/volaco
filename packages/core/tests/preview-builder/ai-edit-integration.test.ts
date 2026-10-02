@@ -226,6 +226,44 @@ describe('E41 : reprise de session au chargement du Builder', () => {
   });
 });
 
+describe('E43 : prévisualisation des éditions IA avant application', () => {
+  it('1. case à cocher + mode différé passé aux DEUX boucles', () => {
+    const src = appJs();
+    assert.ok(src.includes("id=\"chkAiPreview\"") === false ? src.includes('chkAiPreview') : true, 'toggle présent');
+    assert.ok(src.includes('function aiPreviewEnabled'), 'lecture du toggle');
+    assert.ok((src.match(/deferApply: aiPreviewEnabled()/g) || []).length === 2, 'deferApply branché sur composant ET page');
+  });
+
+  it('2. en mode différé : AUCUNE application ni persistance avant confirmation', () => {
+    const src = appJs();
+    const compFn = src.slice(src.indexOf('async function startAiComponentEdit'), src.indexOf('async function startAiPageEdit'));
+    const pageFn = src.slice(src.indexOf('async function startAiPageEdit'), src.indexOf('async function restoreRevision'));
+    for (const [name, fn] of [['composant', compFn], ['page', pageFn]] as const) {
+      assert.ok(fn.includes('outcome.proposedCalls.length > 0'), name + ' : branche prévisualisation');
+      assert.ok(fn.includes('showAiDiffPanel('), name + ' : panneau affiché');
+      assert.ok(fn.includes('onConfirm:'), name + ' : confirmation câblée');
+    }
+  });
+
+  it('3. le récapitulatif montre ancien → nouveau (lisible)', () => {
+    const src = appJs();
+    assert.ok((src.match(/→ « /g) || []).length >= 2, 'flèche ancien → nouveau dans les lignes de diff');
+    assert.ok(src.includes('oldLookup'), 'anciennes valeurs issues de l inventaire');
+  });
+
+  it('4. confirmation : replay via la MÊME commande pure + undo + persistance ; refus : rien appliqué', () => {
+    const src = appJs();
+    const fn = src.slice(src.indexOf("el('aiDiffPanel').addEventListener"));
+    assert.ok(fn.includes("action === 'reject'"), 'refus géré');
+    assert.match(fn, /Éditions IA refusées — rien n a été appliqué./, 'refus honnête');
+    assert.ok(fn.includes('await pending.onConfirm()'), 'confirmation rejoue le lot');
+    // le replay passe par les applyCall partagés (commandes pures) — vérifié
+    // par la présence des pushes undo DANS les onConfirm
+    assert.ok((src.match(/pushUndoBatch\('Édition IA du composant', undoSnapshots\)/g) || []).length >= 1);
+    assert.ok((src.match(/pushUndoBatch\('Édition IA de la page', undoPageSnapshots\)/g) || []).length >= 1);
+  });
+});
+
 describe('E42 : annulation des éditions (undo par lots)', () => {
   it('1. bouton ↩ ANNULER + Ctrl+Z (hors champs de saisie)', () => {
     const src = appJs();

@@ -276,4 +276,56 @@ describe('ÉTAPE 36 : boucle d édition IA par composant', () => {
     });
     assert.equal(outcome.appliedCount, 1);
   });
+
+  it('11. E43 — deferApply : les appels validés sont COLLECTÉS, apply jamais appelé, le modèle reçoit OK', async () => {
+    const captured: Captured[] = [];
+    const fetchImpl = fakeFetch([
+      { body: { choices: [{ message: { content: '', tool_calls: [
+        toolCall('c1-0', 'set_text', '{"path":[0,0],"text":"Titre proposé"}'),
+        toolCall('c1-1', 'set_image_src', '{"path":[0,1],"src":"https://images.unsplash.com/photo-5"}')
+      ] } }] } },
+      { body: { choices: [{ message: { content: 'Voilà ma proposition !' } }] } }
+    ], captured);
+    const outcome = await runAiComponentEditLoop({
+      fetchImpl,
+      url: '/proxy',
+      instruction: 'propose',
+      inventory: INVENTORY,
+      deferApply: true,
+      apply: () => { throw new Error('apply NE DOIT PAS être appelé en mode différé'); }
+    });
+
+    assert.equal(outcome.ok, true);
+    assert.equal(outcome.appliedCount, 0, 'rien n est appliqué');
+    assert.equal(outcome.proposedCalls.length, 2);
+    assert.equal(outcome.proposedCalls[0]?.args.text, 'Titre proposé');
+    assert.equal(outcome.finalText, 'Voilà ma proposition !');
+    // le modèle a reçu 'OK' pour chaque appel collecté (il peut conclure)
+    const turn2 = captured[1]?.body?.messages as Array<{ role: string; content: string }>;
+    const toolMsgs = turn2.filter((m) => m.role === 'tool');
+    assert.equal(toolMsgs.length, 2);
+    assert.equal(toolMsgs[0]?.content, 'OK');
+  });
+
+  it('12. E43 — en mode différé, une image cassée reste refusée (validation active) et n est PAS proposée', async () => {
+    const captured: Captured[] = [];
+    const fetchImpl = fakeFetch([
+      { body: { choices: [{ message: { content: '', tool_calls: [toolCall('c1-0', 'set_image_src', '{"path":[0,1],"src":"https://x/broken.jpg"}')] } }] } },
+      { body: { choices: [{ message: { content: '', tool_calls: [toolCall('c2-0', 'set_image_src', '{"path":[0,1],"src":"https://images.unsplash.com/photo-ok"}')] } }] } },
+      { body: { choices: [{ message: { content: 'Proposition faite.' } }] } }
+    ], captured);
+    const outcome = await runAiComponentEditLoop({
+      fetchImpl,
+      url: '/proxy',
+      instruction: 'change l image',
+      inventory: INVENTORY,
+      deferApply: true,
+      validateImageUrl: (url) => Promise.resolve(url.includes('broken') ? 'image introuvable' : null),
+      apply: () => { throw new Error('apply NE DOIT PAS être appelé en mode différé'); }
+    });
+
+    assert.equal(outcome.appliedCount, 0);
+    assert.equal(outcome.proposedCalls.length, 1, 'seule l image valide est proposée');
+    assert.match(outcome.toolErrors[0] ?? '', /image inaccessible/);
+  });
 });

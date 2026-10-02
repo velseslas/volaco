@@ -187,6 +187,28 @@ describe('ÉTAPE 39 : boucle d édition IA par page (multi-sections)', () => {
     }
   });
 
+  it('7b. E43 — deferApply : appels collectés avec section, apply jamais appelé', async () => {
+    const captured: Captured[] = [];
+    const fetchImpl = fakeFetch([
+      { body: { choices: [{ message: { content: '', tool_calls: [call('set_text', { section: 'hero', path: [0, 0], text: 'Titre proposé' })] } }] } },
+      { body: { choices: [{ message: { content: 'Proposition !' } }] } }
+    ], captured);
+    const outcome = await runAiPageEditLoop({
+      fetchImpl,
+      url: '/proxy',
+      instruction: 'propose',
+      inventory: INVENTORY,
+      deferApply: true,
+      apply: () => { throw new Error('apply NE DOIT PAS être appelé en mode différé'); }
+    });
+
+    assert.equal(outcome.ok, true);
+    assert.equal(outcome.appliedCount, 0);
+    assert.equal(outcome.touchedSections.length, 0, 'rien appliqué → aucune section touchée');
+    assert.equal(outcome.proposedCalls.length, 1);
+    assert.equal(outcome.proposedCalls[0]?.args.section, 'hero');
+  });
+
   it('8. échec HTTP après des applications : succès partiel rapporté avec sections touchées', async () => {
     const captured: Captured[] = [];
     const fetchImpl = fakeFetch([
