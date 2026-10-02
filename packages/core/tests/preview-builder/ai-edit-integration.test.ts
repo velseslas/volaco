@@ -18,7 +18,7 @@ const appJs = (): string => readFileSync(join(process.cwd(), 'apps', 'studio', '
 describe('ÉTAPE 35 : édition IA par outils — câblage du Builder', () => {
   it('1. le Builder importe les boucles d édition IA (module isomorphe servi)', () => {
     const src = appJs();
-    assert.ok(src.includes("import { runAiEditLoop, runAiComponentEditLoop } from '/preview-builder/ai-edit.js';"), 'import présent');
+    assert.ok(src.includes("import { runAiEditLoop, runAiComponentEditLoop, runAiPageEditLoop } from '/preview-builder/ai-edit.js';"), 'import présent');
   });
 
   it('2. les trois cibles réelles ont leur contrôle IA (texte, image, lien)', () => {
@@ -134,5 +134,38 @@ describe('ÉTAPE 38 : persistance des éditions Builder (PUT files/section)', ()
     assert.ok(src.includes('persistSection(persistedTextId)'), 'APPLY texte');
     assert.ok(src.includes('persistSection(persistedAiId)'), 'édition IA mono-élément');
     assert.ok(src.includes('persistSection(componentId)'), 'édition IA par composant');
+  });
+});
+
+describe('ÉTAPE 39 : édition IA par page (multi-sections)', () => {
+  it('1. le panneau v2 expose le contrôle ✨ IA page', () => {
+    const src = appJs();
+    assert.ok(src.includes("getElementById('btnPageAi')"), 'bouton branché');
+    assert.ok(src.includes('runAiPageEditLoop'), 'boucle page utilisée');
+  });
+
+  it('2. l inventaire couvre TOUS les composants à HTML réel (section = id)', () => {
+    const src = appJs();
+    const fn = src.slice(src.indexOf('async function startAiPageEdit'));
+    assert.ok(fn.includes('state.components.forEach'), 'parcours de tous les composants');
+    assert.ok(fn.includes('inventoryEditableElements(compHtml, 40)'), 'inventaire par composant');
+    assert.ok(fn.includes('section: comp.id'), 'section = id du composant');
+  });
+
+  it('3. chaque appel passe par la COMMANDE PURE du composant visé', () => {
+    const src = appJs();
+    const fn = src.slice(src.indexOf('async function startAiPageEdit'));
+    assert.ok(fn.includes("call.name === 'set_text' ? updateTextContent(state, sectionId, path, value)"), 'texte');
+    assert.ok(fn.includes(': updateLinkHref(state, sectionId, path, value)'), 'lien');
+    assert.ok(fn.includes('dirtyReal.add(sectionId)'), 'canal dirtyReal');
+    assert.ok(!/fetchImpl:\s*fetch\b/.test(fn), 'fetch natif jamais passé nu');
+  });
+
+  it('4. persistance SÉQUENTIELLE des sections touchées (pas de course sur index.html)', () => {
+    const src = appJs();
+    const fn = src.slice(src.indexOf('async function startAiPageEdit'));
+    assert.ok(fn.includes('for (const sectionId of outcome.touchedSections) {'), 'boucle de persistance');
+    assert.ok(fn.includes('await persistSection(sectionId)'), 'PUT séquentiels (await dans la boucle)');
+    assert.ok(fn.includes("modification(s) dans ' + outcome.touchedSections.length + ' section(s)"), 'bilan affiché');
   });
 });

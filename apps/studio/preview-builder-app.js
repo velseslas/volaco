@@ -1,7 +1,7 @@
     import { applyBuildEvent, createPreviewBuildState, BUILD_STAGES, PRESENTATION_VARIANTS, RESIZE_BOUNDS } from '/preview-builder/engine.js';
     import { renderPreview, buildTimeline, shouldRefreshNode, previewNodeId, resolvePreviewTarget, buildInspector, resolveDropTarget } from '/preview-builder/renderer.js';
     import { updateComponentLabel, updateComponentVariant, moveComponent, computeDropTarget, applyDragIntent, resizeComponent, updateTextContent, updateImageSource, updateLinkHref, inventoryEditableElements } from '/preview-builder/editing.js';
-    import { runAiEditLoop, runAiComponentEditLoop } from '/preview-builder/ai-edit.js';
+    import { runAiEditLoop, runAiComponentEditLoop, runAiPageEditLoop } from '/preview-builder/ai-edit.js';
     import { layoutTree } from '/preview-builder/layout.js';
     import { renderComponentVisual } from '/preview-builder/visuals.js';
     import { demoBuildScript, scriptToEvents } from '/preview-builder/mocks.js';
@@ -1113,6 +1113,70 @@
     }
 
     document.getElementById('btnReal').addEventListener('click', () => { startRealGeneration(); });
+
+    // É39 — ÉDITION IA PAR PAGE : l'inventaire de TOUS les composants à HTML
+    // réel (section = id du composant) est envoyé au modèle, qui enchaîne
+    // des set_text / set_image_src / set_link_href avec section+path. Chaque
+    // appel passe par la COMMANDE PURE du composant visé ; les sections
+    // touchées sont ensuite persistées SÉQUENTIELLEMENT (deux PUT parallèles
+    // sur le même index.html s'écraseraient l'un l'autre) — une révision par
+    // section (É38).
+    let aiPageEditBusy = false;
+    async function startAiPageEdit() {
+      const statusEl = v2Status;
+      const input = el('pageAiInput');
+      const instruction = input ? input.value.trim() : '';
+      if (aiPageEditBusy) return;
+      if (!instruction) { if (statusEl) statusEl.textContent = 'Décris d abord la modification.'; return; }
+      const inventory = [];
+      state.components.forEach((comp) => {
+        const compHtml = comp.metadata ? comp.metadata.html : null;
+        if (typeof compHtml !== 'string' || compHtml.length === 0) return;
+        inventoryEditableElements(compHtml, 40).forEach((e2) => inventory.push({ section: comp.id, path: e2.path, kind: e2.kind, tag: e2.tag, value: e2.value }));
+      });
+      if (inventory.length === 0) { if (statusEl) statusEl.textContent = 'Aucun élément éditable : génère d abord un site.'; return; }
+      aiPageEditBusy = true;
+      if (statusEl) statusEl.textContent = 'IA page en cours… (' + inventory.length + ' éléments inventoriés)';
+      let outcome;
+      try {
+        outcome = await runAiPageEditLoop({
+          // fetch natif JAMAIS passé nu (débindé → Illegal invocation).
+          fetchImpl: (url, init) => fetch(url, init),
+          url: '/api/v1/ai/chat/completions',
+          instruction: instruction,
+          inventory: inventory,
+          headers: H,
+          validateImageUrl: validateImageUrl,
+          apply: (call) => {
+            const sectionId = String(call.args.section);
+            const path = call.args.path;
+            const value = String(call.args.text ?? call.args.src ?? call.args.href);
+            const result = call.name === 'set_text' ? updateTextContent(state, sectionId, path, value)
+              : call.name === 'set_image_src' ? updateImageSource(state, sectionId, path, value)
+              : updateLinkHref(state, sectionId, path, value);
+            if (!result.applied) return 'ERREUR: modification refusée (' + (result.reason || 'inconnue') + ') — vérifie section et path de l inventaire';
+            state = result.state;
+            dirtyReal.add(sectionId);
+            return 'OK';
+          }
+        });
+      } finally {
+        aiPageEditBusy = false;
+      }
+      renderCurrent();
+      if (!outcome.ok) {
+        if (statusEl) statusEl.textContent = 'IA page indisponible (' + (outcome.detail || outcome.reason) + ')';
+        return;
+      }
+      for (const sectionId of outcome.touchedSections) {
+        await persistSection(sectionId);
+      }
+      if (statusEl) statusEl.textContent = 'IA page : ' + outcome.appliedCount + ' modification(s) dans ' + outcome.touchedSections.length + ' section(s)'
+        + (outcome.toolErrors.length > 0 ? ' — ' + outcome.toolErrors.length + ' refus(s)' : '')
+        + (outcome.limitReached ? ' — borne atteinte' : '');
+      if (input) input.value = '';
+    }
+    document.getElementById('btnPageAi').addEventListener('click', () => { startAiPageEdit(); });
     document.getElementById('btnStopReal').addEventListener('click', () => {
       if (realSource) { realSource.stop(); realSource = null; }
       if (v2Status) v2Status.textContent = '⏹ Flux réel interrompu (les composants construits restent affichés)';

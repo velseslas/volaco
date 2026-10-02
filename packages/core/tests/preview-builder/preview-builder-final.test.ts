@@ -227,9 +227,11 @@ describe('ÉTAPE 25 — GATE DE ROBUSTESSE UI (cycles de vie)', () => {
     const globalListeners = (renderBlock.match(/(document|window|el('canvas')|el('inspectorBody')).addEventListener/g) || []);
     assert.equal(globalListeners.length, 0, 'render() n enregistre aucun listener GLOBAL');
     // consume + les machines (resize/dnd/inspector) déclarent leurs listeners
-    // au TOP-LEVEL du module — comptés une seule fois par chargement de page :
+    // au TOP-LEVEL du module — comptés une seule fois par chargement de page.
+    // Borne ajustée É39 (bouton ✨ IA page, lui aussi au niveau module) :
+    // l'intention reste « fixe et raisonnable », jamais d'accumulation.
     const topListenerCount = (source.match(/addEventListener\(/g) || []).length;
-    assert.ok(topListenerCount >= 8 && topListenerCount <= 20, 'nombre de listeners fixe et raisonnable: ' + topListenerCount);
+    assert.ok(topListenerCount >= 8 && topListenerCount <= 24, 'nombre de listeners fixe et raisonnable: ' + topListenerCount);
     // et renderInspector (appelé à chaque rendu) n'en registre aucun :
     const inspStart = source.indexOf('function renderInspector');
     const inspEnd = source.indexOf("el('inspectorBody').addEventListener('change'", inspStart);

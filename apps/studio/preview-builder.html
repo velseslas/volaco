@@ -477,6 +477,14 @@
       <button id="btnReal" style="background:#059669;">GÉNÉRER (flux réel)</button>
       <button id="btnStopReal" class="secondary">STOP</button>
     </div>
+    <!-- É39 — édition IA PAR PAGE : l'inventaire de TOUS les composants est
+         envoyé au modèle, qui enchaîne des set_text / set_image_src /
+         set_link_href avec section+path ; chaque section touchée est
+         persistée avec révision (É38). -->
+    <div class="controls" style="margin-top:8px; gap:8px;">
+      <input id="pageAiInput" type="text" placeholder="✨ IA page — ex : rends tous les textes plus percutants et remplace les photos…" style="flex:1; width:auto; background:#0d1222; border:1px solid #223052; color:#e2e8f0; border-radius:8px; padding:8px 10px; font-size:12px;">
+      <button id="btnPageAi" style="background:#7c3aed;">✨ IA page</button>
+    </div>
     <div id="v2Status" style="font-size:10px; color:#64748b; margin-top:8px;">sessionId: —</div>
   </div>
         <div id="stageLadder"></div>

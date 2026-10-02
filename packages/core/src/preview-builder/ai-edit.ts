@@ -511,3 +511,262 @@ export async function runAiComponentEditLoop(options: {
   // répondu en texte libre et la boucle a déjà retourné. Garde compilateur.
   return { ok: true, appliedCount, iterations: maxModelCalls, toolErrors, finalText: '', limitReached: true };
 }
+
+/* =====================================================================
+ * ÉTAPE 39 — ÉDITION IA PAR PAGE : multi-sections.
+ *
+ * Généralisation de la boucle par composant : l'inventaire couvre TOUS les
+ * composants à HTML réel, chaque entrée porte sa section, et les outils
+ * exigent un argument `section` en plus du `path`. L'appelant résout la
+ * section (commande pure sur le bon composant) et persiste les sections
+ * touchées (É38). Mêmes garanties : validations nourries au modèle, borne
+ * maxModelCalls dont le DERNIER tour part sans outils, succès partiel
+ * honnête.
+ * ===================================================================== */
+
+export interface PageEditableElement {
+  readonly section: string;
+  readonly path: number[];
+  readonly kind: 'text' | 'image' | 'link';
+  readonly tag: string;
+  readonly value: string;
+}
+
+export interface AiPageEditOutcome {
+  readonly ok: boolean;
+  readonly appliedCount: number;
+  /** Sections réellement modifiées (déduites des appels validés réussis). */
+  readonly touchedSections: readonly string[];
+  readonly iterations: number;
+  readonly toolErrors: readonly string[];
+  readonly finalText: string;
+  readonly limitReached: boolean;
+  readonly reason?: 'http-error' | 'empty-instruction' | 'empty-inventory';
+  readonly detail?: string;
+}
+
+const PAGE_TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'set_text',
+      description: 'Remplace le TEXTE de l élément situé à path DANS la section indiquée.',
+      parameters: {
+        type: 'object',
+        properties: {
+          section: { type: 'string', description: 'Nom EXACT de la section (issu de l inventaire)' },
+          path: { type: 'array', items: { type: 'integer' }, description: 'Path EXACT issu de l inventaire' },
+          text: { type: 'string', description: 'Nouveau texte' }
+        },
+        required: ['section', 'path', 'text']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'set_image_src',
+      description: 'Remplace le src de l image à path DANS la section (Unsplash : https://images.unsplash.com/photo-...).',
+      parameters: {
+        type: 'object',
+        properties: {
+          section: { type: 'string', description: 'Nom EXACT de la section (issu de l inventaire)' },
+          path: { type: 'array', items: { type: 'integer' }, description: 'Path EXACT issu de l inventaire' },
+          src: { type: 'string', description: 'Nouvelle URL d image' }
+        },
+        required: ['section', 'path', 'src']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'set_link_href',
+      description: 'Remplace le href du lien à path DANS la section (ancre #, route relative ou https sûre).',
+      parameters: {
+        type: 'object',
+        properties: {
+          section: { type: 'string', description: 'Nom EXACT de la section (issu de l inventaire)' },
+          path: { type: 'array', items: { type: 'integer' }, description: 'Path EXACT issu de l inventaire' },
+          href: { type: 'string', description: 'Nouvelle cible du lien' }
+        },
+        required: ['section', 'path', 'href']
+      }
+    }
+  }
+] as const;
+
+function pageSystemPrompt(): string {
+  return 'Tu édites une page web EXISTANTE composée de SECTIONS, via des outils. ' +
+    'L inventaire des éléments éditables est fourni : chaque ligne donne la section, le path (l adresse exacte de l élément dans cette section) et la valeur actuelle. ' +
+    'RÈGLES : appelle les outils set_text / set_image_src / set_link_href avec la section ET le path EXACTS de l inventaire (jamais de valeurs inventées). ' +
+    'Tu peux faire plusieurs appels dans un même tour, y compris dans des sections différentes. ' +
+    'Ne modifie que ce que la demande concerne ; conserve le style de l existant. ' +
+    'Quand tu as terminé, réponds en texte libre avec UNE courte phrase de confirmation.';
+}
+
+function pageUserPrompt(instruction: string, inventory: readonly PageEditableElement[]): string {
+  const MAX_LINES = 100;
+  const MAX_VALUE = 100;
+  const lines = inventory.slice(0, MAX_LINES).map((el) => {
+    const value = el.value.length > MAX_VALUE ? el.value.slice(0, MAX_VALUE) + '…' : el.value;
+    const label = el.kind === 'text' ? 'texte' : el.kind === 'image' ? 'image' : 'lien';
+    return `section=${el.section} path=${JSON.stringify(el.path)} ${label} <${el.tag}> « ${value} »`;
+  });
+  const truncated = inventory.length > MAX_LINES ? `\n(… et ${inventory.length - MAX_LINES} autres éléments)` : '';
+  return 'Inventaire des éléments éditables (toutes sections) :\n' + lines.join('\n') + truncated +
+    '\n\nDemande de l utilisateur : ' + instruction.trim();
+}
+
+export async function runAiPageEditLoop(options: {
+  fetchImpl: typeof fetch;
+  url: string;
+  instruction: string;
+  inventory: readonly PageEditableElement[];
+  /** Exécute un appel validé (outil connu + section non vide + path valide + valeur non vide) ; renvoie le résultat à nourrir au modèle ('ERREUR: …' si refus). */
+  apply: (call: { name: string; args: Record<string, unknown> }) => string | Promise<string>;
+  model?: string | undefined;
+  maxModelCalls?: number | undefined;
+  headers?: Record<string, string> | undefined;
+  validateImageUrl?: ImageUrlValidator | undefined;
+}): Promise<AiPageEditOutcome> {
+  const instruction = options.instruction.trim();
+  if (instruction.length === 0) {
+    return { ok: false, appliedCount: 0, touchedSections: [], iterations: 0, toolErrors: [], finalText: '', limitReached: false, reason: 'empty-instruction' };
+  }
+  if (options.inventory.length === 0) {
+    return { ok: false, appliedCount: 0, touchedSections: [], iterations: 0, toolErrors: [], finalText: '', limitReached: false, reason: 'empty-inventory' };
+  }
+  const maxModelCalls = Math.max(1, options.maxModelCalls ?? 8);
+  const model = options.model || 'codestral-latest';
+
+  const messages: Array<Record<string, unknown>> = [
+    { role: 'system', content: pageSystemPrompt() },
+    { role: 'user', content: pageUserPrompt(instruction, options.inventory) }
+  ];
+
+  let appliedCount = 0;
+  const touched = new Set<string>();
+  const toolErrors: string[] = [];
+
+  for (let iteration = 1; iteration <= maxModelCalls; iteration++) {
+    const isLastIteration = iteration === maxModelCalls;
+    let response: Response;
+    try {
+      response = await options.fetchImpl(options.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(options.headers ?? {}) },
+        body: JSON.stringify({
+          model,
+          messages,
+          temperature: 0.3,
+          max_tokens: 2048,
+          tools: isLastIteration ? undefined : PAGE_TOOLS
+        })
+      });
+    } catch (err) {
+      return {
+        ok: false, appliedCount, touchedSections: [...touched], iterations: iteration, toolErrors, finalText: '', limitReached: false,
+        reason: 'http-error', detail: err instanceof Error ? err.message : String(err)
+      };
+    }
+    if (!response.ok) {
+      return {
+        ok: false, appliedCount, touchedSections: [...touched], iterations: iteration, toolErrors, finalText: '', limitReached: false,
+        reason: 'http-error', detail: 'HTTP ' + response.status
+      };
+    }
+
+    let data: MistralChatResponse;
+    try {
+      data = (await response.json()) as MistralChatResponse;
+    } catch (err) {
+      return {
+        ok: false, appliedCount, touchedSections: [...touched], iterations: iteration, toolErrors, finalText: '', limitReached: false,
+        reason: 'http-error', detail: 'réponse non JSON: ' + (err instanceof Error ? err.message : String(err))
+      };
+    }
+
+    const message = data?.choices?.[0]?.message;
+    const rawToolCalls = message?.tool_calls;
+    if (!rawToolCalls || rawToolCalls.length === 0) {
+      return {
+        ok: true, appliedCount, touchedSections: [...touched], iterations: iteration, toolErrors,
+        finalText: (message?.content ?? '').trim(), limitReached: false
+      };
+    }
+
+    messages.push({
+      role: 'assistant',
+      content: message?.content ?? '',
+      tool_calls: rawToolCalls.map((tc, idx) => ({
+        id: 'p' + iteration + '-' + idx,
+        type: 'function',
+        function: { name: tc.function?.name ?? '', arguments: tc.function?.arguments || '{}' }
+      }))
+    });
+
+    for (let idx = 0; idx < rawToolCalls.length; idx++) {
+      const call = rawToolCalls[idx];
+      const callId = 'p' + iteration + '-' + idx;
+      const name = call?.function?.name ?? '';
+      let result: string;
+      let args: Record<string, unknown> = {};
+      const toolError = (msg: string): string => {
+        toolErrors.push(msg);
+        return 'ERREUR: ' + msg;
+      };
+      if (!(name in COMPONENT_VALUE_KEYS)) {
+        result = toolError('outil inconnu "' + name + '"');
+      } else {
+        try {
+          const parsed: unknown = JSON.parse(call?.function?.arguments || '{}');
+          if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            args = parsed as Record<string, unknown>;
+          }
+        } catch {
+          args = {};
+        }
+        const valueKey: 'text' | 'src' | 'href' = COMPONENT_VALUE_KEYS[name] ?? 'text';
+        const value = args[valueKey];
+        const section = typeof args.section === 'string' ? args.section.trim() : '';
+        if (section.length === 0) {
+          result = toolError('section manquante — utilise un nom EXACT de l inventaire');
+        } else if (!isValidPath(args.path)) {
+          result = toolError('path invalide pour "' + name + '" — utilise un path EXACT de l inventaire');
+        } else if (typeof value !== 'string' || value.trim().length === 0) {
+          result = toolError('valeur "' + valueKey + '" manquante ou vide');
+        } else if (name === 'set_image_src' && options.validateImageUrl) {
+          const invalid = await options.validateImageUrl(value.trim());
+          result = invalid
+            ? toolError('image inaccessible (' + invalid + ') — propose une AUTRE URL https://images.unsplash.com/photo-...')
+            : await options.apply({ name, args: { ...args, section, [valueKey]: value.trim() } });
+          if (!invalid) {
+            if (result.startsWith('ERREUR:')) {
+              toolErrors.push(result.slice('ERREUR:'.length).trim());
+            } else {
+              appliedCount += 1;
+              touched.add(section);
+            }
+          }
+        } else {
+          args[valueKey] = value.trim();
+          args.section = section;
+          const applied = await options.apply({ name, args });
+          if (applied.startsWith('ERREUR:')) {
+            result = applied;
+            toolErrors.push(applied.slice('ERREUR:'.length).trim());
+          } else {
+            appliedCount += 1;
+            touched.add(section);
+            result = applied;
+          }
+        }
+      }
+      messages.push({ role: 'tool', tool_call_id: callId, content: result });
+    }
+  }
+
+  // Garde compilateur (le dernier tour part sans outils → retourne avant).
+  return { ok: true, appliedCount, touchedSections: [...touched], iterations: maxModelCalls, toolErrors, finalText: '', limitReached: true };
+}
