@@ -471,6 +471,34 @@
         .length + 1;
       idx.innerHTML = Array.from({ length: count }, (_, i) => '<option value="' + (i + 1) + '">position ' + (i + 1) + '</option>').join('');
     });
+    // É38 — PERSISTANCE DES ÉDITIONS : l'HTML réel d'un composant correspond
+    // à une SECTION du index.html serveur (bloc data-section). Après chaque
+    // édition appliquée (APPLY manuel ou IA), la section est renvoyée au
+    // serveur : remplacement du bloc + RÉVISION réversible. Fire-and-forget :
+    // l'édition locale reste valide même si la sauvegarde échoue (signalé
+    // dans la ligne de statut, jamais de blocage ni de perte silencieuse).
+    async function persistSection(componentId) {
+      if (!currentProjectId || !componentId) return;
+      const comp = state.components.get(componentId);
+      const html = comp && comp.metadata ? comp.metadata.html : null;
+      if (typeof html !== 'string' || html.length === 0) return;
+      try {
+        const res = await fetch('/api/v1/projects/' + currentProjectId + '/files/section/' + encodeURIComponent(componentId), {
+          method: 'PUT',
+          headers: H,
+          body: JSON.stringify({ html: html })
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) {
+          if (v2Status) v2Status.textContent = '⚠ Édition non sauvegardée côté serveur (HTTP ' + res.status + ')';
+        } else if (data && data.applied === false) {
+          if (v2Status) v2Status.textContent = '⚠ Section non trouvée dans le HTML serveur (' + componentId + ')';
+        }
+      } catch (err) {
+        if (v2Status) v2Status.textContent = '⚠ Édition non sauvegardée côté serveur (' + (err instanceof Error ? err.message : String(err)) + ')';
+      }
+    }
+
     // É37 — VALIDATION D'IMAGE RÉELLE : une URL proposée par l'IA est testée
     // (new Image + timeout) AVANT application. Si elle ne charge pas, la
     // boucle renvoie l'erreur au modèle qui propose une AUTRE URL — finies
@@ -530,10 +558,12 @@
       }
       state = result.state;
       dirtyReal.add(ctx.componentId);
+      const persistedAiId = ctx.componentId; // É38 — capturé avant reset
       if (kind === 'text') textCtx = null;
       else if (kind === 'image') imageCtx = null;
       else linkCtx = null;
       renderCurrent();
+      persistSection(persistedAiId);
     }
 
     // É36 — ÉDITION IA PAR COMPOSANT : l'inventaire des éléments éditables
@@ -583,6 +613,7 @@
       }
       renderCurrent();
       const msgEl2 = el('inspAiCompMsg');
+      if (outcome.ok && outcome.appliedCount > 0) persistSection(componentId); // É38 — une révision par lot d'éditions
       if (!msgEl2) return;
       if (!outcome.ok) {
         msgEl2.textContent = 'IA indisponible (' + (outcome.detail || outcome.reason) + ')';
@@ -613,8 +644,10 @@
         }
         state = resultLink.state;
         dirtyReal.add(linkCtx.componentId);
+        const persistedLinkId = linkCtx.componentId; // É38 — capturé avant reset
         linkCtx = null;
         renderCurrent();
+        persistSection(persistedLinkId);
         return;
       }
       // É23 — APPLY du src image : UI → updateImageSource() → nouveau state
@@ -635,8 +668,10 @@
         }
         state = resultImg.state;
         dirtyReal.add(imageCtx.componentId);
+        const persistedImageId = imageCtx.componentId; // É38 — capturé avant reset
         imageCtx = null;
         renderCurrent();
+        persistSection(persistedImageId);
         return;
       }
       // É22 — APPLY du texte réel : UI → updateTextContent() → nouveau state
@@ -657,8 +692,10 @@
         }
         state = resultText.state;
         dirtyReal.add(textCtx.componentId);
+        const persistedTextId = textCtx.componentId; // É38 — capturé avant reset
         textCtx = null;
         renderCurrent();
+        persistSection(persistedTextId);
         return;
       }
       // É35 — boutons ✨ IA (texte / image / lien) : consigne → boucle
@@ -1028,6 +1065,9 @@
     if (v2Flag === 'on' && v2Panel) v2Panel.classList.remove('hidden');
 
     let realSource = null;
+    // É38 — le projet serveur utilisé par la dernière génération réelle :
+    // clé de la persistance des éditions (mock/démo → null → pas de PUT).
+    let currentProjectId = null;
 
     // LOT 06/08 — le bouton MOCK reste le chemin de démonstration par défaut
     btnStart.addEventListener('click', () => {
@@ -1044,6 +1084,7 @@
       const pdata = await pres.json();
       const proj = (pdata.projects || pdata)[0];
       if (!proj) { if (v2Status) v2Status.textContent = 'Aucun projet serveur.'; return; }
+      currentProjectId = proj.id;
       // 2. Session de conversation réelle
       const sres = await fetch('/api/v1/projects/' + proj.id + '/conversation/sessions', { method: 'POST', headers: H });
       const sdata = await sres.json();

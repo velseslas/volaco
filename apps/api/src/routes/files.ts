@@ -5,6 +5,7 @@ import { projectStore } from '../../../../packages/core/src/identity/project.js'
 import { auditStore } from '../../../../packages/core/src/observability/audit.js';
 import { revisionStore } from '../../../../packages/core/src/model/revision-store.js';
 import { ValidationError } from '../../../../packages/core/src/errors.js';
+import { logger } from '../../../../packages/core/src/logger.js';
 import type { RequestContext } from '../middleware/auth.js';
 
 import { readBody } from '../middleware/body.js';
@@ -86,6 +87,86 @@ export async function handleFilesRoutes(
     res.statusCode = 200;
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify({ result: saved, requestId }));
+    return true;
+  }
+
+  // 1c. PUT /api/v1/projects/:projectId/files/section/:name (É38) :
+  // Persistance d'une section éditée dans le Builder. Le corps { html }
+  // remplace le contenu du bloc <div class="vibe-stitched" data-section="name">
+  // dans index.html — MÊMES conventions de blocs que l'assemblage des
+  // générations (conversation.ts). Chaque sauvegarde crée une RÉVISION
+  // réversible (« Édition Builder — section … »).
+  if (req.method === 'PUT' && action === 'section' && parts[3]) {
+    const sectionName = decodeURIComponent(parts[3]);
+    // Garde anti-injection de regex : les noms de sections générées sont
+    // alphanumériques + tirets. Tout autre caractère est refusé.
+    if (!/^[a-zA-Z0-9_-]{1,40}$/.test(sectionName)) {
+      throw new ValidationError('Nom de section invalide', undefined, requestId);
+    }
+
+    const bodyText = await readBody(req);
+    let payload: { html?: string };
+    try {
+      payload = JSON.parse(bodyText || '{}');
+    } catch {
+      throw new ValidationError('JSON invalide dans le corps de la requête', undefined, requestId);
+    }
+    if (typeof payload.html !== 'string' || payload.html.trim().length === 0) {
+      throw new ValidationError('Le champ "html" est obligatoire et ne peut pas être vide', undefined, requestId);
+    }
+    if (payload.html.length > 200000) {
+      throw new ValidationError('Section trop volumineuse (max 200 000 caractères)', undefined, requestId);
+    }
+
+    // Le fichier doit exister et contenir le bloc de la section.
+    const existing = fileStore.getFile(context.tenantId, projectId, 'index.html');
+    if (!existing) {
+      throw new ValidationError('Aucun index.html à mettre à jour pour ce projet', undefined, requestId);
+    }
+    const blockRegex = new RegExp(
+      `<div[^>]*data-section="${sectionName}"[^>]*>[\\s\\S]*?(?=<div[^>]*data-section|<\\/body>|$)`,
+      'i'
+    );
+    if (!blockRegex.test(existing.content)) {
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ applied: false, reason: 'section-not-found', requestId }));
+      return true;
+    }
+    const updatedHtml = existing.content.replace(
+      blockRegex,
+      `<div class="vibe-stitched" data-section="${sectionName}">${payload.html}</div>`
+    );
+    if (updatedHtml === existing.content) {
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ applied: false, reason: 'unchanged', requestId }));
+      return true;
+    }
+
+    fileStore.saveFile(context.tenantId, projectId, 'index.html', updatedHtml);
+    let revisionId: string | undefined;
+    try {
+      const revision = revisionStore.createRevision(context.tenantId, projectId, {
+        message: `Édition Builder — section ${sectionName}`,
+        author: 'Builder',
+        files: { 'index.html': updatedHtml },
+        provenance: { source: 'USER', triggerRequestId: requestId }
+      });
+      revisionId = revision.id;
+    } catch (err) {
+      // La sauvegarde du fichier reste valide même si la révision échoue.
+      logger.warn('Révision de section Builder non créée', {
+        component: 'files-route',
+        projectId,
+        section: sectionName,
+        error: err instanceof Error ? err.message : String(err)
+      });
+    }
+
+    res.statusCode = 200;
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ applied: true, revisionId, requestId }));
     return true;
   }
 

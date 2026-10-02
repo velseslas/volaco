@@ -107,3 +107,32 @@ describe('ÉTAPE 36 : édition IA par composant (multi-éléments, multi-tours)'
     assert.ok(src.includes("reason === 'image-inaccessible'"), 'échec image annoncé au client');
   });
 });
+
+describe('ÉTAPE 38 : persistance des éditions Builder (PUT files/section)', () => {
+  it('1. persistSection : PUT vers files/section/<section> avec l HTML réel du composant', () => {
+    const src = appJs();
+    const fn = src.slice(src.indexOf('async function persistSection'), src.indexOf('async function startAiEdit') > 0 ? src.indexOf('async function startAiEdit') : undefined);
+    assert.ok(fn.includes("'/api/v1/projects/' + currentProjectId + '/files/section/' + encodeURIComponent(componentId)"), 'endpoint de section');
+    assert.ok(fn.includes("method: 'PUT'"), 'méthode PUT');
+    assert.ok(fn.includes('JSON.stringify({ html: html })'), 'corps = html réel du composant');
+    assert.ok(fn.includes('if (!currentProjectId || !componentId) return;'), 'mock/démo → aucun appel');
+    assert.ok(fn.includes("v2Status.textContent = '⚠"), 'échec de sauvegarde signalé (honnête)');
+  });
+
+  it('2. le projet serveur est mémorisé à la génération réelle', () => {
+    const src = appJs();
+    const start = src.indexOf('async function startRealGeneration');
+    assert.ok(start > 0, 'startRealGeneration présent');
+    const fn = src.slice(start, start + 1600);
+    assert.ok(fn.includes('currentProjectId = proj.id;'), 'currentProjectId fixé au démarrage du flux réel');
+  });
+
+  it('3. les CINQ chemins d édition persistent (3 APPLY manuels + 2 boucles IA)', () => {
+    const src = appJs();
+    assert.ok(src.includes('persistSection(persistedLinkId)'), 'APPLY lien');
+    assert.ok(src.includes('persistSection(persistedImageId)'), 'APPLY image');
+    assert.ok(src.includes('persistSection(persistedTextId)'), 'APPLY texte');
+    assert.ok(src.includes('persistSection(persistedAiId)'), 'édition IA mono-élément');
+    assert.ok(src.includes('persistSection(componentId)'), 'édition IA par composant');
+  });
+});
