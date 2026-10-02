@@ -478,7 +478,9 @@
       let outcome;
       try {
         outcome = await runAiEditLoop({
-          fetchImpl: fetch,
+          // fetch natif JAMAIS passé nu : débindé par le passage d'argument
+          // (this ≠ window → « Illegal invocation » dans le navigateur).
+          fetchImpl: (url, init) => fetch(url, init),
           url: '/api/v1/ai/chat/completions',
           request: { kind: kind, instruction: instruction, currentValue: currentValue },
           headers: H

@@ -46,6 +46,9 @@ describe('ÉTAPE 35 : édition IA par outils — câblage du Builder', () => {
     assert.ok(!fn.includes('api.mistral.ai'), 'jamais d appel direct à Mistral');
     assert.ok(fn.includes('aiEditBusy'), 'verrou anti double-clic');
     assert.ok(fn.includes('headers: H'), 'en-têtes tenant/rôle transmis');
+    // fetch natif jamais passé nu : débindé (this ≠ window) → Illegal invocation
+    assert.ok(!/fetchImpl:\s*fetch\b/.test(fn), 'fetchImpl enveloppé (pas de fetch nu)');
+    assert.ok(fn.includes('(url, init) => fetch(url, init)'), 'enveloppe de fetch explicite');
   });
 
   it('5. les trois boutons déclenchent la même boucle avec leur contexte de clic', () => {
