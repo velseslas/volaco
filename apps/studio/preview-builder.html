@@ -2,8 +2,16 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8">
-    <!-- É31 — CSP : le HTML IA réel ne peut plus exécuter de script (inline, onclick, eval) -->
-    <meta http-equiv="Content-Security-Policy" content="script-src 'self'; img-src 'self' data: https:; object-src 'none'; base-uri 'none'">
+    <!-- É31/E47 — CSP : le HTML IA réel ne peut toujours pas exécuter de script
+         inline/onclick/eval ; seule exception : le CDN Tailwind, nécessaire pour
+         que les sections générées (classes Tailwind) soient STYLÉES dans le
+         canvas — sans lui, le preview affiche du HTML brut. -->
+    <meta http-equiv="Content-Security-Policy" content="script-src 'self' https://cdn.tailwindcss.com; img-src 'self' data: https:; object-src 'none'; base-uri 'none'">
+    <!-- E47 — Tailwind au niveau de la page : les sections rendues dans le
+         canvas portent des classes Tailwind ; le Play CDN observe le DOM et
+         génère les styles à la volée (les <script> internes aux sections
+         restent inertes via innerHTML — c'est celui-ci qui style tout). -->
+    <script src="https://cdn.tailwindcss.com"></script>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Preview Builder — Progressive Preview Renderer</title>
   <style>
