@@ -12,11 +12,21 @@ import { logger } from '../../../../packages/core/src/logger.js';
 import type { RequestContext } from '../middleware/auth.js';
 
 import { readBody } from '../middleware/body.js';
+
+// É34 — Format d'outil transmis tel quel à Mistral (type function).
+// La validation fine (name/parameters) appartient au modèle et à Mistral ;
+// le proxy garantit uniquement la forme et ne modifie jamais le contenu.
+interface MistralToolDefinition {
+  type?: string;
+  function?: { name?: string; description?: string; parameters?: unknown };
+}
+
 interface ChatCompletionRequestBody {
   model?: string;
   messages?: { role: string; content: string }[];
   temperature?: number;
   max_tokens?: number;
+  tools?: MistralToolDefinition[];
 }
 
 export async function handleAiProxyRoutes(
@@ -42,6 +52,13 @@ export async function handleAiProxyRoutes(
 
   if (!body.messages || !Array.isArray(body.messages) || body.messages.length === 0) {
     throw new ValidationError('Le champ "messages" est obligatoire et ne peut pas être vide', undefined, requestId);
+  }
+
+  // É34 — Tool-calling : les outils éventuels du client sont relayés au
+  // modèle. Un champ présent mais non-array est rejeté explicitement (pas
+  // d'ignorance silencieuse) ; absent, le comportement est inchangé.
+  if (body.tools !== undefined && !Array.isArray(body.tools)) {
+    throw new ValidationError('Le champ "tools", s il est fourni, doit être un tableau', undefined, requestId);
   }
 
   // La clé API reste strictement côté serveur. Un utilisateur peut fournir sa
@@ -75,7 +92,11 @@ export async function handleAiProxyRoutes(
         model: body.model || process.env.MISTRAL_MODEL || 'codestral-latest',
         messages: body.messages,
         temperature: body.temperature ?? 0.2,
-        max_tokens: body.max_tokens ?? 8192
+        max_tokens: body.max_tokens ?? 8192,
+        // É34 — les tools du client (le cas échéant) partent inchangés ;
+        // Mistral peut alors répondre avec des tool_calls, que la réponse
+        // brute ci-dessous retourne déjà au client sans altération.
+        ...(Array.isArray(body.tools) && body.tools.length > 0 ? { tools: body.tools } : {})
       })
     });
 
