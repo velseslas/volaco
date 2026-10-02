@@ -20,6 +20,7 @@ import { createApiServer } from '../../../../apps/api/src/server.js';
 // Les tests tournent depuis la racine du dépôt (scripts/run-tests.mjs).
 const studio = (): string => readFileSync(join(process.cwd(), 'apps', 'studio', 'index.html'), 'utf8');
 const builderPage = (): string => readFileSync(join(process.cwd(), 'apps', 'studio', 'preview-builder.html'), 'utf8');
+const builderAppJs = (): string => readFileSync(join(process.cwd(), 'apps', 'studio', 'preview-builder-app.js'), 'utf8');
 
 describe('ÉTAPE 27 : Builder v2 = Preview principal, Legacy = fallback', () => {
   it('1. Builder v2 est le DÉFAUT : chargé automatiquement à l ouverture du Studio', () => {
@@ -47,7 +48,7 @@ describe('ÉTAPE 27 : Builder v2 = Preview principal, Legacy = fallback', () => 
   });
 
   it('4. le Builder reçoit le pont : listener additif → son PROPRE flux (btnReal)', () => {
-    const page = builderPage();
+    const page = builderAppJs();
     assert.ok(page.includes('start-builder-generation'), 'listener du pont présent');
     assert.ok(page.includes('ev.origin !== location.origin'), 'origine vérifiée');
     assert.ok(page.includes('promptInput.value = d.prompt') && page.includes('realBtn.click()'), 'le Builder déclenche SON PROPRE flux (btnReal)');
@@ -66,7 +67,7 @@ describe('ÉTAPE 27 : Builder v2 = Preview principal, Legacy = fallback', () => 
   });
 
   it('7. RESET + générations successives : le pont est réutilisable sans état caché', () => {
-    const page = builderPage();
+    const page = builderAppJs();
     assert.ok(page.includes("btnReset.addEventListener('click'"), 'RESET intact');
     // le listener du pont ne se désabonne jamais : réutilisable pour toutes
     // les générations successives de la session :
@@ -77,9 +78,10 @@ describe('ÉTAPE 27 : Builder v2 = Preview principal, Legacy = fallback', () => 
 });
 
 
+const appJsSrc = (): string => readFileSync(join(process.cwd(), 'apps', 'studio', 'preview-builder-app.js'), 'utf8');
 describe('ÉTAPE 30 : mode intégré au Studio (canvas plein + resizable)', () => {
   it('1. détection embedded : la page sait qu elle tourne dans l iframe du Studio', () => {
-    const page = builderPage();
+    const page = builderAppJs();
     assert.ok(page.includes('window.parent && window.parent !== window'), 'détection iframe parent');
     assert.ok(page.includes("classList.add('embedded')"), 'classe html.embedded posée');
   });
@@ -176,10 +178,10 @@ describe('ÉTAPE 26 : intégration progressive du Preview Builder', () => {
   });
 
   it('6. le RESET du Builder reste fonctionnel (page autonome inchangée)', () => {
-    const page = builderPage();
+    const page = builderAppJs();
     assert.ok(page.includes("btnReset.addEventListener('click'"), 'le RESET existe toujours');
     assert.ok(page.includes('applyBuildEvent'), 'le moteur du Builder est branché');
-    assert.ok(page.includes("'/preview-builder/engine.js'"), 'les modules É01→É25 sont servis');
+    assert.ok(builderAppJs().includes('/preview-builder/engine.js'), 'les modules É01→É25 sont servis');
   });
 
   it('7. É01→É25 gelées : les modules et les commandes d édition sont inchangés', () => {

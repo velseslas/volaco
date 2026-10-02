@@ -19,6 +19,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 // dist/apps/api/src/routes → racine du dépôt (5 niveaux)
 const repoRoot = join(here, '..', '..', '..', '..', '..');
 const demoPagePath = join(repoRoot, 'apps', 'studio', 'preview-builder.html');
+const appJsPath = join(repoRoot, 'apps', 'studio', 'preview-builder-app.js');
 const engineJsPath = join(repoRoot, 'dist', 'packages', 'core', 'src', 'preview-builder', 'engine.js');
 const rendererJsPath = join(repoRoot, 'dist', 'packages', 'core', 'src', 'preview-builder', 'renderer.js');
 const layoutJsPath = join(repoRoot, 'dist', 'packages', 'core', 'src', 'preview-builder', 'layout.js');
@@ -51,6 +52,9 @@ export async function handlePreviewBuilderRoutes(
 ): Promise<boolean> {
   if (pathname === '/preview-builder') {
     return serveFile(res, demoPagePath, 'text/html; charset=utf-8', 'preview-builder.html introuvable');
+  }
+  if (pathname === '/preview-builder/app.js') {
+    return serveFile(res, appJsPath, 'text/javascript; charset=utf-8', 'App Preview Builder non compilée');
   }
   if (pathname === '/preview-builder/engine.js') {
     return serveFile(res, engineJsPath, 'text/javascript; charset=utf-8', 'Moteur Preview Builder non compilé (npm run build)');

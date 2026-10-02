@@ -75,7 +75,7 @@ function hostEl(id: string, rect: { top: number; left: number; bottom: number; r
   return host;
 }
 
-const page = (): string => readFileSync(join(process.cwd(), 'apps', 'studio', 'preview-builder.html'), 'utf8');
+const page = (): string => readFileSync(join(process.cwd(), 'apps', 'studio', 'preview-builder-app.js'), 'utf8');
 
 describe('ÉTAPE 20 : drag & drop réel (pointer events)', () => {
   it('1. drag racine → racine : réordonnancement par la géométrie', () => {

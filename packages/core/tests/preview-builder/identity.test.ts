@@ -98,7 +98,7 @@ describe('ÉTAPE 13 : identité stable + résolution de cible', () => {
     assert.deepEqual(model1, model2, 'le modèle de rendu ne contient AUCUN champ viewport');
     assert.ok(!('viewport' in model1));
     // La page ne bascule les viewports QUE par classes CSS (aucun id regénéré)
-    const source = readFileSync(join(process.cwd(), 'apps', 'studio', 'preview-builder.html'), 'utf8');
+    const source = readFileSync(join(process.cwd(), 'apps', 'studio', 'preview-builder-app.js'), 'utf8');
     const vpHandler = source.slice(source.indexOf("document.querySelectorAll('.vp-btn')"), source.indexOf("document.querySelectorAll('.vp-btn')") + 600);
     assert.ok(vpHandler.includes('classList.add'), 'viewports = classes CSS');
     assert.ok(!vpHandler.includes('dataset.pvId'), 'aucun id regénéré lors d un changement de viewport');

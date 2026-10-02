@@ -126,10 +126,11 @@ describe('ÉTAPE 12 : rendu final premium + cohérence', () => {
   });
 
   it('8. responsive SANS modification du state : les viewports ne font que classer', () => {
-    const source = page();
-    const handlerStart = source.indexOf("document.querySelectorAll('.vp-btn')");
+    const src = page();
+    const appJs = readFileSync(join(process.cwd(), 'apps', 'studio', 'preview-builder-app.js'), 'utf8');
+    const handlerStart = appJs.indexOf("document.querySelectorAll('.vp-btn')");
     assert.ok(handlerStart > 0, 'le handler viewport existe');
-    const handler = source.slice(handlerStart, handlerStart + 600);
+    const handler = appJs.slice(handlerStart, handlerStart + 600);
     assert.ok(handler.includes('classList.add') && handler.includes('classList.remove'), 'bascule par classes CSS uniquement');
     for (const forbidden in { applyBuildEvent: 1, consume: 1 }) {
       assert.ok(!handler.includes(forbidden), `${forbidden} interdit dans le handler viewport`);
@@ -137,7 +138,7 @@ describe('ÉTAPE 12 : rendu final premium + cohérence', () => {
   });
 
   it('9. reduced-motion : animations neutralisées et chip ✓ invisible par défaut', () => {
-    const source = page();
+    const source = readFileSync(join(process.cwd(), 'apps', 'studio', 'preview-builder.html'), 'utf8');
     assert.ok(source.includes('@media (prefers-reduced-motion: reduce)'));
     assert.ok(source.includes('animation: none !important'), 'toutes les animations neutralisées');
     const chipRule = source.slice(source.indexOf('.pv-node.completed::after'));

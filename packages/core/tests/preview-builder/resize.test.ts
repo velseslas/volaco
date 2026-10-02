@@ -35,7 +35,7 @@ function scenario(): PreviewBuildState {
   return applyBuildEvents(createPreviewBuildState(), events);
 }
 
-const page = (): string => readFileSync(join(process.cwd(), 'apps', 'studio', 'preview-builder.html'), 'utf8');
+const page = (): string => readFileSync(join(process.cwd(), 'apps', 'studio', 'preview-builder-app.js'), 'utf8');
 
 describe('ÉTAPE 21 : resize interactif', () => {
   it('1. resize horizontal : seule la largeur change', () => {

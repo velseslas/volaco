@@ -13,6 +13,7 @@ import type { AddressInfo } from 'node:net';
 import { createApiServer } from '../../../../apps/api/src/server.js';
 
 const page = (): string => readFileSync(join(process.cwd(), 'apps', 'studio', 'preview-builder.html'), 'utf8').replace(/\r\n/g, '\n');
+const appJs = (): string => readFileSync(join(process.cwd(), 'apps', 'studio', 'preview-builder-app.js'), 'utf8').replace(/\r\n/g, '\n');
 const studio = (): string => readFileSync(join(process.cwd(), 'apps', 'studio', 'index.html'), 'utf8');
 /** La zone VISIBLE = le body SANS le chrome Builder masqué (le CSS en tête est ignoré). */
 const body = (): string => {
@@ -71,42 +72,38 @@ describe('ÉTAPE 28 : page Preview finale (canvas maximal)', () => {
     assert.ok(!src.includes('<h2>Live Preview</h2>'), 'aucun titre d outil au-dessus du canvas');
   });
 
-  it('5. viewports Desktop/Tablet/Mobile conservés dans une barre discrète', () => {
-    const src = page();
-    for (const vp of ['Desktop', 'Tablet', 'Mobile']) {
-      assert.ok(src.includes(`data-vp="${vp.toLowerCase()}"`), `viewport ${vp} présent`);
-    }
-    assert.ok(src.includes('<header class="app-header" style="padding: 8px 16px;">'), 'barre discrète (header mince)');
-    // le handler viewport est intact :
-    assert.ok(src.includes("document.querySelectorAll('.vp-btn')"));
+  it('5. É30 : les boutons viewport sont supprimés du header (Desktop reste le rendu)', () => {
+    const visible = body();
+    assert.ok(!visible.includes('vp-switch'), 'aucun bouton Desktop/Tablet/Mobile visible');
+    assert.ok(!visible.includes('data-vp='), 'aucun contrôle de viewport dans la page finale');
+    // le CSS viewport (vp-tablet/vp-mobile) reste fonctionnel techniquement :
+    assert.ok(page().includes('.canvas.vp-tablet') && page().includes('.canvas.vp-mobile'), 'CSS viewport conservé');
+    // le handler viewport vit dans le module app.js :
+    assert.ok(appJs().includes("document.querySelectorAll('.vp-btn')"), 'le handler viewport reste dans le code (sans bouton)');
   });
 
   it('6. le pont Chat Studio → Builder reste fonctionnel (éléments conservés)', () => {
-    const src = page();
+    const src = appJs();
     assert.ok(src.includes("d.command !== 'start-builder-generation'"), 'listener du pont présent');
-    assert.ok(src.includes('id="v2Prompt"') && src.includes('id="btnReal"'), 'v2Prompt + btnReal conservés (dans le chrome)');
+    assert.ok(page().includes('id="v2Prompt"') && page().includes('id="btnReal"'), 'v2Prompt + btnReal conservés (dans le chrome)');
     assert.ok(src.includes("promptInput.value = d.prompt") && src.includes('realBtn.click()'), 'le pont déclenche toujours le flux réel');
   });
 
-  it('7. PREVIEW READY fonctionne toujours (statusBadge conservé, masqué)', () => {
-    const src = page();
-    assert.ok(src.includes('id="statusBadge"'), 'statusBadge conservé (dans le chrome)');
-    assert.ok(src.includes("el('statusBadge')"), 'le pipeline écrit toujours l état via le modèle');
+  it('7. PREVIEW READY fonctionne toujours (statusBadge conservé, visible dans le header)', () => {
+    const visible = body();
+    assert.ok(visible.includes('id="statusBadge"'), 'statusBadge visible dans le header de la page');
+    assert.ok(appJs().includes("el('statusBadge')"), 'le pipeline écrit toujours l état via le modèle');
   });
 
   it('8. la logique d édition É16→É24 reste dans le code (invisible en final)', () => {
-    const src = page();
-    for (const api of ['updateComponentLabel', 'updateComponentVariant', 'updateTextContent', 'updateImageSource', 'updateLinkHref', 'moveComponent', 'resizeComponent']) {
-      assert.ok(src.includes(`import { `) === false || true);
-    }
+    const src = appJs();
     assert.ok(src.includes('updateComponentLabel') && src.includes('updateTextContent') && src.includes('updateImageSource') && src.includes('updateLinkHref'), 'éditions importées');
     assert.ok(src.includes("el('inspectorBody')"), 'renderInspector continue d écrire (dans le chrome masqué)');
   });
 
   it('9. É27 préservé : le pont reçoit du chat, les gardes et le boot Builder v2 intacts', () => {
-    const src = page();
-    assert.ok(src.includes("d.command !== 'start-builder-generation'"), 'listener pont');
     const studioSrc = studio();
+    assert.ok(studioSrc.includes("command: 'start-builder-generation'"), 'pont côté Studio');
     assert.ok(studioSrc.includes("document.addEventListener('DOMContentLoaded'") && studioSrc.includes("setPreviewMode('builder');"), 'boot Builder v2 (É27) côté Studio');
   });
 

@@ -170,7 +170,7 @@ describe('ÉTAPE 14 : sélection interactive', () => {
     // de sélection ne déclenche aucune réécriture de nœud.
     assert.equal(shouldRefreshNode({ statusChanged: false, focusChanged: false, nextStatus: 'completed' }), false);
     // La page n'applique la sélection QUE par classes + attribut
-    const source = readFileSync(join(process.cwd(), 'apps', 'studio', 'preview-builder.html'), 'utf8');
+    const source = readFileSync(join(process.cwd(), 'apps', 'studio', 'preview-builder-app.js'), 'utf8');
     const block = source.slice(source.indexOf('HIGHLIGHT DE SÉLECTION'), source.indexOf('AUTO-SCROLL doux'));
     assert.ok(block.includes('classList.add') && block.includes('setAttribute'), 'classes + attribut uniquement');
     assert.ok(!block.includes('.innerHTML'), 'aucun innerHTML dans l application de la sélection');
@@ -195,7 +195,7 @@ describe('ÉTAPE 14 : sélection interactive', () => {
     assert.deepEqual(model, modelAgain, 'le modèle n a AUCUN champ viewport : la sélection survit à un changement d affichage');
     // É30 : les boutons viewport sont supprimés — la sélection ne peut plus
     // être dérangée par un clic viewport (il n existe plus de bouton).
-    const pageSrc = readFileSync(join(process.cwd(), 'apps', 'studio', 'preview-builder.html'), 'utf8');
+    const pageSrc = readFileSync(join(process.cwd(), 'apps', 'studio', 'preview-builder-app.js'), 'utf8');
     assert.ok(!pageSrc.includes('vp-switch'), 'aucun bouton viewport dans la page');
   });
 
