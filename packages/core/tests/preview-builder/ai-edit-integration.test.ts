@@ -98,4 +98,12 @@ describe('ÉTAPE 36 : édition IA par composant (multi-éléments, multi-tours)'
     assert.ok(fn.includes('refus(s)'), 'nombre de refus affiché');
     assert.ok(fn.includes('borne d appels atteinte'), 'borne annoncée');
   });
+
+  it('5. É37 — le validateur d image réel est branché sur les DEUX boucles', () => {
+    const src = appJs();
+    assert.ok(src.includes('function validateImageUrl(url)'), 'validateur DOM présent');
+    assert.ok(src.includes('new Image()'), 'test de chargement réel');
+    assert.ok(src.includes('validateImageUrl: validateImageUrl'), 'branché aux boucles');
+    assert.ok(src.includes("reason === 'image-inaccessible'"), 'échec image annoncé au client');
+  });
 });

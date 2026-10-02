@@ -234,3 +234,58 @@ describe('ÉTAPE 35 : boucle d édition IA par outils (runAiEditLoop)', () => {
     assert.equal(outcome.iterations, 2);
   });
 });
+
+describe('ÉTAPE 37 : validation des images proposées (validateImageUrl)', () => {
+  it('1. image qui ne charge pas → relance avec rappel → URL valide acceptée (2 appels)', async () => {
+    const captured: Captured[] = [];
+    const badUrl = 'https://images.unsplash.com/inventee-404';
+    const goodUrl = 'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4';
+    const fetchImpl = fakeFetch([
+      { body: toolCallBody('set_image_src', JSON.stringify({ src: badUrl })) },
+      { body: toolCallBody('set_image_src', JSON.stringify({ src: goodUrl })) }
+    ], captured);
+    const outcome = await runAiEditLoop({
+      fetchImpl,
+      url: '/proxy',
+      request: { kind: 'image', instruction: 'une vraie photo', currentValue: 'https://picsum.photos/1' },
+      validateImageUrl: (url) => Promise.resolve(url === goodUrl ? null : 'image introuvable')
+    });
+
+    assert.equal(outcome.ok, true);
+    assert.equal(outcome.value, goodUrl);
+    assert.equal(outcome.iterations, 2);
+    // le rappel du 2e appel mentionne l image inaccessible
+    const messages = captured[1]?.body?.messages as Array<{ content: string }>;
+    assert.match(messages[2]?.content ?? '', /ne charge pas/);
+  });
+
+  it('2. image toujours inaccessible après toutes les relances → échec image-inaccessible', async () => {
+    const captured: Captured[] = [];
+    const fetchImpl = fakeFetch([{ body: toolCallBody('set_image_src', '{"src":"https://x/broken.jpg"}') }], captured);
+    const outcome = await runAiEditLoop({
+      fetchImpl,
+      url: '/proxy',
+      request: { kind: 'image', instruction: 'ok', currentValue: 'x' },
+      validateImageUrl: () => Promise.resolve('image introuvable'),
+      maxModelCalls: 3
+    });
+
+    assert.equal(outcome.ok, false);
+    assert.equal(outcome.reason, 'image-inaccessible');
+    assert.equal(outcome.detail, 'image introuvable');
+    assert.equal(outcome.iterations, 3);
+  });
+
+  it('3. sans validateImageUrl : comportement inchangé (URL acceptée telle quelle)', async () => {
+    const captured: Captured[] = [];
+    const fetchImpl = fakeFetch([{ body: toolCallBody('set_image_src', '{"src":"https://peu-importe/x.jpg"}') }], captured);
+    const outcome = await runAiEditLoop({
+      fetchImpl,
+      url: '/proxy',
+      request: { kind: 'image', instruction: 'ok', currentValue: 'x' }
+    });
+    assert.equal(outcome.ok, true);
+    assert.equal(outcome.value, 'https://peu-importe/x.jpg');
+    assert.equal(outcome.iterations, 1);
+  });
+});

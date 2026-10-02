@@ -471,6 +471,20 @@
         .length + 1;
       idx.innerHTML = Array.from({ length: count }, (_, i) => '<option value="' + (i + 1) + '">position ' + (i + 1) + '</option>').join('');
     });
+    // É37 — VALIDATION D'IMAGE RÉELLE : une URL proposée par l'IA est testée
+    // (new Image + timeout) AVANT application. Si elle ne charge pas, la
+    // boucle renvoie l'erreur au modèle qui propose une AUTRE URL — finies
+    // les images cassées générées par l'IA.
+    function validateImageUrl(url) {
+      return new Promise((resolve) => {
+        const img = new Image();
+        const timer = setTimeout(() => { img.src = ''; resolve('délai dépassé'); }, 5000);
+        img.onload = () => { clearTimeout(timer); resolve(null); };
+        img.onerror = () => { clearTimeout(timer); resolve('image introuvable'); };
+        img.src = url;
+      });
+    }
+
     // É35 — ÉDITION IA PAR OUTILS : le modèle répond EXCLUSIVEMENT via un
     // appel d'outil structuré (set_text / set_image_src / set_link_href)
     // relayé par le proxy (la clé API reste côté serveur). La valeur produite
@@ -493,7 +507,8 @@
           fetchImpl: (url, init) => fetch(url, init),
           url: '/api/v1/ai/chat/completions',
           request: { kind: kind, instruction: instruction, currentValue: currentValue },
-          headers: H
+          headers: H,
+          validateImageUrl: validateImageUrl
         });
       } finally {
         aiEditBusy = false;
@@ -501,6 +516,7 @@
       if (!outcome.ok) {
         msgEl.textContent = outcome.reason === 'no-tool-call' ? 'IA: réponse sans outil (réessaie)'
           : outcome.reason === 'invalid-args' ? 'IA: arguments invalides (réessaie)'
+          : outcome.reason === 'image-inaccessible' ? 'IA: image inaccessible même après relance (réessaie)'
           : outcome.reason === 'empty-instruction' ? 'Consigne vide'
           : 'IA indisponible (' + (outcome.detail || outcome.reason) + ')';
         return;
@@ -549,6 +565,7 @@
           instruction: instruction,
           inventory: inventory,
           headers: H,
+          validateImageUrl: validateImageUrl,
           apply: (call) => {
             const value = call.args.text ?? call.args.src ?? call.args.href;
             const path = call.args.path;

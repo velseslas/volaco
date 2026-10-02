@@ -228,4 +228,52 @@ describe('ÉTAPE 36 : boucle d édition IA par composant', () => {
     assert.match(body.messages[1]?.content ?? '', /mets à jour les prix/);
     assert.deepEqual(body.tools.map((t) => t.function.name), ['set_text', 'set_image_src', 'set_link_href']);
   });
+
+  it('9. É37 — image qui ne charge pas : refusée AVANT apply, le modèle propose une autre URL qui passe', async () => {
+    const captured: Captured[] = [];
+    const applied: string[] = [];
+    const badUrl = 'https://images.unsplash.com/inventee-404';
+    const goodUrl = 'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4';
+    const fetchImpl = fakeFetch([
+      { body: { choices: [{ message: { content: '', tool_calls: [toolCall('c1-0', 'set_image_src', JSON.stringify({ path: [0, 1], src: badUrl }))] } }] } },
+      { body: { choices: [{ message: { content: '', tool_calls: [toolCall('c2-0', 'set_image_src', JSON.stringify({ path: [0, 1], src: goodUrl }))] } }] } },
+      { body: { choices: [{ message: { content: 'Image remplacée !' } }] } }
+    ], captured);
+    const outcome = await runAiComponentEditLoop({
+      fetchImpl,
+      url: '/proxy',
+      instruction: 'change l image',
+      inventory: INVENTORY,
+      validateImageUrl: (url) => Promise.resolve(url === goodUrl ? null : 'image introuvable'),
+      apply: (call) => { applied.push(String(call.args.src)); return 'OK'; }
+    });
+
+    assert.equal(outcome.ok, true);
+    assert.equal(outcome.appliedCount, 1, 'seule la bonne URL est appliquée');
+    assert.deepEqual(applied, [goodUrl]);
+    assert.equal(outcome.toolErrors.length, 1);
+    assert.match(outcome.toolErrors[0] ?? '', /image inaccessible/);
+    // le résultat d'erreur a bien été nourri au modèle au tour 2
+    const turn2 = captured[1]?.body?.messages as Array<Record<string, unknown>>;
+    const toolMsg = turn2.find((m) => m.role === 'tool') as { content: string } | undefined;
+    assert.match(String(toolMsg?.content), /image inaccessible/);
+    assert.match(String(toolMsg?.content), /AUTRE URL/);
+  });
+
+  it('10. É37 — validateImageUrl n est PAS appelé pour set_text / set_link_href', async () => {
+    const captured: Captured[] = [];
+    const fetchImpl = fakeFetch([
+      { body: { choices: [{ message: { content: '', tool_calls: [toolCall('c1-0', 'set_text', '{"path":[0,0],"text":"X"}')] } }] } },
+      { body: { choices: [{ message: { content: 'Fini.' } }] } }
+    ], captured);
+    const outcome = await runAiComponentEditLoop({
+      fetchImpl,
+      url: '/proxy',
+      instruction: 'va',
+      inventory: INVENTORY,
+      validateImageUrl: () => { throw new Error('ne doit pas être appelé pour un texte'); },
+      apply: () => 'OK'
+    });
+    assert.equal(outcome.appliedCount, 1);
+  });
 });

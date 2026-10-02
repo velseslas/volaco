@@ -43,13 +43,16 @@ export interface AiEditLoopOptions {
   readonly maxModelCalls?: number | undefined;
   /** En-têtes additionnels (tenant/rôle du Builder ; la clé reste côté serveur). */
   readonly headers?: Record<string, string> | undefined;
+  /** É37 — validation des URL d'image proposées (image inaccessible → relance). */
+  readonly validateImageUrl?: ImageUrlValidator | undefined;
 }
 
 export type AiEditFailure =
   | 'empty-instruction'
   | 'http-error'
   | 'no-tool-call'
-  | 'invalid-args';
+  | 'invalid-args'
+  | 'image-inaccessible';
 
 export interface AiEditOutcome {
   readonly ok: boolean;
@@ -139,6 +142,14 @@ interface MistralChatResponse {
   }>;
 }
 
+/**
+ * É37 — Hook de validation d'URL d'image (optionnel, injecté par l'appelant).
+ * Renvoie null si l'image charge, sinon une raison courte. Le module reste
+ * isomorphe : c'est l'appelant (navigateur : new Image() + timeout ; tests :
+ * un stub) qui fournit la mécanique.
+ */
+export type ImageUrlValidator = (url: string) => Promise<string | null> | string | null;
+
 /** Extrait la valeur du premier tool call ; null si absent/invalide/vide. */
 function extractValue(data: MistralChatResponse, kind: AiEditElementKind): { value: string } | { error: string } {
   const toolCalls = data?.choices?.[0]?.message?.tool_calls;
@@ -207,6 +218,18 @@ export async function runAiEditLoop(options: AiEditLoopOptions): Promise<AiEditO
 
     const extracted = extractValue(data, options.request.kind);
     if ('value' in extracted) {
+      // É37 — une URL d'image est vérifiée AVANT d'être acceptée : si elle
+      // ne charge pas, l'erreur repart au modèle qui propose une autre URL.
+      if (options.request.kind === 'image' && options.validateImageUrl) {
+        const invalid = await options.validateImageUrl(extracted.value);
+        if (invalid) {
+          if (attempt === maxModelCalls) {
+            return { ok: false, reason: 'image-inaccessible', detail: invalid, iterations: attempt };
+          }
+          extraReminder = 'L URL d image proposée ne charge pas (' + invalid + '). Appelle à nouveau l outil "' + TOOL_NAMES[options.request.kind] + '" avec une AUTRE URL valide (https://images.unsplash.com/photo-...).';
+          continue;
+        }
+      }
       return { ok: true, value: extracted.value, iterations: attempt };
     }
 
@@ -346,6 +369,8 @@ export async function runAiComponentEditLoop(options: {
   model?: string | undefined;
   maxModelCalls?: number | undefined;
   headers?: Record<string, string> | undefined;
+  /** É37 — validation des URL d'image proposées (image inaccessible → erreur nourrie au modèle, qui propose une autre URL). */
+  validateImageUrl?: ImageUrlValidator | undefined;
 }): Promise<AiComponentEditOutcome> {
   const instruction = options.instruction.trim();
   if (instruction.length === 0) {
@@ -452,6 +477,20 @@ export async function runAiComponentEditLoop(options: {
           result = toolError('path invalide pour "' + name + '" — utilise un path EXACT de l inventaire');
         } else if (typeof value !== 'string' || value.trim().length === 0) {
           result = toolError('valeur "' + valueKey + '" manquante ou vide');
+        } else if (name === 'set_image_src' && options.validateImageUrl) {
+          // É37 — l'URL est testée AVANT application : une image qui ne
+          // charge pas est refusée au modèle, qui propose une autre URL.
+          const invalid = await options.validateImageUrl(value.trim());
+          result = invalid
+            ? toolError('image inaccessible (' + invalid + ') — propose une AUTRE URL https://images.unsplash.com/photo-...')
+            : await options.apply({ name, args: { ...args, [valueKey]: value.trim() } });
+          if (!invalid) {
+            if (result.startsWith('ERREUR:')) {
+              toolErrors.push(result.slice('ERREUR:'.length).trim());
+            } else {
+              appliedCount += 1;
+            }
+          }
         } else {
           args[valueKey] = value.trim();
           const applied = await options.apply({ name, args });
