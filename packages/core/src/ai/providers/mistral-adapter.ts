@@ -56,11 +56,33 @@ export class MistralProviderAdapter implements AIProviderAdapter {
     const model = request.model || 'codestral-latest';
     const timeoutMs = request.timeoutMs ?? 15000;
 
-    const messages: { role: 'system' | 'user'; content: string }[] = [];
-    if (request.systemPrompt) {
-      messages.push({ role: 'system', content: request.systemPrompt });
+    // É33 — Historique multi-tours : quand request.messages est fourni, il
+    // remplace la construction mono-tour systemPrompt+prompt. Sinon le
+    // comportement existant est strictement inchangé.
+    let messages: Record<string, unknown>[];
+    if (request.messages && request.messages.length > 0) {
+      messages = request.messages.map((m) => {
+        const wire: Record<string, unknown> = { role: m.role, content: m.content };
+        if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
+          wire.tool_calls = m.toolCalls.map((tc) => ({
+            id: tc.id,
+            type: 'function',
+            function: { name: tc.name, arguments: tc.arguments }
+          }));
+        }
+        if (m.role === 'tool') {
+          if (m.toolCallId) wire.tool_call_id = m.toolCallId;
+          if (m.name) wire.name = m.name;
+        }
+        return wire;
+      });
+    } else {
+      messages = [];
+      if (request.systemPrompt) {
+        messages.push({ role: 'system', content: request.systemPrompt });
+      }
+      messages.push({ role: 'user', content: request.prompt });
     }
-    messages.push({ role: 'user', content: request.prompt });
 
       const requestBody: Record<string, unknown> = {
         model,
@@ -138,6 +160,7 @@ export class MistralProviderAdapter implements AIProviderAdapter {
       const rawToolCalls = data?.choices?.[0]?.message?.tool_calls;
       const toolCalls = rawToolCalls?.length
         ? rawToolCalls.map((tc) => ({
+            id: tc.id,
             name: tc.function?.name ?? '',
             arguments: tc.function?.arguments || '{}'
           }))

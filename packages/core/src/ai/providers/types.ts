@@ -63,6 +63,25 @@ export interface AIProviderGenerateRequest {
   readonly timeoutMs?: number | undefined;
   readonly requestId?: string | undefined;
   readonly tools?: readonly AIProviderTool[] | undefined;
+  /**
+   * É33 — Historique de conversation multi-tours (tool-calling).
+   * Quand il est fourni, il remplace la construction systemPrompt+prompt ;
+   * sinon le comportement mono-tour existant reste inchangé.
+   */
+  readonly messages?: readonly AIProviderMessage[] | undefined;
+}
+
+/**
+ * É33 — Message de conversation (roles compatibles OpenAI/Mistral).
+ * - 'assistant' peut porter les toolCalls demandés par le modèle ;
+ * - 'tool' porte le résultat d'un outil (toolCallId = id de l'appel).
+ */
+export interface AIProviderMessage {
+  readonly role: 'system' | 'user' | 'assistant' | 'tool';
+  readonly content: string;
+  readonly toolCalls?: readonly AIProviderToolCall[] | undefined;
+  readonly toolCallId?: string | undefined;
+  readonly name?: string | undefined;
 }
 
 export interface AIProviderTool {
@@ -72,6 +91,7 @@ export interface AIProviderTool {
 }
 
 export interface AIProviderToolCall {
+  readonly id?: string | undefined;
   readonly name: string;
   readonly arguments: string;
 }
