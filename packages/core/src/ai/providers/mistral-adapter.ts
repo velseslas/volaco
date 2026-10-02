@@ -62,27 +62,37 @@ export class MistralProviderAdapter implements AIProviderAdapter {
     }
     messages.push({ role: 'user', content: request.prompt });
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    const startTime = Date.now();
+      const requestBody: Record<string, unknown> = {
+        model,
+        messages,
+        temperature: request.temperature ?? 0.2,
+        max_tokens: request.maxTokens ?? 4096
+      };
+      // É32 — Tool-calling : les outils fournis par l'appelant sont transmis
+      // au modèle dans le format OpenAI/Mistral (type: 'function').
+      if (request.tools && request.tools.length > 0) {
+        requestBody.tools = request.tools.map((t) => ({
+          type: 'function',
+          function: { name: t.name, description: t.description, parameters: t.parameters }
+        }));
+      }
 
-    try {
-      const response = await this.fetchFn(endpoint, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey.trim()}`,
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          ...(credentials?.customHeaders ?? {})
-        },
-        body: JSON.stringify({
-          model,
-          messages,
-          temperature: request.temperature ?? 0.2,
-          max_tokens: request.maxTokens ?? 4096
-        }),
-        signal: controller.signal
-      });
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const startTime = Date.now();
+
+      try {
+        const response = await this.fetchFn(endpoint, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey.trim()}`,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            ...(credentials?.customHeaders ?? {})
+          },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal
+        });
 
       const latencyMs = Date.now() - startTime;
 
@@ -107,12 +117,31 @@ export class MistralProviderAdapter implements AIProviderAdapter {
       }
 
       interface MistralApiResponse {
-        choices?: Array<{ message?: { content?: string } }>;
+        choices?: Array<{
+          message?: {
+            content?: string | null;
+            tool_calls?: Array<{
+              id?: string;
+              function?: { name?: string; arguments?: string };
+            }>;
+          };
+        }>;
         usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
       }
 
       const data = (await response.json()) as MistralApiResponse;
       const text = data?.choices?.[0]?.message?.content ?? '';
+
+      // É32 — Tool-calling : les tool_calls du modèle sont extraits de la
+      // réponse et retournés à l'appelant (sans exécution ici — l'appelant
+      // décide quoi faire des arguments).
+      const rawToolCalls = data?.choices?.[0]?.message?.tool_calls;
+      const toolCalls = rawToolCalls?.length
+        ? rawToolCalls.map((tc) => ({
+            name: tc.function?.name ?? '',
+            arguments: tc.function?.arguments || '{}'
+          }))
+        : undefined;
 
       const inputTokens = data?.usage?.prompt_tokens ?? Math.ceil(request.prompt.length / 4);
       const outputTokens = data?.usage?.completion_tokens ?? Math.ceil(text.length / 4);
@@ -138,7 +167,8 @@ export class MistralProviderAdapter implements AIProviderAdapter {
           totalTokens
         },
         costUsd: usageRecord.estimatedCostUsd,
-        rawResponse: data
+        rawResponse: data,
+        ...(toolCalls ? { toolCalls } : {})
       };
     } catch (err: unknown) {
       if (err instanceof AIProviderError || err instanceof AIProviderAuthError) {

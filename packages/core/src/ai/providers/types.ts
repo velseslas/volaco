@@ -62,6 +62,18 @@ export interface AIProviderGenerateRequest {
   readonly maxTokens?: number | undefined;
   readonly timeoutMs?: number | undefined;
   readonly requestId?: string | undefined;
+  readonly tools?: readonly AIProviderTool[] | undefined;
+}
+
+export interface AIProviderTool {
+  readonly name: string;
+  readonly description: string;
+  readonly parameters: Record<string, unknown>;
+}
+
+export interface AIProviderToolCall {
+  readonly name: string;
+  readonly arguments: string;
 }
 
 export interface AIProviderGenerateResponse {
@@ -76,6 +88,7 @@ export interface AIProviderGenerateResponse {
   };
   readonly costUsd: number;
   readonly rawResponse?: unknown | undefined;
+  readonly toolCalls?: readonly AIProviderToolCall[] | undefined;
 }
 
 export interface AIProviderAdapter {
