@@ -264,6 +264,15 @@ describe('E43 : prévisualisation des éditions IA avant application', () => {
   });
 });
 
+describe('E46 : polish Studio — filet image + boutons + auth + chat', () => {
+  it('1. le canvas du Builder a un filet anti-images-cassées (placeholder déterministe, sans boucle)', () => {
+    const src = appJs();
+    assert.ok(src.includes("el('canvas').addEventListener('error'"), 'capture des erreurs img (phase capture)');
+    assert.ok(src.includes('img.dataset.imgfallback'), 'garde anti-boucle par image');
+    assert.ok(src.includes('picsum.photos/seed/'), 'placeholder déterministe');
+  });
+});
+
 describe('E44 : application sélective par section dans la prévisualisation', () => {
   it('1. le panneau groupe par section avec une case cochée par groupe', () => {
     const src = appJs();

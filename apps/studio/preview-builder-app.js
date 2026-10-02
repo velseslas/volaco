@@ -866,6 +866,26 @@
       render(renderPreview(state, { selectedId: selectedComponentId }));
     }
 
+    /* ===== E46 — FILET ANTI-IMAGES CASSÉES (canvas) =====
+       Les sites générés contiennent parfois des URL d'images mortes (l'IA
+       hallucine). Le Studio avait vibeFixImages ; le Builder applique la
+       même politique : TOUTE image en échec dans le HTML réel est remplacée
+       par un placeholder déterministe élégant (dégradé + image de secours
+       fiable), une seule fois par image (garde data-imgfallback — jamais de
+       boucle). L'attribut alt est conservé pour l'accessibilité. */
+    let imgFallbackSeed = 0;
+    el('canvas').addEventListener('error', (e) => {
+      const img = e.target;
+      if (!img || img.tagName !== 'IMG' || img.dataset.imgfallback) return;
+      img.dataset.imgfallback = '1';
+      imgFallbackSeed += 1;
+      const label = (img.alt || 'image').replace(/[^a-zA-Z0-9]/g, '-').slice(0, 30) + '-' + imgFallbackSeed;
+      img.style.background = 'linear-gradient(135deg,#1e293b,#0f172a)';
+      img.style.minHeight = img.style.minHeight || '180px';
+      img.style.objectFit = img.style.objectFit || 'cover';
+      img.src = 'https://picsum.photos/seed/' + encodeURIComponent(label) + '/800/520';
+    }, true);
+
     document.addEventListener('click', (e) => {
       // Le sélecteur de viewport est du chrome d'affichage : changer de
       // viewport conserve la sélection (l'identité ne change jamais).
