@@ -37,7 +37,7 @@ import {
 } from '../../src/preview-builder/editing.js';
 import { renderPreview, buildInspector, buildTimeline, buildFocus } from '../../src/preview-builder/renderer.js';
 
-const page = (): string => readFileSync(join(process.cwd(), 'apps', 'studio', 'preview-builder.html'), 'utf8');
+const page = (): string => readFileSync(join(process.cwd(), 'apps', 'studio', 'preview-builder-app.js'), 'utf8');
 
 /** Génère un dashboard : hero (avec contenu réel riche) + cartes + chart. */
 function generation(richHtml = true): PreviewBuildState {
