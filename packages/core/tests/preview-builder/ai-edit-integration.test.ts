@@ -16,9 +16,9 @@ import { join } from 'node:path';
 const appJs = (): string => readFileSync(join(process.cwd(), 'apps', 'studio', 'preview-builder-app.js'), 'utf8');
 
 describe('ÉTAPE 35 : édition IA par outils — câblage du Builder', () => {
-  it('1. le Builder importe la boucle d édition IA (module isomorphe servi)', () => {
+  it('1. le Builder importe les boucles d édition IA (module isomorphe servi)', () => {
     const src = appJs();
-    assert.ok(src.includes("import { runAiEditLoop } from '/preview-builder/ai-edit.js';"), 'import présent');
+    assert.ok(src.includes("import { runAiEditLoop, runAiComponentEditLoop } from '/preview-builder/ai-edit.js';"), 'import présent');
   });
 
   it('2. les trois cibles réelles ont leur contrôle IA (texte, image, lien)', () => {
@@ -64,5 +64,38 @@ describe('ÉTAPE 35 : édition IA par outils — câblage du Builder', () => {
     assert.ok(fn.includes("outcome.reason === 'no-tool-call'"), 'sans outil → message explicite');
     assert.ok(fn.includes("'IA indisponible ('"), 'erreur HTTP → message explicite');
     assert.ok(fn.includes("'Modification refusée: '"), 'refus de la commande pure → message explicite');
+  });
+});
+
+describe('ÉTAPE 36 : édition IA par composant (multi-éléments, multi-tours)', () => {
+  it('1. le panneau par défaut propose l édition IA par composant (si HTML réel)', () => {
+    const src = appJs();
+    assert.ok(src.includes('id="inspAiCompInput"') && src.includes('id="inspAiComp"'), 'contrôles présents');
+    assert.ok(src.includes("typeof comp.metadata.html === 'string'"), 'réservé aux composants à HTML réel');
+  });
+
+  it('2. la boucle reçoit l inventaire (mêmes conventions de path que les commandes)', () => {
+    const src = appJs();
+    const fn = src.slice(src.indexOf('async function startAiComponentEdit'), src.indexOf("el('inspectorBody').addEventListener('click'"));
+    assert.ok(fn.includes('inventoryEditableElements(html)'), 'inventaire construit depuis metadata.html');
+    assert.ok(fn.includes('runAiComponentEditLoop'), 'boucle multi-outils utilisée');
+  });
+
+  it('3. chaque tool_call passe par une COMMANDE PURE (jamais d écriture DOM directe)', () => {
+    const src = appJs();
+    const fn = src.slice(src.indexOf('async function startAiComponentEdit'), src.indexOf("el('inspectorBody').addEventListener('click'"));
+    assert.ok(fn.includes("call.name === 'set_text' ? updateTextContent(state, componentId, path, String(value))"), 'texte');
+    assert.ok(fn.includes("call.name === 'set_image_src' ? updateImageSource(state, componentId, path, String(value))"), 'image');
+    assert.ok(fn.includes(': updateLinkHref(state, componentId, path, String(value))'), 'lien');
+    assert.ok(fn.includes('dirtyReal.add(componentId)'), 'canal dirtyReal');
+    assert.ok(!/fetchImpl:\s*fetch\b/.test(fn), 'fetch natif jamais passé nu (débindé)');
+    assert.ok(fn.includes('aiCompEditBusy'), 'verrou anti double-clic');
+  });
+
+  it('4. succès partiel honnête : les refus et la borne sont annoncés', () => {
+    const src = appJs();
+    const fn = src.slice(src.indexOf('async function startAiComponentEdit'), src.indexOf("el('inspectorBody').addEventListener('click'"));
+    assert.ok(fn.includes('refus(s)'), 'nombre de refus affiché');
+    assert.ok(fn.includes('borne d appels atteinte'), 'borne annoncée');
   });
 });

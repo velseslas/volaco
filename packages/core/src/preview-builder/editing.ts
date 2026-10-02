@@ -418,6 +418,122 @@ function editHtmlText(html: string, path: number[], text: string): { ok: true; h
   return { ok: true, html: html.slice(0, loc.el.innerStart) + escaped + html.slice(loc.el.innerEnd) };
 }
 
+/* =====================================================================
+ * ÉTAPE 36 — inventoryEditableElements : inventaire des éléments
+ * éditables d'un HTML réel, pour l'édition IA par composant.
+ *
+ * Mêmes conventions que le parseur commun locateElement (index d'éléments
+ * uniquement, voids non empilés) — donc les paths retournés sont DIRECTEMENT
+ * utilisables par les commandes pures updateTextContent / updateImageSource /
+ * updateLinkHref. Cibles :
+ * - texte : élément non void sans AUCUN élément enfant et avec du texte
+ *   (même règle que le contexte de clic É22) ;
+ * - image : <img> avec sa valeur src ;
+ * - lien  : <a> avec sa valeur href.
+ * Les conteneurs de code (script/style/head/…) ne sont jamais proposés.
+ * ===================================================================== */
+
+/** Élément éditable inventorié : kind + path + valeur courante. */
+export interface EditableElementInfo {
+  readonly path: number[];
+  readonly kind: 'text' | 'image' | 'link';
+  readonly tag: string;
+  readonly value: string;
+}
+
+/** Balises dont le contenu n'est jamais du contenu visible éditable. */
+const INVENTORY_SKIP_TAGS = new Set(['script', 'style', 'head', 'meta', 'link', 'title', 'noscript', 'textarea', 'template']);
+
+/** Contenu BRUT (les '<' internes ne sont pas des balises) consommé d'un bloc. */
+const RAW_CONTENT_TAGS = new Set(['script', 'style']);
+
+/** Décode les entités courantes : l'inventaire affiche le texte comme le
+ * DOM (textContent) ; les commandes ré-échappent à l'écriture. */
+function decodeHtmlText(text: string): string {
+  return text
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&');
+}
+
+export function inventoryEditableElements(html: string, maxElements = 80): EditableElementInfo[] {
+  const out: EditableElementInfo[] = [];
+  const stack: { childCount: number; path: number[]; tag: string; skipped: boolean; hasChildElements: boolean; textChunks: string[] }[] = [
+    // Racine : jamais dépilée (donc jamais cible texte) ; skipped=false pour
+    // ne PAS contaminer l'héritage des descendants réels.
+    { childCount: 0, path: [], tag: '#root', skipped: false, hasChildElements: true, textChunks: [] }
+  ];
+  let i = 0;
+  while (i < html.length && out.length < maxElements) {
+    const lt = html.indexOf('<', i);
+    if (lt < 0) break; // texte final sans balise fermante : ignoré
+    // Le texte entre la dernière balise et celle-ci appartient au sommet.
+    const top = stack[stack.length - 1];
+    if (lt > i && top && !top.skipped) {
+      top.textChunks.push(html.slice(i, lt));
+    }
+    if (html.startsWith('<!--', lt) || html.startsWith('<!', lt)) {
+      const closeSeq = html.startsWith('<!--', lt) ? '-->' : '>';
+      const end = html.indexOf(closeSeq, lt);
+      i = end < 0 ? html.length : end + closeSeq.length;
+      continue;
+    }
+    const gt = html.indexOf('>', lt);
+    if (gt < 0) break;
+    const body = html.slice(lt + 1, gt);
+    if (body.startsWith('/')) {
+      // Fermeture : cible texte confirmée si l'élément n'a eu AUCUN enfant
+      // élément. Le texte d'un <a> n'est PAS proposé : le lien lui-même est
+      // la cible (même règle que le contexte de clic É24).
+      const frame = stack.pop();
+      if (frame && !frame.skipped && !frame.hasChildElements && !INVENTORY_SKIP_TAGS.has(frame.tag) && frame.tag !== 'a' && out.length < maxElements) {
+        const text = decodeHtmlText(frame.textChunks.join('').replace(/\s+/g, ' ').trim());
+        if (text.length > 0) {
+          out.push({ path: frame.path, kind: 'text', tag: frame.tag, value: text });
+        }
+      }
+      i = gt + 1;
+      continue;
+    }
+    const tagName = (body.match(/^[a-zA-Z0-9-]+/) || ['div'])[0].toLowerCase();
+    const selfClosing = body.endsWith('/');
+    const voidEl = VOID_TAGS.has(tagName);
+    const parent = stack[stack.length - 1];
+    if (!parent) break;
+    parent.hasChildElements = true; // tout élément ouvert fait de son parent un conteneur
+    // script/style : contenu BRUT — consommé jusqu'à la balise fermante
+    // (les '<' internes ne sont pas des balises et ne doivent jamais être
+    // interprétés, sinon la pile se désynchronise).
+    if (RAW_CONTENT_TAGS.has(tagName)) {
+      const lower = html.toLowerCase();
+      const closeAt = lower.indexOf('</' + tagName, gt);
+      i = closeAt < 0 ? html.length : lower.indexOf('>', closeAt) + 1;
+      continue;
+    }
+    const path = [...parent.path, parent.childCount];
+    parent.childCount += 1;
+    if (tagName === 'img' && out.length < maxElements) {
+      const openTag = html.slice(lt, gt + 1);
+      const m = openTag.match(/\bsrc\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'>]+))/i);
+      const src = decodeHtmlText(m ? (m[2] ?? m[3] ?? m[4] ?? '') : '');
+      out.push({ path, kind: 'image', tag: 'img', value: src });
+    } else if (tagName === 'a' && out.length < maxElements) {
+      const openTag = html.slice(lt, gt + 1);
+      const m = openTag.match(/\bhref\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'>]+))/i);
+      const href = decodeHtmlText(m ? (m[2] ?? m[3] ?? m[4] ?? '') : '');
+      out.push({ path, kind: 'link', tag: 'a', value: href });
+    }
+    if (!voidEl && !selfClosing) {
+      stack.push({ childCount: 0, path, tag: tagName, skipped: parent.skipped || INVENTORY_SKIP_TAGS.has(tagName), hasChildElements: false, textChunks: [] });
+    }
+    i = gt + 1;
+  }
+  return out;
+}
+
 export function updateTextContent(
   state: PreviewBuildState,
   componentId: string,

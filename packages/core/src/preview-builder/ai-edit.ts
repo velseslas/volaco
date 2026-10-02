@@ -22,6 +22,8 @@
 
 export type AiEditElementKind = 'text' | 'image' | 'link';
 
+import type { EditableElementInfo } from './editing.js';
+
 /** Description de l'élément réel à modifier + la demande de l'utilisateur. */
 export interface AiEditRequest {
   readonly kind: AiEditElementKind;
@@ -220,4 +222,253 @@ export async function runAiEditLoop(options: AiEditLoopOptions): Promise<AiEditO
 
   // Inatteignable (la boucle retourne à chaque itération) — garde compilateur.
   return { ok: false, reason: 'no-tool-call', iterations: maxModelCalls };
+}
+
+/* =====================================================================
+ * ÉTAPE 36 — ÉDITION IA PAR COMPOSANT : boucle multi-outils multi-tours.
+ *
+ * Contrairement à l'édition mono-élément (le tool call EST la réponse),
+ * ici le modèle peut enchaîner PLUSIEURS modifications : chaque tour peut
+ * contenir plusieurs tool_calls (set_text / set_image_src / set_link_href
+ * avec le path de l'inventaire), l'appelant exécute chaque appel via sa
+ * fonction `apply` (commandes pures du Builder) et le résultat est
+ * renvoyé au modèle au format wire (assistant tool_calls → tool results).
+ * La boucle se termine quand le modèle répond en texte libre, ou à la
+ * borne maxModelCalls (défaut 6) — les modifications déjà appliquées
+ * restent en place (succès partiel honnête, jamais d'annulation cachée).
+ * ===================================================================== */
+
+export interface AiComponentEditOutcome {
+  /** false uniquement si rien n'a pu être tenté (consigne vide, HTTP). */
+  readonly ok: boolean;
+  /** Nombre d'appels d'outil exécutés avec succès par `apply`. */
+  readonly appliedCount: number;
+  /** Nombre de tours réellement passés au modèle. */
+  readonly iterations: number;
+  /** Résultats d'outils en échec (refus de commande, path invalide, …). */
+  readonly toolErrors: readonly string[];
+  /** Phrase finale du modèle (narration), si fournie. */
+  readonly finalText: string;
+  readonly limitReached: boolean;
+  readonly reason?: 'http-error' | 'empty-instruction' | 'empty-inventory';
+  readonly detail?: string;
+}
+
+const COMPONENT_TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'set_text',
+      description: 'Remplace le TEXTE de l élément situé à path (élément textuel de l inventaire).',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'array', items: { type: 'integer' }, description: 'Path EXACT issu de l inventaire' },
+          text: { type: 'string', description: 'Nouveau texte' }
+        },
+        required: ['path', 'text']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'set_image_src',
+      description: 'Remplace le src de l image située à path (Unsplash : https://images.unsplash.com/photo-...).',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'array', items: { type: 'integer' }, description: 'Path EXACT issu de l inventaire' },
+          src: { type: 'string', description: 'Nouvelle URL d image' }
+        },
+        required: ['path', 'src']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'set_link_href',
+      description: 'Remplace le href du lien situé à path (ancre #, route relative ou https sûre).',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'array', items: { type: 'integer' }, description: 'Path EXACT issu de l inventaire' },
+          href: { type: 'string', description: 'Nouvelle cible du lien' }
+        },
+        required: ['path', 'href']
+      }
+    }
+  }
+] as const;
+
+const COMPONENT_VALUE_KEYS: Record<string, 'text' | 'src' | 'href'> = {
+  set_text: 'text',
+  set_image_src: 'src',
+  set_link_href: 'href'
+};
+
+function componentSystemPrompt(): string {
+  return 'Tu édites un composant web EXISTANT, section par section, via des outils. ' +
+    'L inventaire des éléments éditables est fourni dans le message : chaque ligne donne path (l adresse exacte de l élément), son type et sa valeur actuelle. ' +
+    'RÈGLES : appelle les outils set_text / set_image_src / set_link_href avec le path EXACT de l inventaire (jamais un path inventé). ' +
+    'Tu peux faire plusieurs appels dans un même tour pour des modifications indépendantes. ' +
+    'Ne modifie que ce que la demande de l utilisateur concerne ; conserve le style de l existant. ' +
+    'Quand tu as terminé, réponds en texte libre avec UNE courte phrase de confirmation.';
+}
+
+function componentUserPrompt(instruction: string, inventory: readonly EditableElementInfo[]): string {
+  const MAX_LINES = 60;
+  const MAX_VALUE = 120;
+  const lines = inventory.slice(0, MAX_LINES).map((el) => {
+    const value = el.value.length > MAX_VALUE ? el.value.slice(0, MAX_VALUE) + '…' : el.value;
+    const label = el.kind === 'text' ? 'texte' : el.kind === 'image' ? 'image' : 'lien';
+    return `path=${JSON.stringify(el.path)} ${label} <${el.tag}> « ${value} »`;
+  });
+  const truncated = inventory.length > MAX_LINES ? `\n(… et ${inventory.length - MAX_LINES} autres éléments)` : '';
+  return 'Inventaire des éléments éditables :\n' + lines.join('\n') + truncated +
+    '\n\nDemande de l utilisateur : ' + instruction.trim();
+}
+
+/** Valide un path d'arguments : tableau d'entiers ≥ 0 non vide. */
+function isValidPath(value: unknown): value is number[] {
+  return Array.isArray(value) && value.length > 0
+    && value.every((k) => typeof k === 'number' && Number.isInteger(k) && k >= 0);
+}
+
+export async function runAiComponentEditLoop(options: {
+  fetchImpl: typeof fetch;
+  url: string;
+  instruction: string;
+  inventory: readonly EditableElementInfo[];
+  /** Exécute un appel d'outil validé (nom connu + path valide + valeur non vide) ; renvoie le résultat à nourrir au modèle ('ERREUR: …' si refus). */
+  apply: (call: { name: string; args: Record<string, unknown> }) => string | Promise<string>;
+  model?: string | undefined;
+  maxModelCalls?: number | undefined;
+  headers?: Record<string, string> | undefined;
+}): Promise<AiComponentEditOutcome> {
+  const instruction = options.instruction.trim();
+  if (instruction.length === 0) {
+    return { ok: false, appliedCount: 0, iterations: 0, toolErrors: [], finalText: '', limitReached: false, reason: 'empty-instruction' };
+  }
+  if (options.inventory.length === 0) {
+    return { ok: false, appliedCount: 0, iterations: 0, toolErrors: [], finalText: '', limitReached: false, reason: 'empty-inventory' };
+  }
+  const maxModelCalls = Math.max(1, options.maxModelCalls ?? 6);
+  const model = options.model || 'codestral-latest';
+
+  const messages: Array<Record<string, unknown>> = [
+    { role: 'system', content: componentSystemPrompt() },
+    { role: 'user', content: componentUserPrompt(instruction, options.inventory) }
+  ];
+
+  let appliedCount = 0;
+  const toolErrors: string[] = [];
+
+  for (let iteration = 1; iteration <= maxModelCalls; iteration++) {
+    const isLastIteration = iteration === maxModelCalls;
+    let response: Response;
+    try {
+      response = await options.fetchImpl(options.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(options.headers ?? {}) },
+        body: JSON.stringify({
+          model,
+          messages,
+          temperature: 0.3,
+          max_tokens: 2048,
+          // Au dernier tour, les outils sont retirés : le modèle doit conclure.
+          tools: isLastIteration ? undefined : COMPONENT_TOOLS
+        })
+      });
+    } catch (err) {
+      return {
+        ok: false, appliedCount, iterations: iteration, toolErrors, finalText: '', limitReached: false,
+        reason: 'http-error', detail: err instanceof Error ? err.message : String(err)
+      };
+    }
+    if (!response.ok) {
+      return {
+        ok: false, appliedCount, iterations: iteration, toolErrors, finalText: '', limitReached: false,
+        reason: 'http-error', detail: 'HTTP ' + response.status
+      };
+    }
+
+    let data: MistralChatResponse;
+    try {
+      data = (await response.json()) as MistralChatResponse;
+    } catch (err) {
+      return {
+        ok: false, appliedCount, iterations: iteration, toolErrors, finalText: '', limitReached: false,
+        reason: 'http-error', detail: 'réponse non JSON: ' + (err instanceof Error ? err.message : String(err))
+      };
+    }
+
+    const message = data?.choices?.[0]?.message;
+    const rawToolCalls = message?.tool_calls;
+    if (!rawToolCalls || rawToolCalls.length === 0) {
+      // Réponse en texte libre : fin naturelle de la boucle.
+      return {
+        ok: true, appliedCount, iterations: iteration, toolErrors,
+        finalText: (message?.content ?? '').trim(), limitReached: false
+      };
+    }
+
+    // Historique : le message assistant porte les tool_calls demandés.
+    messages.push({
+      role: 'assistant',
+      content: message?.content ?? '',
+      tool_calls: rawToolCalls.map((tc, idx) => ({
+        id: 'c' + iteration + '-' + idx,
+        type: 'function',
+        function: { name: tc.function?.name ?? '', arguments: tc.function?.arguments || '{}' }
+      }))
+    });
+
+    for (let idx = 0; idx < rawToolCalls.length; idx++) {
+      const call = rawToolCalls[idx];
+      const callId = 'c' + iteration + '-' + idx;
+      const name = call?.function?.name ?? '';
+      let result: string;
+      let args: Record<string, unknown> = {};
+      const toolError = (msg: string): string => {
+        toolErrors.push(msg);
+        return 'ERREUR: ' + msg;
+      };
+      if (!(name in COMPONENT_VALUE_KEYS)) {
+        result = toolError('outil inconnu "' + name + '"');
+      } else {
+        try {
+          const parsed: unknown = JSON.parse(call?.function?.arguments || '{}');
+          if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            args = parsed as Record<string, unknown>;
+          }
+        } catch {
+          args = {};
+        }
+        const valueKey: 'text' | 'src' | 'href' = COMPONENT_VALUE_KEYS[name] ?? 'text';
+        const value = args[valueKey];
+        if (!isValidPath(args.path)) {
+          result = toolError('path invalide pour "' + name + '" — utilise un path EXACT de l inventaire');
+        } else if (typeof value !== 'string' || value.trim().length === 0) {
+          result = toolError('valeur "' + valueKey + '" manquante ou vide');
+        } else {
+          args[valueKey] = value.trim();
+          const applied = await options.apply({ name, args });
+          if (applied.startsWith('ERREUR:')) {
+            result = applied;
+            toolErrors.push(applied.slice('ERREUR:'.length).trim());
+          } else {
+            appliedCount += 1;
+            result = applied;
+          }
+        }
+      }
+      messages.push({ role: 'tool', tool_call_id: callId, content: result });
+    }
+  }
+
+  // Borne atteinte : le dernier tour était sans outils, donc ce tour-ci a
+  // répondu en texte libre et la boucle a déjà retourné. Garde compilateur.
+  return { ok: true, appliedCount, iterations: maxModelCalls, toolErrors, finalText: '', limitReached: true };
 }

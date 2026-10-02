@@ -1,7 +1,7 @@
     import { applyBuildEvent, createPreviewBuildState, BUILD_STAGES, PRESENTATION_VARIANTS, RESIZE_BOUNDS } from '/preview-builder/engine.js';
     import { renderPreview, buildTimeline, shouldRefreshNode, previewNodeId, resolvePreviewTarget, buildInspector, resolveDropTarget } from '/preview-builder/renderer.js';
-    import { updateComponentLabel, updateComponentVariant, moveComponent, computeDropTarget, applyDragIntent, resizeComponent, updateTextContent, updateImageSource, updateLinkHref } from '/preview-builder/editing.js';
-    import { runAiEditLoop } from '/preview-builder/ai-edit.js';
+    import { updateComponentLabel, updateComponentVariant, moveComponent, computeDropTarget, applyDragIntent, resizeComponent, updateTextContent, updateImageSource, updateLinkHref, inventoryEditableElements } from '/preview-builder/editing.js';
+    import { runAiEditLoop, runAiComponentEditLoop } from '/preview-builder/ai-edit.js';
     import { layoutTree } from '/preview-builder/layout.js';
     import { renderComponentVisual } from '/preview-builder/visuals.js';
     import { demoBuildScript, scriptToEvents } from '/preview-builder/mocks.js';
@@ -424,6 +424,16 @@
         + '<select id="inspMoveIndex">' + indexOptions + '</select>'
         + '<button id="inspMoveApply" title="Déplacer le composant sélectionné">APPLY</button>'
         + '<span id="inspMoveMsg"></span></div>');
+      // É36 — ÉDITION IA PAR COMPOSANT : l'IA reçoit l'inventaire des
+      // éléments éditables (textes/images/liens avec leurs paths) et
+      // enchaîne plusieurs appels d'outils, appliqués par les commandes
+      // PURES. Uniquement si le composant porte du HTML réel IA.
+      const comp = state.components.get(inspector.id);
+      if (comp && comp.metadata && typeof comp.metadata.html === 'string' && comp.metadata.html.length > 0) {
+        rows.splice(4, 0, '<div class="insp-editrow insp-ai"><input id="inspAiCompInput" maxlength="300" placeholder="Ex : réécris les textes de ce composant…">'
+          + '<button id="inspAiComp" title="Modifier ce composant avec l IA (plusieurs éléments possibles)">✨ IA composant</button>'
+          + '<span id="inspAiCompMsg"></span></div>');
+      }
       const metaKeys = Object.keys(inspector.metadata || {}).filter((k) => k !== 'html');
       const metaRows = metaKeys.map((k) => {
         const v = inspector.metadata[k];
@@ -510,6 +520,62 @@
       renderCurrent();
     }
 
+    // É36 — ÉDITION IA PAR COMPOSANT : l'inventaire des éléments éditables
+    // est construit depuis metadata.html (mêmes conventions de path que le
+    // parseur des commandes), envoyé au modèle, et chaque tool_call est
+    // appliqué via la COMMANDE PURE correspondante. Les modifications déjà
+    // appliquées restent en place en cas d'échec partiel (honnête).
+    let aiCompEditBusy = false;
+    async function startAiComponentEdit() {
+      const msgEl = el('inspAiCompMsg');
+      if (!selectedComponentId || aiCompEditBusy || !msgEl) return;
+      const comp = state.components.get(selectedComponentId);
+      const html = comp && comp.metadata ? comp.metadata.html : null;
+      if (typeof html !== 'string' || html.length === 0) { msgEl.textContent = 'Aucun contenu réel IA sur ce composant.'; return; }
+      const input = el('inspAiCompInput');
+      const instruction = input ? input.value.trim() : '';
+      if (!instruction) { msgEl.textContent = 'Décris d abord la modification.'; return; }
+      const inventory = inventoryEditableElements(html);
+      if (inventory.length === 0) { msgEl.textContent = 'Aucun élément éditable trouvé dans ce composant.'; return; }
+      aiCompEditBusy = true;
+      msgEl.textContent = 'IA en cours…';
+      const componentId = selectedComponentId;
+      let outcome;
+      try {
+        outcome = await runAiComponentEditLoop({
+          // fetch natif JAMAIS passé nu (débindé → Illegal invocation).
+          fetchImpl: (url, init) => fetch(url, init),
+          url: '/api/v1/ai/chat/completions',
+          instruction: instruction,
+          inventory: inventory,
+          headers: H,
+          apply: (call) => {
+            const value = call.args.text ?? call.args.src ?? call.args.href;
+            const path = call.args.path;
+            const result = call.name === 'set_text' ? updateTextContent(state, componentId, path, String(value))
+              : call.name === 'set_image_src' ? updateImageSource(state, componentId, path, String(value))
+              : updateLinkHref(state, componentId, path, String(value));
+            if (!result.applied) return 'ERREUR: modification refusée (' + (result.reason || 'inconnue') + ')';
+            state = result.state;
+            dirtyReal.add(componentId);
+            return 'OK';
+          }
+        });
+      } finally {
+        aiCompEditBusy = false;
+      }
+      renderCurrent();
+      const msgEl2 = el('inspAiCompMsg');
+      if (!msgEl2) return;
+      if (!outcome.ok) {
+        msgEl2.textContent = 'IA indisponible (' + (outcome.detail || outcome.reason) + ')';
+        return;
+      }
+      msgEl2.textContent = 'IA : ' + outcome.appliedCount + ' modification(s) appliquée(s)'
+        + (outcome.toolErrors.length > 0 ? ' — ' + outcome.toolErrors.length + ' refus(s)' : '')
+        + (outcome.limitReached ? ' — borne d appels atteinte' : '');
+    }
+
     el('inspectorBody').addEventListener('click', (e) => {
       // É24 — APPLY du href lien : UI → updateLinkHref() → nouveau state →
       // renderCurrent() (canal dirtyReal). Schémas dangereux refusés par la
@@ -584,6 +650,8 @@
       if (e.target.id === 'inspAiText') { startAiEdit('text', textCtx, 'inspAiTextInput', el('inspAiTextMsg')); return; }
       if (e.target.id === 'inspAiImage') { startAiEdit('image', imageCtx, 'inspAiImageInput', el('inspAiImageMsg')); return; }
       if (e.target.id === 'inspAiLink') { startAiEdit('link', linkCtx, 'inspAiLinkInput', el('inspAiLinkMsg')); return; }
+      // É36 — édition IA multi-éléments du composant sélectionné
+      if (e.target.id === 'inspAiComp') { startAiComponentEdit(); return; }
       // É18 — déplacement structurel (moveComponent)
       if (e.target.id === 'inspMoveApply') {
         const msg = el('inspMoveMsg');
