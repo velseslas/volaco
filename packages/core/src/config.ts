@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 
 export interface AppConfig {
   env: 'development' | 'test' | 'production';
@@ -11,6 +11,17 @@ export interface AppConfig {
   apiKey: string;
 }
 
+/**
+ * P0 — clé API STABLE en production : dérivée de façon déterministe depuis
+ * AUTH_SECRET (HMAC) au lieu d'un UUID éphémère. Avant ce correctif, la clé
+ * changeait à CHAQUE redémarrage — tout client authentifié était déconnecté
+ * et le serveur devenait injoignable pour ses intégrations. La dérivation ne
+ * stocke jamais la clé en clair et n'expose pas AUTH_SECRET.
+ */
+export function deriveApiKeyFromSecret(authSecret: string): string {
+  return createHmac('sha256', authSecret).update('volaco-api-key-v1').digest('hex').slice(0, 48);
+}
+
 export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   const env = (process.env.NODE_ENV as AppConfig['env']) || 'development';
   const port = parseInt(process.env.PORT || '3000', 10);
@@ -20,11 +31,16 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     .split(',')
     .map((origin) => origin.trim())
     .filter((origin) => origin.length > 0);
-  // En production, une clé vide désactiverait toute authentification : on
-  // génère donc une clé éphémère (à définir explicitement via VOLACO_API_KEY
-  // pour un secret stable entre redémarrages).
+  // En production, une clé vide désactiverait toute authentification. Ordre :
+  // 1. VOLACO_API_KEY explicite (secret stable choisi par l'opérateur) ;
+  // 2. dérivation déterministe depuis AUTH_SECRET (stable entre redémarrages) ;
+  // 3. repli : UUID éphémère (jamais en production sans AUTH_SECRET — le
+  //    middleware d'auth refusera tout accès non-Bearer dans ce cas).
+  const authSecret = process.env.AUTH_SECRET || '';
   const apiKey = process.env.VOLACO_API_KEY
-    || (env === 'production' ? randomUUID() : 'dev-key-change-me');
+    || (env === 'production'
+      ? (authSecret.length >= 32 ? deriveApiKeyFromSecret(authSecret) : randomUUID())
+      : 'dev-key-change-me');
 
   return {
     env,

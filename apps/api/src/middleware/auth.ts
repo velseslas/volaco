@@ -75,6 +75,23 @@ export function extractRequestContext(req: IncomingMessage, config?: AppConfig, 
     });
   }
 
+  // P0 — mode STRICT (VOLACO_STRICT_AUTH=1) : le repli dev (en-têtes
+  // x-tenant-id / x-user-role spoofables) est désactivé même en
+  // développement. Toute requête sans Bearer valide est refusée — SAUF les
+  // routes d'authentification elles-mêmes (signup/login : sinon poulet-œuf,
+  // impossible d'obtenir un premier jeton) et la santé.
+  const isAuthRoute = typeof req.url === 'string'
+    && (req.url.startsWith('/api/v1/auth/') || req.url.startsWith('/health'));
+  if (process.env.VOLACO_STRICT_AUTH === '1' && !isAuthRoute) {
+    logger.warn('Mode strict : accès refusé sans Bearer valide', {
+      component: 'auth', path: req.url, method: req.method
+    });
+    throw new UnauthorizedError(
+      'Mode strict : fournissez un en-tête Authorization: Bearer <JWT ou VOLACO_API_KEY>',
+      requestId
+    );
+  }
+
   const tenantHeader = req.headers['x-tenant-id'];
   const roleHeader = req.headers['x-user-role'];
   const tenantId = typeof tenantHeader === 'string' && tenantHeader.trim().length > 0
