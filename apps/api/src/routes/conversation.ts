@@ -1273,6 +1273,29 @@ export async function handleConversationRoutes(
         detail: { text: synthesisText }
       });
 
+      // P6 — CONVERSATION VIVANTE : le tour est enregistré dans la session
+      // (message utilisateur, réponse de l'agent = synthèse, intention
+      // réelle P2-d, plan, mémoire projet) et persisté.
+      try {
+        conversationIntelligenceService.recordStreamTurn({
+          tenantId: context.tenantId,
+          projectId,
+          sessionId,
+          userRole: context.role,
+          userMessage: body.message || '',
+          assistantMessage: 'Synthèse : ' + synthesisText,
+          intent: realIntent,
+          plan,
+          durationMs: Date.now() - streamStartedAt,
+          requestId
+        });
+      } catch (turnErr) {
+        logger.warn('Tour de stream non enregistré', {
+          component: 'conversation-route-stream', projectId,
+          error: turnErr instanceof Error ? turnErr.message : String(turnErr)
+        });
+      }
+
       emit({
         type: 'done',
         updated: true,
