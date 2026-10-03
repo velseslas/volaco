@@ -72,20 +72,22 @@
 
     .canvas-panel { display: flex; flex-direction: column; min-width: 0; flex: 1; }
     #builderChrome[hidden] { display: none; }
-    .canvas-wrap { flex: 1; overflow: auto; padding: 14px; display: flex; justify-content: center; align-items: flex-start;
-      background: radial-gradient(rgba(139,92,246,.05) 1px, transparent 1px); background-size: 22px 22px; }
+    .canvas-wrap { flex: 1; overflow: auto; padding: 0; display: flex; justify-content: center; align-items: flex-start;
+      background: #0b0f1a; }
     /* ÉTAPE 12 — LE CANVAS EST UNE INTERFACE, pas une collection : tokens de
        design partagés par tous les visuels (registry → classes → tokens). */
-    .canvas { --pv-radius: 14px; --pv-gap: 14px;
+    /* P5-ter — le canvas HTML est PLEIN BORD (comme le bundle React) :
+       plus de cadre centré façon démo — le site généré occupe tout. */
+    .canvas { --pv-radius: 0px; --pv-gap: 14px;
       --pv-surface: #101830; --pv-surface-2: #0c1224;
       --pv-border: #1c2743; --pv-accent: #8b5cf6; --pv-accent-soft: rgba(139,92,246,.15);
       --pv-text: #e8edf9; --pv-muted: #9aa8c0; --pv-faint: #5c6b87;
       position: relative;
-      width: min(1400px, 100%); min-height: 85%;
-      border: 1px solid #1c2743; border-radius: 18px;
+      width: 100%; min-height: 100vh;
+      border: 0; border-radius: 0;
       background: linear-gradient(180deg, #0b101f, #090d1a);
-      padding: 26px 26px 30px;
-      box-shadow: 0 24px 60px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.03);
+      padding: 0;
+      box-shadow: none;
     }
 
     /* ===== É20 — DROP INDICATOR (dérivé de resolveDropTarget) ===== */
@@ -104,7 +106,7 @@
        bordure ni de fond « démo », les sections composent UN seul écran.
        Le nœud building garde son cadre (chantier visible), error son cadre
        rouge. Aucune donnée, aucun state : pure présentation. */
-    .pv-node { border: 1px solid transparent; border-radius: var(--pv-radius); padding: 14px 18px; margin-bottom: 0; background: transparent; transition: border-color .25s ease, background-color .25s ease; }
+    .pv-node { border: 1px solid transparent; border-radius: 0; padding: 0; margin-bottom: 0; background: transparent; transition: border-color .25s ease, background-color .25s ease; }
     .pv-node .pv-label { font-size: 13px; font-weight: 600; color: #cbd5e1; }
     .pv-node .pv-type { font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: #64748b; margin-top: 4px; }
     .pv-node.error { border-color: #e11d48; background: rgba(225,29,72,.05); }
@@ -216,7 +218,7 @@
        Le CONTENU reste 100 % IA ; la feuille ci-dessous n'apporte qu'une base
        typographique (celle que le générateur croit avoir — utilitaires Tailwind
        absents d'ici — retombe proprement sur ce socle premium). */
-    .pvz-real { animation: pvzRealIn .6s cubic-bezier(.22,.9,.34,1) both; border-radius: 12px; overflow: hidden; min-width: 0;
+    .pvz-real { animation: pvzRealIn .6s cubic-bezier(.22,.9,.34,1) both; border-radius: 0; overflow: hidden; min-width: 0;
       color: var(--pv-text); font-size: 14px; line-height: 1.6; }
     .pvz-real > *:first-child { margin-top: 0; }
     .pvz-real > *:last-child { margin-bottom: 0; }
