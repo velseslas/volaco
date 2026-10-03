@@ -34,6 +34,16 @@ import {
 import type { RequestContext } from '../middleware/auth.js';
 
 import { readBody } from '../middleware/body.js';
+import { fileStore } from '../../../../packages/core/src/file-explorer/index.js';
+
+/** FileStore : les sources modifiées sont aussi versionnées (révisions). */
+function persistSource(tenantId: string, projectId: string, path: string, content: string): void {
+  try {
+    fileStore.saveFile(tenantId, projectId, 'app/' + path, content);
+  } catch (err) {
+    logger.warn('Persistance source app impossible', { component: 'app-edit', projectId, path, error: err instanceof Error ? err.message : String(err) });
+  }
+}
 
 const EDIT_SYSTEM_PROMPT = [
   "Tu es le Lead Engineer IA de VibeCode Studio. Tu modifies un projet React + TypeScript + Tailwind EXISTANT, fichier par fichier.",
@@ -262,6 +272,7 @@ export async function handleAppEditRoutes(
           const res2 = writeAppFile(projectId, path, content);
           if (!res2.ok) { send({ type: 'apply-skip', path, reason: res2.reason }); continue; }
           changedFiles['app/' + path] = content;
+          persistSource(context.tenantId, projectId, path, content);
           applied += 1;
           send({ type: 'applied', path, action: 'create' });
         } else if (edit.action === 'edit') {
@@ -275,6 +286,7 @@ export async function handleAppEditRoutes(
           const res2 = writeAppFile(projectId, path, updated);
           if (!res2.ok) { send({ type: 'apply-skip', path, reason: res2.reason }); continue; }
           changedFiles['app/' + path] = updated;
+          persistSource(context.tenantId, projectId, path, updated);
           applied += 1;
           send({ type: 'applied', path, action: 'edit' });
         }
