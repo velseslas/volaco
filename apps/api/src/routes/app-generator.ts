@@ -26,8 +26,11 @@ import {
   buildApp,
   ensureWorkspace,
   listAppFiles,
+  readAppFile,
+  validateAppPath,
   writeAppFile
 } from '../../../../packages/core/src/app-pipeline.js';
+import { revisionStore } from '../../../../packages/core/src/model/revision-store.js';
 import type { RequestContext } from '../middleware/auth.js';
 
 import { readBody } from '../middleware/body.js';
@@ -67,6 +70,121 @@ function toolsFor(tenantId: string, projectId: string, emit: (data: Record<strin
       parameters: { type: 'object', properties: {} }
     }
   ];
+}
+
+const EDIT_SYSTEM_PROMPT = [
+  'Tu es le Lead Engineer IA de VibeCode Studio. Tu modifies un projet React + TypeScript + Tailwind EXISTANT, fichier par fichier.',
+  '',
+  'OUTILS :',
+  '- list_files : liste les fichiers du projet (commence par là).',
+  '- read_file(path) : lit le contenu d un fichier AVANT de le modifier.',
+  '- edit_file(path, find, replace) : remplace la PREMIÈRE occurrence EXACTE de find par replace dans le fichier. find doit être une portion de code UNIQUE et EXACTE (copiée telle quelle, indentation comprise). Pour plusieurs changements dans un même fichier, appelle edit_file plusieurs fois.',
+  '- create_file(path, content) : crée un nouveau fichier (contenu complet).',
+  '',
+  'RÈGLES : ne modifie que ce que la demande concerne ; conserve le style existant ; chaque fichier doit rester COMPILABLE (TypeScript strict) ; les classes de style sont des classes Tailwind. Après tes modifications, termine par une phrase courte.'
+].join('\n');
+
+interface ProposedEdit {
+  action: 'edit' | 'create';
+  path: string;
+  find?: string;
+  replace?: string;
+  content?: string;
+  /** Extrait lisible pour le diff client (avant → après). */
+  summary: string;
+}
+
+function editTools(): AIProviderTool[] {
+  return [
+    {
+      name: 'list_files',
+      description: 'Liste les fichiers du projet.',
+      parameters: { type: 'object', properties: {} }
+    },
+    {
+      name: 'read_file',
+      description: 'Lit le contenu d un fichier du projet.',
+      parameters: {
+        type: 'object',
+        properties: { path: { type: 'string', description: 'Chemin relatif (ex: src/App.tsx)' } },
+        required: ['path']
+      }
+    },
+    {
+      name: 'edit_file',
+      description: 'Propose le remplacement d une portion EXACTE et UNIQUE de fichier (find → replace). Ne s applique qu après confirmation humaine.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string' },
+          find: { type: 'string', description: 'Code EXACT à remplacer (copié tel quel, unique dans le fichier)' },
+          replace: { type: 'string', description: 'Nouveau code' }
+        },
+        required: ['path', 'find', 'replace']
+      }
+    },
+    {
+      name: 'create_file',
+      description: 'Propose la création d un nouveau fichier (contenu complet). Ne s applique qu après confirmation humaine.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string' },
+          content: { type: 'string' }
+        },
+        required: ['path', 'content']
+      }
+    }
+  ];
+}
+
+/**
+ * Handlers en mode DIFFÉRÉ : read_file lit réellement (le modèle a besoin
+ * du code), edit_file/create_file valident et COLLECTENT une proposition
+ * — aucune écriture tant que l utilisateur n a pas confirmé. Le modèle
+ * reçoit OK pour conclure.
+ */
+function editHandlers(
+  tenantId: string,
+  projectId: string,
+  proposals: ProposedEdit[]
+): Record<string, (args: Record<string, unknown>) => unknown> {
+  const cap = (t: string, n: number): string => (t.length > n ? t.slice(0, n) + '…' : t);
+  return {
+    list_files: () => {
+      const files = listAppFiles(projectId);
+      return files.map((f) => f.path + ' (' + f.size + ' o)').join('\n') || '(projet vide)';
+    },
+    read_file: (args) => {
+      const path = String(args.path ?? '');
+      const content = readAppFile(projectId, path);
+      if (content === null) return 'ERREUR: fichier introuvable : ' + path;
+      return cap(content, 12000) || '(fichier vide)';
+    },
+    edit_file: (args) => {
+      const path = String(args.path ?? '');
+      const find = String(args.find ?? '');
+      const replace = String(args.replace ?? '');
+      const current = readAppFile(projectId, path);
+      if (current === null) return 'ERREUR: fichier introuvable : ' + path + ' — liste les fichiers d abord.';
+      const occurrences = current.split(find).length - 1;
+      if (find.length === 0) return 'ERREUR: find vide.';
+      if (occurrences === 0) return 'ERREUR: find introuvable dans ' + path + ' — relis le fichier et copie le code EXACTEMENT (indentation comprise).';
+      if (occurrences > 1) return 'ERREUR: find apparaît ' + occurrences + ' fois dans ' + path + ' — élargis le contexte pour le rendre UNIQUE.';
+      proposals.push({ action: 'edit', path, find, replace, summary: path + ' : « ' + cap(find, 70) + ' » → « ' + cap(replace, 70) + ' »' });
+      return 'OK — modification proposée (elle ne sera appliquée qu après confirmation humaine).';
+    },
+    create_file: (args) => {
+      const path = String(args.path ?? '');
+      const content = String(args.content ?? '');
+      if (content.trim().length === 0) return 'ERREUR: contenu vide.';
+      const res = validateAppPath(path);
+      if (!res.ok) return 'ERREUR: ' + res.reason;
+      // validation de chemin OK — mais AUCUNE écriture du contenu ici
+      proposals.push({ action: 'create', path, content, summary: path + ' : nouveau fichier (' + content.split('\n').length + ' lignes)' });
+      return 'OK — création proposée (elle ne sera appliquée qu après confirmation humaine).';
+    }
+  };
 }
 
 function handlersFor(

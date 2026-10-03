@@ -219,7 +219,7 @@ describe('E41 : reprise de session au chargement du Builder', () => {
 
   it('3. gardes : jamais écraser un build en cours, rien si pas de sections, échec silencieux', () => {
     const src = appJs();
-    const fn = src.slice(src.indexOf('async function resumeSession'), src.indexOf('async function resumeSession') + 1400);
+    const fn = src.slice(src.indexOf('async function resumeSession'), src.indexOf('let realSource = null;'));
     assert.ok(fn.includes('if (state.components.size > 0) return;'), 'build en cours respecté');
     assert.ok(fn.includes('if (sectionCount > 0 && v2Status)'), 'statut seulement si sections');
     assert.ok(fn.includes('} catch {'), 'échec réseau silencieux (mode démo)');

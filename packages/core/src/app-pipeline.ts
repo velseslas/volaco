@@ -53,6 +53,16 @@ function safeProjectPath(ws: string, relPath: string): string | null {
   return full;
 }
 
+/** Validation SANS écriture : chemin relatif confiné et autorisé. */
+export function validateAppPath(relPath: string): { ok: boolean; reason?: string } {
+  const full = resolve(workspaceDir('_validation_'), relPath);
+  if (!full.startsWith(resolve(workspaceDir('_validation_')) + sep)) return { ok: false, reason: 'path-hors-workspace' };
+  if (!/^(src\/|index\.html$|package\.json$|tsconfig\.json$)/.test(relPath.replace(/\\/g, '/'))) {
+    return { ok: false, reason: 'path-non-autorise (src/ ou racine du projet uniquement)' };
+  }
+  return { ok: true };
+}
+
 /** Écrit un fichier source du projet (sources versionnées côté FileStore). */
 export function writeAppFile(projectId: string, relPath: string, content: string): { ok: boolean; reason?: string } {
   const ws = ensureWorkspace(projectId);

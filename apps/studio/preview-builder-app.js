@@ -1242,6 +1242,17 @@
         const proj = (pdata.projects || pdata)[0];
         if (!proj) return;
         currentProjectId = proj.id;
+        // P3 — si le projet est au format react-vite : recharger le BUNDLE
+        const st = await fetch('/api/v1/projects/' + proj.id + '/app/status', { headers: H });
+        if (st.ok) {
+          const stData = await st.json();
+          if (stData.format === 'react-vite' && stData.hasBundle) {
+            appSource = { projectId: proj.id };
+            showAppBundle(proj.id, 'resume');
+            if (v2Status) v2Status.textContent = 'App React rechargée (' + (stData.files || []).length + ' fichiers) — ✨ IA pour la modifier.';
+            return;
+          }
+        }
         const fres = await fetch('/api/v1/projects/' + proj.id + '/files/content?path=index.html', { headers: H });
         if (!fres.ok) return;
         const fdata = await fres.json();
@@ -1487,7 +1498,107 @@
         + (outcome.limitReached ? ' — borne atteinte' : '');
       if (input) input.value = '';
     }
-    document.getElementById('btnPageAi').addEventListener('click', () => { startAiPageEdit(); });
+    document.getElementById('btnPageAi').addEventListener('click', () => {
+      // P3 — projet React généré → édition par FICHIERS ; sinon flux HTML
+      if (appSource) startAppEdit();
+      else startAiPageEdit();
+    });
+
+    /* ===== P3 — ÉDITION IA PAR FICHIERS (projet React) =====
+       Propositions DIFFÉRÉES par l'IA (edit_file/create_file validés, rien
+       d'écrit) → diff groupé par fichier avec cases (E44) → confirmation →
+       /app/apply-edits (révision multi-fichiers + rebuild) → nouveau bundle. */
+    let aiAppEditBusy = false;
+    async function startAppEdit() {
+      const statusEl = v2Status;
+      const input = el('pageAiInput');
+      const instruction = input ? input.value.trim() : '';
+      if (aiAppEditBusy) return;
+      if (!instruction) { if (statusEl) statusEl.textContent = 'Décris d abord la modification.'; return; }
+      const projectId = appSource.projectId;
+      aiAppEditBusy = true;
+      if (statusEl) statusEl.textContent = 'IA (projet React) en cours…';
+      let outcome = null;
+      try {
+        const res = await fetch('/api/v1/projects/' + projectId + '/app/edit', {
+          method: 'POST', headers: H, body: JSON.stringify({ instruction: instruction })
+        });
+        if (!res.ok || !res.body) { if (statusEl) statusEl.textContent = 'HTTP ' + res.status; return; }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        for (;;) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          buffer += decoder.decode(chunk.value, { stream: true });
+          let idx;
+          while ((idx = buffer.indexOf('\n\n')) >= 0) {
+            const raw = buffer.slice(0, idx);
+            buffer = buffer.slice(idx + 2);
+            const line = raw.split('\n').find((l) => l.startsWith('data: '));
+            if (!line) continue;
+            let ev;
+            try { ev = JSON.parse(line.slice(6)); } catch { continue; }
+            if (ev.type === 'proposals') { outcome = ev; }
+            else if (ev.type === 'error') { outcome = { error: ev.error }; }
+          }
+        }
+      } finally {
+        aiAppEditBusy = false;
+      }
+      if (!outcome || outcome.error) {
+        if (statusEl) statusEl.textContent = 'IA indisponible (' + (outcome && outcome.error ? outcome.error : 'réponse vide') + ')';
+        return;
+      }
+      const edits = outcome.edits || [];
+      if (edits.length === 0) { if (statusEl) statusEl.textContent = 'Aucune modification nécessaire.'; return; }
+      // Diff groupé PAR FICHIER avec cases (E44)
+      const groupOrder = [];
+      const byFile = new Map();
+      for (const ed of edits) {
+        if (!byFile.has(ed.path)) { byFile.set(ed.path, { section: ed.path, calls: [], lines: [] }); groupOrder.push(ed.path); }
+        const g = byFile.get(ed.path);
+        g.calls.push(ed);
+        g.lines.push('<b>' + (ed.action === 'create' ? 'création' : 'modification') + '</b> : ' + canonicalize(ed.summary || ''));
+      }
+      const groups = groupOrder.map((sec) => byFile.get(sec));
+      showAiDiffPanel('Édition IA du projet — ' + edits.length + ' modification(s) dans ' + groups.length + ' fichier(s)', groups, {
+        onConfirm: async (checkedFiles) => {
+          const wanted = new Set(checkedFiles);
+          const selected = edits.filter((ed) => wanted.has(ed.path));
+          if (selected.length === 0) { if (statusEl) statusEl.textContent = 'Aucun fichier coché — rien appliqué.'; return; }
+          if (statusEl) statusEl.textContent = 'Application de ' + selected.length + ' modification(s) + build…';
+          const res = await fetch('/api/v1/projects/' + projectId + '/app/apply-edits', {
+            method: 'POST', headers: H, body: JSON.stringify({ edits: selected })
+          });
+          if (!res.ok || !res.body) { if (statusEl) statusEl.textContent = 'HTTP ' + res.status; return; }
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          for (;;) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            buffer += decoder.decode(chunk.value, { stream: true });
+            let idx;
+            while ((idx = buffer.indexOf('\n\n')) >= 0) {
+              const raw = buffer.slice(0, idx);
+              buffer = buffer.slice(idx + 2);
+              const line = raw.split('\n').find((l) => l.startsWith('data: '));
+              if (!line) continue;
+              let ev;
+              try { ev = JSON.parse(line.slice(6)); } catch { continue; }
+              if (ev.type === 'build-ok') { if (statusEl) statusEl.textContent = 'Build réussi (' + ev.durationMs + ' ms)'; }
+              else if (ev.type === 'done') {
+                if (ev.ok) showAppBundle(projectId, ev.buildId);
+                if (statusEl) statusEl.textContent = ev.ok
+                  ? ev.applied + ' modification(s) appliquée(s) — app reconstruite.'
+                  : 'Le build échoue après application — réessaie ou annule via 🕘 HISTORIQUE.';
+              }
+            }
+          }
+        }
+      });
+    }
 
     // E40 — HISTORIQUE DES RÉVISIONS : les 8 dernières versions (générations
     // + éditions Builder), avec restauration en un clic. Le rollback serveur
