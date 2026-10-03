@@ -40,6 +40,9 @@
     html.embedded header.app-header { display: none !important; }
     html.embedded .canvas-wrap { padding: 0; }
     html.embedded .canvas { width: 100%; min-height: 100vh; border-radius: 0; }
+    /* P5-bis — mode bundle : le panneau est 100 % iframe, zéro padding */
+    html.app-mode .canvas-wrap { padding: 0; overflow: hidden; }
+    html.app-mode .canvas { display: none; }
 
     /* É28 — PAGE PREVIEW FINALE : canvas maximal, chrome Builder masqué */
     .layout { display: flex; flex-direction: column; flex: 1; min-height: 0; }

@@ -1298,6 +1298,7 @@
       // ÉTAPE 11 — le HANDLE (avec stop) est stocké, pas l'instance : sans
       // cela, le deuxième GÉNÉRER plantait en silence (realSource.stop is
       // not a function) et le canvas restait sur l'ancien état.
+      exitAppBundle();
       if (realSource) realSource.stop();
       state = createPreviewBuildState();
       lastFocusId = null;
@@ -1322,15 +1323,33 @@
        Progression en SSE (fichiers créés, build, auto-réparation). */
     let appSource = null;
     function showAppBundle(projectId, buildId) {
+      // P5-bis — le bundle occupe 100 % du panneau : le canvas HTML est
+      // MASQUÉ (plus de cadre ni de placeholder « construction… ») et
+      // l'iframe vit dans .canvas-wrap, hors du pipeline de rendu — un
+      // renderCurrent ne peut plus la détruire.
+      document.documentElement.classList.add('app-mode');
+      const wrap = document.querySelector('.canvas-wrap');
       const canvas = el('canvas');
-      const prev = canvas.querySelector('#appBundleFrame');
+      canvas.style.display = 'none';
+      const prev = wrap.querySelector('#appBundleFrame');
       if (prev) prev.remove();
       const frame = document.createElement('iframe');
       frame.id = 'appBundleFrame';
       frame.setAttribute('sandbox', 'allow-scripts allow-modals allow-forms allow-popups');
       frame.src = '/preview-bundle/' + encodeURIComponent(projectId) + '/?v=' + encodeURIComponent(buildId);
-      frame.style.cssText = 'width:100%;height:100%;min-height:100vh;border:0;background:#0b0f1a;';
-      canvas.appendChild(frame);
+      frame.style.cssText = 'width:100%;height:100vh;border:0;background:#0b0f1a;display:block;';
+      wrap.appendChild(frame);
+    }
+
+    // Sortie du mode bundle : le canvas HTML redevient visible (RESET,
+    // génération HTML, etc.).
+    function exitAppBundle() {
+      document.documentElement.classList.remove('app-mode');
+      const wrap = document.querySelector('.canvas-wrap');
+      const frame = wrap && wrap.querySelector('#appBundleFrame');
+      if (frame) frame.remove();
+      const canvas = el('canvas');
+      if (canvas) canvas.style.display = '';
     }
 
     async function startAppGeneration() {
@@ -1697,6 +1716,7 @@
     });
 
     btnReset.addEventListener('click', () => {
+      exitAppBundle();
       if (timer) { clearInterval(timer); timer = null; btnStart.disabled = false; }
       if (activeSource) { activeSource.stop(); activeSource = null; }
       selectedComponentId = null;
