@@ -1,0 +1,267 @@
+/**
+ * VibeCode Core - API Tier
+ * App Generator Route (P1/P2) — génère un VRAI projet React + Vite + TS +
+ * Tailwind par tool-calling, le construit côté serveur et sert le bundle
+ * pour le preview. Le standard des grandes plateformes : le preview exécute
+ * l'app réelle, pas du HTML injecté.
+ *
+ * Flux de génération (SSE) :
+ *   ensureWorkspace (reset = site frais)
+ *   → boucle d'outils (create_file / list_files) — l'IA écrit les composants
+ *   → build Vite programmatique
+ *   → si erreurs de compilation : renvoyées à l'IA (auto-réparation bornée)
+ *   → 'done' : le preview pointe sur /preview-bundle/:id/?v=<buildId>
+ */
+
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { extname, join } from 'node:path';
+import { assertPermission } from '../../../../packages/core/src/identity/permissions.js';
+import { ValidationError } from '../../../../packages/core/src/errors.js';
+import { logger } from '../../../../packages/core/src/logger.js';
+import { aiProviderRegistry } from '../../../../packages/core/src/ai/providers/registry.js';
+import { runToolLoop } from '../../../../packages/core/src/ai/tool-loop.js';
+import type { AIProviderTool } from '../../../../packages/core/src/ai/providers/types.js';
+import {
+  buildApp,
+  ensureWorkspace,
+  listAppFiles,
+  writeAppFile
+} from '../../../../packages/core/src/app-pipeline.js';
+import type { RequestContext } from '../middleware/auth.js';
+
+import { readBody } from '../middleware/body.js';
+import { fileStore } from '../../../../packages/core/src/file-explorer/index.js';
+
+/** FileStore : les SOURCES du projet sont aussi versionnées (révisions). */
+function persistSource(tenantId: string, projectId: string, path: string, content: string): void {
+  try {
+    fileStore.saveFile(tenantId, projectId, 'app/' + path, content);
+  } catch (err) {
+    logger.warn('Persistance source app impossible', {
+      component: 'app-generator',
+      projectId,
+      path,
+      error: err instanceof Error ? err.message : String(err)
+    });
+  }
+}
+
+function toolsFor(tenantId: string, projectId: string, emit: (data: Record<string, unknown>) => void): AIProviderTool[] {
+  return [
+    {
+      name: 'create_file',
+      description: 'Crée ou REMPLIT un fichier du projet React. Écris des composants TSX complets et compilables. Respecte : src/App.tsx est le point d\'entrée rendu ; src/index.css contient déjà @import "tailwindcss" ; utilise des classes Tailwind pour le style ; jamais de script inline.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Chemin relatif du fichier (ex: src/components/Header.tsx)' },
+          content: { type: 'string', description: 'Contenu COMPLET du fichier' }
+        },
+        required: ['path', 'content']
+      }
+    },
+    {
+      name: 'list_files',
+      description: 'Liste les fichiers déjà créés dans le projet.',
+      parameters: { type: 'object', properties: {} }
+    }
+  ];
+}
+
+function handlersFor(
+  tenantId: string,
+  projectId: string,
+  emit: (data: Record<string, unknown>) => void
+): Record<string, (args: Record<string, unknown>) => unknown> {
+  return {
+    create_file: (args) => {
+      const path = String(args.path ?? '');
+      const content = String(args.content ?? '');
+      const res = writeAppFile(projectId, path, content);
+      if (!res.ok) return 'ERREUR: ' + res.reason;
+      persistSource(tenantId, projectId, path, content);
+      emit({ type: 'file', path });
+      return 'OK — fichier ' + path + ' écrit (' + content.length + ' caractères).';
+    },
+    list_files: () => {
+      const files = listAppFiles(projectId);
+      return files.map((f) => f.path + ' (' + f.size + ' o)').join('\n') || '(projet vide)';
+    }
+  };
+}
+
+const GENERATION_SYSTEM_PROMPT = [
+  'Tu es le Lead Engineer IA de VibeCode Studio. Tu génères un site web complet, moderne et ÉLÉGANT, en écrivant un VRAI projet React + TypeScript + Tailwind, fichier par fichier.',
+  '',
+  'CONTRAINTES TECHNIQUES (obligatoires) :',
+  '- src/main.tsx et src/index.css existent déjà (ne les recrée pas, ne les modifie pas).',
+  '- Écris src/App.tsx qui compose le site, et UN composant par section dans src/components/ (Header.tsx, Hero.tsx, …).',
+  '- Styles : UNIQUEMENT des classes Tailwind (le CSS est déjà branché). Aucun <script>, aucun import de fichier CSS autre que l\'existant.',
+  '- Imports : uniquement react / react-dom et des fichiers locaux relatifs (./components/Header). Aucune dépendance npm supplémentaire.',
+  '- Images : uniquement des URL https://images.unsplash.com/photo-… cohérentes avec le thème.',
+  '- Chaque fichier doit COMPILER (TypeScript strict, exports nommés par défaut pour les composants).',
+  '',
+  'QUALITÉ DESIGN (obligatoire) : palette limitée et cohérente, hiérarchie typographique nette, espacements généreux, états hover sur les boutons, responsive (sm/md/lg), contenu réaliste en français. Le résultat doit avoir l\'air conçu par un designer senior.',
+  '',
+  'MODE OPÉRATOIRE : crée les fichiers un par un avec create_file (un appel par fichier, contenu COMPLET), puis termine par une phrase courte. Ne pose jamais de question.'
+].join('\n');
+
+const MIME: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
+  '.json': 'application/json; charset=utf-8',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2'
+};
+
+export async function handleAppGeneratorRoutes(
+  req: IncomingMessage,
+  res: ServerResponse,
+  pathname: string,
+  context: RequestContext,
+  requestId: string
+): Promise<boolean> {
+  // 1. Génération SSE : POST /api/v1/projects/:id/app/generate
+  const genMatch = pathname.match(/^\/api\/v1\/projects\/([^/]+)\/app\/generate$/);
+  if (genMatch && req.method === 'POST') {
+    const projectId = genMatch[1]!;
+    assertPermission(context.role, 'PROJECT_UPDATE', requestId);
+
+    const bodyText = await readBody(req);
+    let body: { prompt?: string };
+    try {
+      body = bodyText ? (JSON.parse(bodyText) as { prompt?: string }) : {};
+    } catch {
+      throw new ValidationError('JSON invalide dans le corps de la requête', undefined, requestId);
+    }
+    const prompt = (body.prompt || '').trim();
+    if (prompt.length === 0) {
+      throw new ValidationError('Le champ "prompt" est obligatoire', undefined, requestId);
+    }
+
+    // SSE
+    res.statusCode = 200;
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    let clientGone = false;
+    req.on('close', () => { clientGone = true; });
+    const send = (data: Record<string, unknown>): void => {
+      if (clientGone) return;
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+
+    // Site frais : le workspace est reconstruit depuis le template.
+    ensureWorkspace(projectId, true);
+    send({ type: 'start' });
+
+    const adapter = aiProviderRegistry.resolve({ preferredProviderId: process.env.MISTRAL_API_KEY ? 'mistral' : undefined });
+    if (!adapter) {
+      send({ type: 'error', error: 'Aucun fournisseur IA disponible (Mistral requis).' });
+      res.end();
+      return true;
+    }
+
+    const credentials = aiProviderRegistry.getTenantCredentials(context.tenantId, adapter.descriptor.providerId);
+
+    try {
+      // P1 — génération des fichiers par tool-calling (boucle bornée).
+      const gen = await runToolLoop(
+        adapter,
+        {
+          tenantId: context.tenantId,
+          projectId,
+          prompt: 'Crée le site suivant : ' + prompt,
+          systemPrompt: GENERATION_SYSTEM_PROMPT,
+          temperature: 0.3,
+          maxTokens: 8192,
+          timeoutMs: 120000,
+          requestId
+        },
+        toolsFor(context.tenantId, projectId, send),
+        { handlers: handlersFor(context.tenantId, projectId, send), maxIterations: 12, maxToolResultLength: 2000 },
+        credentials
+      );
+      send({ type: 'generation-done', iterations: gen.iterations, toolCalls: gen.trace.length });
+
+      // P2 — build + auto-réparation bornée (les erreurs compilateur
+      // repartent à l'IA qui corrige les fichiers).
+      let build = await buildApp(projectId);
+      send({ type: build.ok ? 'build-ok' : 'build-error', durationMs: build.durationMs, errors: build.errors.slice(0, 4) });
+      let repairRounds = 0;
+      while (!build.ok && repairRounds < 3 && !clientGone) {
+        repairRounds += 1;
+        send({ type: 'repair', round: repairRounds });
+        const fixPrompt = 'Le build TypeScript/Vite du projet échoue avec ces erreurs :\n\n' + build.errors.join('\n---\n').slice(0, 3000)
+          + '\n\nCorrige les fichiers nécessaires avec create_file (contenu COMPLET des fichiers corrigés). Ne touche à rien d\'autre.';
+        await runToolLoop(
+          adapter,
+          {
+            tenantId: context.tenantId,
+            projectId,
+            prompt: fixPrompt,
+            systemPrompt: GENERATION_SYSTEM_PROMPT,
+            temperature: 0.2,
+            maxTokens: 8192,
+            timeoutMs: 120000,
+            requestId
+          },
+          toolsFor(context.tenantId, projectId, send),
+          { handlers: handlersFor(context.tenantId, projectId, send), maxIterations: 8, maxToolResultLength: 2000 },
+          credentials
+        );
+        build = await buildApp(projectId);
+        send({ type: build.ok ? 'build-ok' : 'build-error', durationMs: build.durationMs, errors: build.errors.slice(0, 4), round: repairRounds });
+      }
+
+      const files = listAppFiles(projectId);
+      send({ type: 'done', ok: build.ok, buildId: build.buildId, files: files.map((f) => f.path), durationMs: build.durationMs });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      send({ type: 'error', error: message.slice(0, 400) });
+      logger.warn('Génération d\'app en échec', { component: 'app-generator', projectId, error: message });
+    }
+    res.end();
+    return true;
+  }
+
+  // 2. Service du bundle : GET /preview-bundle/:id/…
+  const bundleMatch = pathname.match(/^\/preview-bundle\/([^/]+)(\/.*)?$/);
+  if (bundleMatch && req.method === 'GET') {
+    const projectId = bundleMatch[1];
+    assertPermission(context.role, 'PROJECT_READ', requestId);
+    const rel = bundleMatch[2] && bundleMatch[2] !== '/' ? bundleMatch[2].slice(1) : 'index.html';
+    const projectIdB = bundleMatch[1]!; // eslint-disable-line
+    const wsRoot = ensureWorkspace(projectIdB);
+    let file = join(wsRoot, 'dist', rel);
+    if (!existsSync(file) || statSync(file).isDirectory()) {
+      file = join(wsRoot, 'dist', 'index.html'); // fallback SPA
+    }
+    if (!existsSync(file)) {
+      res.statusCode = 404;
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.end('Aucun bundle généré pour ce projet — lancez une génération.');
+      return true;
+    }
+    res.statusCode = 200;
+    // E47/P2 — l'iframe sandboxée (origine opaque) charge les modules en
+    // cross-origin : CORS ouvert sur le bundle, l'isolation reste assurée
+    // par le sandbox (pas de allow-same-origin → pas d'accès aux API).
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', MIME[extname(file).toLowerCase()] || 'application/octet-stream');
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.end(readFileSync(file));
+    return true;
+  }
+
+  return false;
+}
