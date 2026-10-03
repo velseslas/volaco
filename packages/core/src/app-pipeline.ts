@@ -106,6 +106,21 @@ export function getProjectFormat(projectId: string): 'react-vite' | 'html' {
   return existsSync(join(ws, 'src', 'App.tsx')) ? 'react-vite' : 'html';
 }
 
+/**
+ * P4 — écriture BINAIRE dans le workspace (assets d'images générées).
+ * Confiné à public/assets/ (servi par le bundle vite : base './').
+ */
+export function writeAppAsset(projectId: string, relPath: string, data: Buffer): { ok: boolean; reason?: string } {
+  const ws = ensureWorkspace(projectId);
+  const full = resolve(ws, relPath);
+  if (!full.startsWith(resolve(ws) + sep)) return { ok: false, reason: 'path-hors-workspace' };
+  const normalized = relPath.replace(/\\/g, '/');
+  if (!normalized.startsWith('public/assets/')) return { ok: false, reason: 'assets-non-autorises (public/assets/ uniquement)' };
+  mkdirSync(dirname(full), { recursive: true });
+  writeFileSync(full, data);
+  return { ok: true };
+}
+
 /** Liste les fichiers sources du projet (sans node_modules/dist). */
 export function listAppFiles(projectId: string): Array<{ path: string; size: number }> {
   const ws = workspaceDir(projectId);

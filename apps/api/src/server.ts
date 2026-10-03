@@ -18,6 +18,7 @@ import { handlePreviewBuilderRoutes } from './routes/preview-builder.js';
 import { handleAppGeneratorRoutes } from './routes/app-generator.js';
 import { handleAppEditRoutes } from './routes/app-edit.js';
 import { handleMcpRoutes } from './routes/mcp.js';
+import { handleImageRoutes } from './routes/images.js';
 import { handleExecutionRoutes } from './routes/executions.js';
 import { handleSettingsRoutes } from './routes/settings.js';
 import { handleRevisionsRoutes } from './routes/revisions.js';
@@ -356,6 +357,7 @@ const API_ROUTES: readonly RouteEntry[] = [
   { name: 'app-generator (P1/P2 — React réel)', handler: handleAppGeneratorRoutes },
   { name: 'app-edit (P3 — édition IA par fichiers)', handler: handleAppEditRoutes },
   { name: 'mcp (P3 — Model Context Protocol)', handler: handleMcpRoutes },
+  { name: 'images (P4 — génération d images)', handler: handleImageRoutes },
   { name: 'settings (CORE-006)', handler: handleSettingsRoutes },
   { name: 'projects (FND-003)', handler: projectsWithAudit },
   { name: 'revisions (FND-004)', handler: revisionsWithAudit }
