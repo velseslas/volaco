@@ -298,8 +298,64 @@ export async function handleAppEditRoutes(
 
       // Rebuild du bundle (les sources ont changé)
       send({ type: 'build-start' });
-      const build = await buildApp(projectId);
+      let build = await buildApp(projectId);
       send({ type: build.ok ? 'build-ok' : 'build-error', durationMs: build.durationMs, errors: build.errors.slice(0, 4) });
+
+      // P4 — auto-réparation bornée : si l'application des éditions a cassé
+      // le build, les erreurs de compilation repartent à l'IA qui corrige
+      // DIRECTEMENT (l'utilisateur a déjà confirmé l'intention fonctionnelle).
+      let repairRounds = 0;
+      while (!build.ok && repairRounds < 2) {
+        repairRounds += 1;
+        send({ type: 'repair', round: repairRounds });
+        const adapter = aiProviderRegistry.resolve({ preferredProviderId: process.env.MISTRAL_API_KEY ? 'mistral' : undefined });
+        if (!adapter) break;
+        const credentials = aiProviderRegistry.getTenantCredentials(context.tenantId, adapter.descriptor.providerId);
+        const repairProposals: ProposedEdit[] = [];
+        await runToolLoop(
+          adapter,
+          {
+            tenantId: context.tenantId,
+            projectId,
+            prompt: 'Le build TypeScript/Vite échoue avec ces erreurs :\n\n' + build.errors.join('\n---\n').slice(0, 3000)
+              + '\n\nCorrige les fichiers nécessaires (edit_file pour des corrections ciblées). Ne touche à rien d\'autre.',
+            systemPrompt: EDIT_SYSTEM_PROMPT,
+            temperature: 0.2,
+            maxTokens: 8192,
+            timeoutMs: 120000,
+            requestId
+          },
+          editTools(),
+          {
+            // mode DIRECT : les corrections de compilation s'appliquent
+            // immédiatement (l'intention fonctionnelle est déjà confirmée).
+            handlers: {
+              list_files: () => listAppFiles(projectId).map((f) => f.path).join('\n'),
+              read_file: (a) => readAppFile(projectId, String(a.path ?? '')) ?? 'ERREUR: fichier introuvable',
+              edit_file: (a) => {
+                const path = String(a.path ?? '');
+                const find = String(a.find ?? '');
+                const replace = String(a.replace ?? '');
+                const current = readAppFile(projectId, path);
+                if (current === null || find.length === 0) return 'ERREUR: fichier ou find invalide.';
+                if (current.split(find).length - 1 !== 1) return 'ERREUR: find non unique — élargis le contexte.';
+                const res2 = writeAppFile(projectId, path, current.replace(find, replace));
+                return res2.ok ? 'OK — corrigé.' : 'ERREUR: ' + (res2.reason || 'écriture impossible');
+              },
+              create_file: (a) => {
+                const res2 = writeAppFile(projectId, String(a.path ?? ''), String(a.content ?? ''));
+                return res2.ok ? 'OK — créé.' : 'ERREUR: ' + (res2.reason || 'écriture impossible');
+              }
+            },
+            maxIterations: 8,
+            maxToolResultLength: 6000
+          },
+          credentials
+        );
+        void repairProposals;
+        build = await buildApp(projectId);
+        send({ type: build.ok ? 'build-ok' : 'build-error', durationMs: build.durationMs, errors: build.errors.slice(0, 4), round: repairRounds });
+      }
       send({ type: 'done', ok: build.ok, buildId: build.buildId, applied });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

@@ -14,6 +14,7 @@ import { fileStore } from '../../../../packages/core/src/file-explorer/store.js'
 import { projectStore } from '../../../../packages/core/src/identity/project.js';
 import { assertPermission } from '../../../../packages/core/src/identity/permissions.js';
 import { NotFoundError, ValidationError } from '../../../../packages/core/src/errors.js';
+import { readBody } from '../middleware/body.js';
 import { auditStore } from '../../../../packages/core/src/observability/audit.js';
 import { logger } from '../../../../packages/core/src/logger.js';
 import type { RequestContext } from '../middleware/auth.js';
@@ -46,13 +47,28 @@ export async function handleRenderRoutes(
     throw new NotFoundError(`Projet ${projectId}`, requestId);
   }
 
+  // P5 — un body { url: '/preview-bundle/:id/' } capture le BUNDLE React
+  // exécuté (et non les fichiers sources HTML) via une URL directe.
+  let startUrl: string | undefined;
+  if (req.method === 'POST') {
+    try {
+      const bodyText = await readBody(req);
+      const parsed = JSON.parse(bodyText || '{}') as { url?: string };
+      if (parsed.url && parsed.url.startsWith('/preview-bundle/')) {
+        startUrl = `http://${req.headers.host || '127.0.0.1:3000'}${parsed.url}`;
+      }
+    } catch { /* pas de body : rendu fichiers classique */ }
+  }
+
   const files = fileStore.getAllProjectFiles(context.tenantId, projectId);
-  if (Object.keys(files).length === 0) {
+  if (Object.keys(files).length === 0 && !startUrl) {
     throw new ValidationError('Ce projet ne contient aucun fichier à rendre', undefined, requestId);
   }
 
   try {
-    const result = await renderProjectPreview(files);
+    const result = startUrl
+      ? await renderProjectPreview({}, { startUrl })
+      : await renderProjectPreview(files);
 
     auditStore.record({
       tenantId: context.tenantId,

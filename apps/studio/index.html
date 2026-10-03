@@ -6271,9 +6271,22 @@ function renderWorkspaceIframe(htmlCode) {
     }
 
     async function popoutPreview() {
-      // E46 — ouvre le index.html À JOUR du serveur (les éditions Builder
-      // sont persistées) ; repli sur le HTML connu si le serveur est absent.
+      // P5 — détection du format : projet React → ouvrir le BUNDLE exécuté.
       let html = currentAppHtml || pulseAiExactTemplate;
+      try {
+        const proj = (typeof userProjects !== 'undefined') ? userProjects.find(p => p.id === activeProjectId) : null;
+        const pid = proj && proj.serverProjectId;
+        if (pid) {
+          const st = await fetch('/api/v1/projects/' + pid + '/app/status', { headers: studioApiHeaders() });
+          if (st.ok) {
+            const stData = await st.json();
+            if (stData.format === 'react-vite' && stData.hasBundle) {
+              window.open('/preview-bundle/' + encodeURIComponent(pid) + '/', '_blank');
+              return;
+            }
+          }
+        }
+      } catch (e) { /* repli sur le HTML connu */ }
       try {
         const proj = (typeof userProjects !== 'undefined') ? userProjects.find(p => p.id === activeProjectId) : null;
         const pid = proj && proj.serverProjectId;
@@ -6455,6 +6468,17 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
         alert("Aucun projet serveur — envoyez un message dans le chat pour initialiser le projet.");
         return;
       }
+      // P5 — projet React : capturer le BUNDLE exécuté (URL directe)
+      let bundleUrlBody = null;
+      try {
+        const st = await fetch('/api/v1/projects/' + pid + '/app/status', { headers: studioApiHeaders() });
+        if (st.ok) {
+          const stData = await st.json();
+          if (stData.format === 'react-vite' && stData.hasBundle) {
+            bundleUrlBody = JSON.stringify({ url: '/preview-bundle/' + pid + '/' });
+          }
+        }
+      } catch (e) { /* détection indisponible : chemin classique */ }
       const modal = document.getElementById('realRenderModal');
       if (modal) modal.classList.remove('hidden');
       const statusEl = document.getElementById('realRenderStatus');
@@ -6470,7 +6494,7 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
           headers: studioApiHeaders(),
           body: JSON.stringify({ path: 'index.html', content: currentAppHtml || '' })
         });
-        const res = await fetch(`/api/v1/projects/${pid}/render/preview`, { method: 'POST', headers: studioApiHeaders() });
+        const res = await fetch(`/api/v1/projects/${pid}/render/preview`, { method: 'POST', headers: studioApiHeaders(), body: bundleUrlBody || undefined });
         const data = await res.json();
         if (res.ok && data.screenshotBase64) {
           if (statusEl) statusEl.textContent = `Rendu réel terminé en ${data.durationMs} ms — point d'entrée : ${data.entryFile}`;

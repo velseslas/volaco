@@ -22,6 +22,8 @@ import { join, dirname, extname } from 'node:path';
 import type { AddressInfo } from 'node:net';
 
 export interface RealRenderOptions {
+  /** P5 — URL directe à rendre (ex: le bundle React servi) ; remplace files. */
+  startUrl?: string | undefined;
   /** Fichier d'entrée à charger (par défaut : index.html) */
   entryFile?: string | undefined;
   viewport?: { width: number; height: number } | undefined;
@@ -135,6 +137,11 @@ export async function renderProjectPreview(
   files: Record<string, string>,
   options: RealRenderOptions = {}
 ): Promise<RealRenderResult> {
+  // P5 — rendu par URL directe (ex: le bundle React servi par le serveur) :
+  // pas de tempDir, la page est chargée depuis le serveur lui-même.
+  if (options.startUrl) {
+    return renderChromiumPage(options.startUrl, options, () => undefined);
+  }
   if (!files || Object.keys(files).length === 0) {
     throw new Error('Aucun fichier à rendre : le projet ne contient aucun contenu.');
   }
@@ -155,26 +162,31 @@ export async function renderProjectPreview(
   const tempDir = writeFilesToTempDir(files);
   const { server, port } = await startStaticServer(tempDir);
 
-  // Import dynamique : playwright-core est une dépendance optionnelle (le
-  // reste du serveur doit continuer à fonctionner même si elle n'est pas
-  // installée sur une machine donnée).
-  let chromiumModule: typeof import('playwright-core');
-  try {
-    chromiumModule = await import('playwright-core');
-  } catch {
+  return renderChromiumPage(`http://127.0.0.1:${port}/${entryFile}`, options, () => {
     server.close();
     rmSync(tempDir, { recursive: true, force: true });
-    throw new Error(
-      "Le module 'playwright-core' n'est pas installé. Exécutez : npm install playwright-core, " +
-      'puis : npx playwright install chromium'
-    );
-  }
+  }, entryFile, startedAt);
+}
 
+/** P5 — corps Chromium partagé : lance la page sur startUrl, collecte
+ * console/erreurs, capture, appelle cleanup à la fin (toujours). */
+async function renderChromiumPage(
+  startUrl: string,
+  options: RealRenderOptions,
+  cleanup: () => void,
+  entryFile = 'index.html',
+  startedAt = Date.now()
+): Promise<RealRenderResult> {
+  const viewport = options.viewport ?? DEFAULT_VIEWPORT;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const executablePath = options.executablePath ?? process.env.PLAYWRIGHT_CHROMIUM_PATH;
   const consoleMessages: RealRenderConsoleMessage[] = [];
   const pageErrors: string[] = [];
 
   let browser: import('playwright-core').Browser | undefined;
   try {
+    // Import dynamique : playwright-core est une dépendance optionnelle.
+    const chromiumModule = await import('playwright-core');
     browser = await chromiumModule.chromium.launch({
       headless: true,
       ...(executablePath ? { executablePath } : {}),
@@ -190,7 +202,7 @@ export async function renderProjectPreview(
       pageErrors.push(error.message);
     });
 
-    await page.goto(`http://127.0.0.1:${port}/${entryFile}`, {
+    await page.goto(startUrl, {
       waitUntil: 'networkidle',
       timeout: timeoutMs
     });
@@ -210,7 +222,6 @@ export async function renderProjectPreview(
     if (browser) {
       await browser.close().catch(() => undefined);
     }
-    server.close();
-    rmSync(tempDir, { recursive: true, force: true });
+    cleanup();
   }
 }

@@ -1,6 +1,8 @@
 ﻿import type { IncomingMessage, ServerResponse } from 'node:http';
 import { revisionStore } from '../../../../packages/core/src/model/revision-store.js';
 import { fileStore } from '../../../../packages/core/src/file-explorer/index.js';
+import { buildApp, writeAppFile } from '../../../../packages/core/src/app-pipeline.js';
+import { logger } from '../../../../packages/core/src/logger.js';
 import { projectStore } from '../../../../packages/core/src/identity/project.js';
 import { assertPermission } from '../../../../packages/core/src/identity/permissions.js';
 import { NotFoundError, ValidationError } from '../../../../packages/core/src/errors.js';
@@ -86,6 +88,7 @@ export async function handleRevisionsRoutes(
     // dans le FileStore (sinon l'index.html réel resterait sur l'état
     // antérieur et seule l'historique aurait changé).
     let restoredFiles = 0;
+    let appFilesRestored = false;
     for (const [path, artifact] of Object.entries(rollbackRevision.files)) {
       const content = typeof artifact === 'string'
         ? artifact
@@ -93,6 +96,22 @@ export async function handleRevisionsRoutes(
       if (typeof content === 'string' && content.length > 0) {
         fileStore.saveFile(context.tenantId, projectId, path, content);
         restoredFiles += 1;
+        // P5 — les fichiers app/* (projets React) sont re-syncronisés dans
+        // le workspace de build et le bundle est reconstruit.
+        if (path.startsWith('app/')) {
+          const writeRes = writeAppFile(projectId, path.slice(4), content);
+          if (writeRes.ok) appFilesRestored = true;
+        }
+      }
+    }
+    if (appFilesRestored) {
+      try {
+        await buildApp(projectId);
+      } catch (err) {
+        logger.warn('Rebuild post-rollback en échec', {
+          component: 'revisions-route', projectId,
+          error: err instanceof Error ? err.message : String(err)
+        });
       }
     }
 
