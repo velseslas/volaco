@@ -5,6 +5,7 @@ import { loadConfig, type AppConfig } from '../../../packages/core/src/config.js
 import { logger, generateRequestId } from '../../../packages/core/src/logger.js';
 import { AppError, NotFoundError } from '../../../packages/core/src/errors.js';
 import { metricsCollector } from '../../../packages/core/src/observability/metrics.js';
+import { releaseAiSlot, tryAcquireAiSlot } from '../../../packages/core/src/observability/runtime-metrics.js';
 import { auditStore } from '../../../packages/core/src/observability/audit.js';
 import { getHealthResponse } from './routes/health.js';
 import { extractRequestContext } from './middleware/auth.js';
@@ -422,6 +423,32 @@ export function createApiServer(configOverride: Partial<AppConfig> = {}) {
       // répondaient sans authentification. Peut lever UnauthorizedError (401)
       // en production sans token valide, d'où sa place dans le try.
       const context = extractRequestContext(req, config, requestId);
+      // P5 — SEMAPHORE DE CONCURRENCE IA : les opérations lourdes (LLM,
+      // builds, images) sont bornées (VOLACO_MAX_CONCURRENT_AI, défaut 3).
+      // Au-delà : 503 + Retry-After — jamais de surcharge du process.
+      const isAiHeavy = req.method === 'POST' && (
+        /\/app\/(generate|edit|apply-edits)$/.test(pathname) ||
+        /\/images\/generate$/.test(pathname) ||
+        /\/stream$/.test(pathname)
+      );
+      if (isAiHeavy && !tryAcquireAiSlot()) {
+        res.statusCode = 503;
+        res.setHeader('Retry-After', '15');
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.end(JSON.stringify({
+          error: {
+            code: 'AI_BUSY',
+            message: 'Une génération IA est déjà en cours — réessayez dans quelques instants.',
+            statusCode: 503,
+            requestId
+          }
+        }));
+        return;
+      }
+      if (isAiHeavy) {
+        res.on('close', () => releaseAiSlot());
+        res.on('finish', () => releaseAiSlot());
+      }
 
       logger.info(
         'RequÃªte HTTP',

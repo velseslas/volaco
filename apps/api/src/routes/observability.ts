@@ -1,5 +1,6 @@
 ﻿import type { IncomingMessage, ServerResponse } from 'node:http';
 import { metricsCollector } from '../../../../packages/core/src/observability/metrics.js';
+import { runtimeSnapshot } from '../../../../packages/core/src/observability/runtime-metrics.js';
 import { auditStore } from '../../../../packages/core/src/observability/audit.js';
 import { aiUsageTracker } from '../../../../packages/core/src/ai/usage.js';
 import { assertPermission } from '../../../../packages/core/src/identity/permissions.js';
@@ -15,8 +16,9 @@ export function handleObservabilityRoutes(
   // 1. GET /api/v1/metrics
   if (req.method === 'GET' && (pathname === '/metrics' || pathname === '/api/v1/metrics')) {
     const metrics = metricsCollector.getMetricsSummary();
+    // P5 — observabilité runtime : mémoire + concurrence IA actives
     res.statusCode = 200;
-    res.end(JSON.stringify({ metrics, requestId }));
+    res.end(JSON.stringify({ metrics, runtime: runtimeSnapshot(), requestId }));
     return true;
   }
 
