@@ -737,7 +737,8 @@ export async function handleConversationRoutes(
       "5. Termine par une phrase de confirmation\n" +
       "   Ex: \"Voilà, le bouton est maintenant bleu ! Tu peux voir le changement dans le Hero.\"\n\n" +
       "RÈGLES CRITIQUES :\n" +
-      "- Le name doit correspondre à une section EXISTANTE dans le HTML fourni (header, hero, menu, reservation, footer, etc.) quand mode=\"modify\" ou mode=\"delete\"\n" +
+      "- Le name doit correspondre EXACTEMENT (même orthographe) à une section EXISTANTE listée dans le CONTEXTE RÉEL de la page (header, hero, menu, reservation, footer, etc.) quand mode=\"modify\" ou mode=\"delete\" — n'invente JAMAIS un nom (ex: \"navbar\" alors que la section existante s'appelle \"header\")\n" +
+      "- Pour une section NOUVELLE (qui n'existe pas encore dans le contexte), utilise mode=\"add\" avec after=<nom de la dernière section>\n" +
       "- Le HTML modifié doit être COMPLET (toute la section, pas juste la partie changée)\n" +
       "- Ne renvoie QUE les sections modifiées/ajoutées — JAMAIS les sections non modifiées\n" +
       "- Garde le style et la structure globale de l'application (ne change pas la palette ou le thème si non demandé)\n" +
@@ -1018,6 +1019,19 @@ export async function handleConversationRoutes(
                 const tagMatch = tagRegex.exec(modifiedHtml);
                 if (tagMatch && !oldBlock) oldBlock = tagMatch[0];
                 modifiedHtml = modifiedHtml.replace(new RegExp(tagRegex.source, 'g'), `<div class="vibe-stitched" data-section="${sec.name}">${sec.html}</div>`);
+              }
+              // P3-fix — mode="modify" sur un nom INEXISTANT (l'IA a inventé
+              // un nom, ex: « navbar » au lieu de « header ») : la section
+              // n'est PAS perdue — elle est ajoutée en fin de page (même
+              // fallback que le mode add). Sinon « Diff … non appliqué » à
+              // chaque génération et le travail de l'IA est jeté.
+              if (modifiedHtml === before) {
+                const bodyClose = modifiedHtml.lastIndexOf('</body>');
+                if (bodyClose !== -1) {
+                  modifiedHtml = modifiedHtml.slice(0, bodyClose)
+                    + `\n<div class="vibe-stitched" data-section="${sec.name}">${cleanHtml}</div>\n`
+                    + modifiedHtml.slice(bodyClose);
+                }
               }
             }
           } else if (sec.mode === 'add' && sec.html) {
