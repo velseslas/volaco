@@ -27,6 +27,7 @@ import {
   ensureWorkspace,
   listAppFiles,
   readAppFile,
+  setProjectFormat,
   validateAppPath,
   writeAppFile
 } from '../../../../packages/core/src/app-pipeline.js';
@@ -280,6 +281,7 @@ export async function handleAppGeneratorRoutes(
 
     // Site frais : le workspace est reconstruit depuis le template.
     ensureWorkspace(projectId, true);
+    setProjectFormat(projectId, 'react-vite');
     send({ type: 'start' });
 
     const adapter = aiProviderRegistry.resolve({ preferredProviderId: process.env.MISTRAL_API_KEY ? 'mistral' : undefined });

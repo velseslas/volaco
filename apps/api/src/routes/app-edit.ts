@@ -26,6 +26,7 @@ import { revisionStore } from '../../../../packages/core/src/model/revision-stor
 import {
   buildApp,
   ensureWorkspace,
+  getProjectFormat,
   listAppFiles,
   readAppFile,
   writeAppFile
@@ -374,11 +375,12 @@ export async function handleAppEditRoutes(
     const files = listAppFiles(projectId);
     const hasAppSources = files.some((f) => f.path.startsWith('src/'));
     const ws = ensureWorkspace(projectId);
+    const format = getProjectFormat(projectId);
     res.statusCode = 200;
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.end(JSON.stringify({
-      format: hasAppSources ? 'react-vite' : 'html',
-      hasBundle: hasAppSources && existsSync(join(ws, 'dist', 'index.html')),
+      format,
+      hasBundle: format === 'react-vite' && hasAppSources && existsSync(join(ws, 'dist', 'index.html')),
       files: files.map((f) => f.path)
     }));
     return true;

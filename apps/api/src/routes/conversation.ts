@@ -25,6 +25,7 @@ import { ExecutionRecorder, type RecordableEvent } from '../../../../packages/co
 import type { RequestContext } from '../middleware/auth.js';
 
 import { readBody } from '../middleware/body.js';
+import { setProjectFormat } from '../../../../packages/core/src/app-pipeline.js';
 /**
  * Instance unique du service de conversation pour tout le serveur.
  * Le moteur IA réel (Gemini/Mistral) ou le simulateur (Mock, avec avertissement)
@@ -1110,6 +1111,9 @@ export async function handleConversationRoutes(
       if (assembledHtml.trim().length > 100) {
         try {
           fileStore.saveFile(context.tenantId, projectId, 'index.html', assembledHtml);
+          // P3-fix — le dernier format généré pour ce projet est HTML :
+          // la reprise du preview ne doit pas réafficher un bundle React obsolète.
+          setProjectFormat(projectId, 'html');
           gateEligible = true;
           // ÉTAPE 6 — révision automatique (§32 CDC Evolution Engine) : chaque
           // génération produit une révision réversible (rollback déjà branché).

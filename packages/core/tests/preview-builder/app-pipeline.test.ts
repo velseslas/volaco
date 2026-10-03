@@ -16,6 +16,8 @@ import {
   ensureWorkspace,
   listAppFiles,
   readAppFile,
+  setProjectFormat,
+  getProjectFormat,
   workspaceDir,
   writeAppFile
 } from '../../src/app-pipeline.js';
@@ -57,6 +59,13 @@ describe('P1/P2 : pipeline d applications React réelles', () => {
     assert.ok(paths.includes('src/components/Header.tsx'), 'source créée listée');
     assert.ok(!paths.some((p: string) => p.startsWith('dist/')), 'dist exclu');
     assert.ok(!paths.some((p: string) => p.startsWith('node_modules/')), 'node_modules exclu');
+  });
+
+  it('4b. marqueur de format : le DERNIER format généré gagne (fix régression)', () => {
+    setProjectFormat(TEST_PROJECT, 'react-vite');
+    assert.equal(getProjectFormat(TEST_PROJECT), 'react-vite');
+    setProjectFormat(TEST_PROJECT, 'html');
+    assert.equal(getProjectFormat(TEST_PROJECT), 'html', 'une génération HTML après une génération React bascule le format');
   });
 
   it('5. réinitialisation : ensureWorkspace(reset) rend le site frais', () => {

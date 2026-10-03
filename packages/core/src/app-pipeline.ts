@@ -82,6 +82,30 @@ export function readAppFile(projectId: string, relPath: string): string | null {
   return readFileSync(full, 'utf8');
 }
 
+/**
+ * P3-fix — marqueur de FORMAT par projet. Deux formats coexistent
+ * (HTML par sections et projet React) : la reprise du preview doit suivre
+ * le DERNIER format généré, sinon elle réaffiche un bundle obsolète après
+ * une génération HTML (régression constatée en production).
+ */
+export function setProjectFormat(projectId: string, format: 'react-vite' | 'html'): void {
+  mkdirSync(workspaceRoot, { recursive: true });
+  writeFileSync(join(workspaceRoot, projectId + '.format.json'), JSON.stringify({ format, at: Date.now() }), 'utf8');
+}
+
+export function getProjectFormat(projectId: string): 'react-vite' | 'html' {
+  const marker = join(workspaceRoot, projectId + '.format.json');
+  if (existsSync(marker)) {
+    try {
+      const parsed = JSON.parse(readFileSync(marker, 'utf8')) as { format?: string };
+      if (parsed.format === 'react-vite' || parsed.format === 'html') return parsed.format;
+    } catch { /* marqueur illisible : heuristique */ }
+  }
+  // heuristique de repli (avant tout marquage)
+  const ws = workspaceDir(projectId);
+  return existsSync(join(ws, 'src', 'App.tsx')) ? 'react-vite' : 'html';
+}
+
 /** Liste les fichiers sources du projet (sans node_modules/dist). */
 export function listAppFiles(projectId: string): Array<{ path: string; size: number }> {
   const ws = workspaceDir(projectId);
