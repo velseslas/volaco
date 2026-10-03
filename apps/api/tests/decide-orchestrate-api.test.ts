@@ -114,7 +114,8 @@ describe('Lot 1 : routes decide + orchestrate accessibles via HTTP', () => {
     assert.equal(body.run.state, 'COMPLETED');
     assert.ok(body.run.completedTaskIds.length >= 1);
     assert.ok(Array.isArray(body.run.artifacts) && body.run.artifacts.length >= 1);
-    assert.ok(body.run.totalTokens > 0);
+    // P2 — contrat honnête : SANS clé IA, le run COMPLETED est dégradé (tokens 0)
+    assert.ok(body.run.totalTokens === 0, 'sans provider IA, aucun token fictif');;
     assert.ok(body.run.totalCostUsd >= 0);
   });
 

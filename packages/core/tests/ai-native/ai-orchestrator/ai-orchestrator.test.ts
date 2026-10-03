@@ -1867,7 +1867,10 @@ describe('AINT-010 — AI Orchestrator & Engineering Agent Orchestrator', () => 
       assert.ok(run.completedTaskIds.length >= 5);
       assert.ok(run.artifacts.length >= 5);
       assert.ok(run.traces.length >= 5);
-      assert.ok(run.totalTokens > 0);
+      // P2 — contrat honnête : SANS provider IA, les agents sont dégradés
+      // (contenu structurel, tokens réels = 0, plus de tokens fictifs)
+      assert.ok(run.totalTokens === 0, 'sans IA, aucun token fictif');
+      assert.ok(run.degradedCount === run.completedTaskIds.length, 'toutes les tâches dégradées sans IA');
       assert.ok(run.totalCostUsd >= 0);
     });
 

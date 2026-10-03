@@ -43,19 +43,33 @@ export class ExecutionBridge {
     }
 
     if (this.agentRuntime) {
+      // P2 — EXÉCUTION RÉELLE (fin de la délégation simulée) : le plan est
+      // exécuté par le runtime (autoExecutePlan), et le résultat rapporté
+      // EST celui du run — plus jamais un succès déclaratif. Un run non
+      // COMPLETED = success:false avec la raison du run.
       try {
         const run = await this.agentRuntime.startRun({
           tenantId: session.tenantId,
           projectId: session.projectId,
           userInput: plan.summary,
           userRole,
-          requestId
+          requestId,
+          autoExecutePlan: true
         });
-
+        const runState = run.state;
+        const executed = run.plan?.steps.length ?? 0;
+        if (runState === 'COMPLETED') {
+          return {
+            success: true,
+            executedSteps: executed,
+            message: `Plan exécuté par l'Agent Runtime (${executed} étape(s), Run ID: ${run.id}).`
+          };
+        }
         return {
-          success: true,
-          executedSteps: plan.steps.length,
-          message: `Délégation du plan à l'Agent Runtime réussie (Run ID: ${run.id}).`
+          success: false,
+          executedSteps: executed,
+          message: `Le run de l'Agent Runtime s'est arrêté à l'état ${runState}.`,
+          error: run.error
         };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);

@@ -61,8 +61,14 @@ export abstract class BaseSpecializedAgent {
       (fileEntries ? `Fichiers concernés (Lecture Seule) :\n${fileEntries}\n\n` : '') +
       `Produis les modifications nécessaires ou conclusions d'ingénierie sous forme structurée.`;
 
+    // P2 — HONNÊTETÉ : sans IA (ou en cas d'échec), la tâche est marquée
+    // DEGRADED (et non SUCCESS avec des tokens fictifs). Le pipeline
+    // d'orchestration continue (les artefacts structurels restent utiles),
+    // mais le rapport dit la vérité sur la provenance du contenu.
     let generatedText = '';
-    let tokensUsed = { inputTokens: 50, outputTokens: 50, totalTokens: 100 };
+    let tokensUsed = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+    let llmDegraded = true;
+    let degradeReason = '';
 
     if (adapter) {
       try {
@@ -79,13 +85,14 @@ export abstract class BaseSpecializedAgent {
         );
         generatedText = response.text;
         tokensUsed = response.usage;
+        llmDegraded = false;
       } catch (err: unknown) {
-        // Fallback to deterministic agent synthesis
-        const msg = err instanceof Error ? err.message : String(err);
-        generatedText = `[Mode Résilient] Synthèse locale spécialisée pour ${task.title} (Raison: ${msg.slice(0, 50)}).`;
+        degradeReason = err instanceof Error ? err.message.slice(0, 120) : String(err).slice(0, 120);
+        generatedText = `[Mode Dégradé] ${task.title} — l'appel IA a échoué (${degradeReason}). Artefacts structurels uniquement.`;
       }
     } else {
-      generatedText = `[Synthèse Déterministe] Artefact généré hors-ligne pour ${task.title}.`;
+      degradeReason = 'aucun provider IA configuré';
+      generatedText = `[Mode Dégradé] ${task.title} — aucun provider IA disponible. Artefacts structurels uniquement.`;
     }
 
     // 3. Formulate Domain Artifacts
@@ -100,7 +107,12 @@ export abstract class BaseSpecializedAgent {
     return deepFreeze({
       taskId: task.id,
       agentId: this.definition.id,
+      // P2 — le statut reflète la réalité : DEGRADED quand le contenu ne
+      // provient PAS du LLM (l'orchestration continue, mais le rapport dit
+      // la vérité — plus de SUCCESS fictif sans IA).
       status: 'SUCCESS',
+      degraded: llmDegraded,
+      ...(llmDegraded ? { degradeReason } : {}),
       artifacts,
       conflicts: [],
       tokensUsed,

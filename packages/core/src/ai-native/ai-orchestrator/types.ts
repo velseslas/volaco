@@ -148,6 +148,9 @@ export interface AgentConflict {
 }
 
 export interface AgentResult {
+  /** P2 — vrai quand le contenu ne provient PAS du LLM (fallback local). */
+  degraded?: boolean;
+  degradeReason?: string;
   readonly taskId: string;
   readonly agentId: string;
   readonly status: 'SUCCESS' | 'FAILURE' | 'ESCALATED';
@@ -188,6 +191,8 @@ export interface OrchestrationTrace {
 }
 
 export interface OrchestrationRun {
+  /** P2 — tâches exécutées en mode dégradé (sans IA). */
+  degradedCount?: number;
   readonly orchestrationId: string;
   readonly tenantId: string;
   readonly projectId: string;

@@ -17,6 +17,8 @@ import type { ContextOrchestrator } from './context-orchestrator.js';
 import type { Role } from '../../../identity/permissions.js';
 
 export interface SchedulerExecutionResult {
+  /** P2 — tâches exécutées en mode dégradé (sans IA). */
+  degradedCount: number;
   readonly updatedGraph: EngineeringTaskGraph;
   readonly artifacts: readonly AgentArtifact[];
   readonly conflicts: readonly AgentConflict[];
@@ -44,6 +46,7 @@ export class AgentScheduler {
   }): Promise<SchedulerExecutionResult> {
     const { taskGraph, tenantId, projectId, rawFiles, decisions, constraints, userRole, requestId } = params;
     const startTime = Date.now();
+    let degradedCount = 0;
 
     const tasksMap = new Map<string, AgentTask>();
     for (const t of taskGraph.tasks) {
@@ -143,6 +146,7 @@ export class AgentScheduler {
       for (const res of results) {
         const currentTask = tasksMap.get(res.taskId)!;
         totalTokens += res.tokensUsed.totalTokens;
+        if (res.degraded) degradedCount += 1;
 
         if (res.status === 'SUCCESS') {
           tasksMap.set(res.taskId, {
@@ -178,7 +182,11 @@ export class AgentScheduler {
       conflicts: allConflicts,
       totalTokens,
       durationMs,
-      hasFailures
+      hasFailures,
+      // P2 — vérité sur la provenance : tâches exécutées sans IA (fallback
+      // local). Le consommateur peut afficher « dégradé » au lieu de
+      // prétendre à une génération IA.
+      degradedCount
     });
   }
 }

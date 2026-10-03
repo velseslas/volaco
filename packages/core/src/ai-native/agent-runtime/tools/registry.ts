@@ -108,11 +108,14 @@ export class ToolRegistry {
 
     const handler = this.handlers.get(name) ?? this.handlers.get(def.name);
     if (!handler) {
-      // Default stub response if no explicit handler registered
+      // P2 — plus de stub « succès » silencieux (constat d'audit : une étape
+      // read_file « réussissait » sans rien lire). Un tool déclaré mais non
+      // câblé est une ERREUR explicite — le plan échoue honnêtement au lieu
+      // de prétendre avoir travaillé.
       return {
         tool: name,
-        success: true,
-        output: { acknowledged: true, tool: name, input },
+        success: false,
+        error: `Outil '${name}' déclaré mais non câblé dans ce runtime (aucun handler enregistré)`,
         durationMs: Date.now() - startTime
       };
     }

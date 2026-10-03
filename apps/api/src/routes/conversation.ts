@@ -26,6 +26,7 @@ import type { RequestContext } from '../middleware/auth.js';
 
 import { readBody } from '../middleware/body.js';
 import { setProjectFormat } from '../../../../packages/core/src/app-pipeline.js';
+import { classifyIntent } from '../../../../packages/core/src/ai-native/conversation-intelligence/engine/intent-engine.js';
 /**
  * Instance unique du service de conversation pour tout le serveur.
  * Le moteur IA réel (Gemini/Mistral) ou le simulateur (Mock, avec avertissement)
@@ -589,7 +590,11 @@ export async function handleConversationRoutes(
     // (traçabilité Understand Before Acting), AVANT la sélection du fournisseur
     // — le plan et la confirmation humaine ne dépendent d'aucune clé LLM.
     // En mode planFirst, le flux s'arrête ici et attend la confirmation (§3.9).
-    const plan = planGenerator.generatePlan({ intent: buildStreamFallbackIntent(body.message || '') });
+    // P2 — INTENTION RÉELLE : le moteur conversationnel (LLM, temp 0,
+    // repli regex intégré) remplace la regex 6 catégories. L'intention
+    // détermine le plan affiché et les phrases du LLM.
+    const realIntent = await classifyIntent(body.message || '', undefined, context.tenantId, projectId);
+    const plan = planGenerator.generatePlan({ intent: realIntent });
     emit({ type: 'plan', plan }, {
       type: 'PLAN_CREATED',
       phase: 'PLAN',

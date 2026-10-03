@@ -205,7 +205,8 @@ export interface ToolSelection {
 export interface ToolExecutionResult {
   readonly tool: string;
   readonly success: boolean;
-  readonly output: unknown;
+  /** Absent sur échec (ex : tool déclaré mais non câblé). */
+  readonly output?: unknown;
   readonly error?: string | undefined;
   readonly durationMs: number;
   readonly evidenceGenerated?: readonly EvidenceRecord[] | undefined;

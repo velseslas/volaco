@@ -4,6 +4,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { fileStore } from '../../file-explorer/index.js';
 import { NotFoundError, ValidationError } from '../../errors.js';
 import { assertPermission, type Role } from '../../identity/permissions.js';
 import { auditStore } from '../../observability/audit.js';
@@ -169,6 +170,65 @@ export class AgentRuntimeService {
         );
       });
     }
+
+    // P2 — READ_FILE RÉEL : lit le FileStore du projet. Un fichier absent
+    // est une LECTURE réussie qui rapporte exists:false (information utile
+    // pour un agent) — seules les MUTATIONS échouent sur un fichier absent.
+    this.toolRegistry.registerHandler('read_file', async (input, ctx) => {
+      const path = String(input.path ?? 'index.html');
+      const file = fileStore.getFile(ctx.tenantId, ctx.projectId, path);
+      return {
+        exists: !!file,
+        path,
+        content: file?.content ?? null,
+        size: file?.content ? file.content.length : 0
+      };
+    });
+
+    // P2-e — RUN_TYPECHECK RÉEL : analyse du code ciblé par le plan via
+    // CodeIntelligence (parse TS réel). Erreurs de syntaxe/structure =
+    // échec honnête de l'étape de vérification.
+    if (this.codeIntelService) {
+      this.toolRegistry.registerHandler('run_typecheck', async (input, ctx) => {
+        const all = fileStore.getAllProjectFiles(ctx.tenantId, ctx.projectId);
+        const targetFiles = (input.targetFiles as string[]) ?? Object.keys(all);
+        const errors: Array<{ file: string; message: string }> = [];
+        for (const path of targetFiles) {
+          const content = all[path];
+          if (typeof content !== 'string' || !/.(ts|tsx)$/.test(path)) continue;
+          try {
+            const codeIntel = this.codeIntelService;
+            if (!codeIntel) return { passed: false, checked: 0, errors: [{ file: path, message: 'service indisponible' }] };
+            codeIntel.analyzeSource(content, path, { tenantId: ctx.tenantId, projectId: ctx.projectId });
+          } catch (err) {
+            errors.push({ file: path, message: err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200) });
+          }
+        }
+        return {
+          passed: errors.length === 0,
+          checked: targetFiles.length,
+          errors
+        };
+      });
+    }
+
+    // P2 — SEARCH_CODE RÉEL : grep sur tous les fichiers du projet.
+    this.toolRegistry.registerHandler('search_code', async (input, ctx) => {
+      const query = String(input.query ?? '').toLowerCase();
+      if (query.length === 0) return { matches: [], total: 0 };
+      const all = fileStore.getAllProjectFiles(ctx.tenantId, ctx.projectId);
+      const matches: Array<{ path: string; line: number; text: string }> = [];
+      for (const [path, content] of Object.entries(all) as Array<[string, string]>) {
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length && matches.length < 50; i++) {
+          const lineText = lines[i] ?? '';
+          if (lineText.toLowerCase().includes(query)) {
+            matches.push({ path, line: i + 1, text: lineText.trim().slice(0, 120) });
+          }
+        }
+      }
+      return { matches, total: matches.length };
+    });
 
     // Bind AINT-003 Context Assembly tool if service is available
     if (this.contextService) {
