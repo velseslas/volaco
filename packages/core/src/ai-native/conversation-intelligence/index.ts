@@ -53,6 +53,16 @@ export { UnderstandingBridge } from './engine/understanding-bridge.js';
 export { ImpactBridge, type PlanImpactResult } from './engine/impact-bridge.js';
 export { ExecutionBridge, type ExecutionResult } from './engine/execution-bridge.js';
 export { ConversationEngine } from './engine/conversation-engine.js';
+export {
+  ConversationContextBuilder,
+  CONTEXT_BUDGETS,
+  MAX_CONTEXT_CHARS,
+  type ConversationContext,
+  type ConversationContextSection,
+  type ConversationContextSectionId,
+  type ConversationContextInput,
+  type ConversationContextStats
+} from './engine/context-builder.js';
 export { DefaultReasoningProvider, MockReasoningProvider } from './provider/reasoning-provider.js';
 export { ConversationTraceCollector, type TraceSummaryMetrics } from './observability/conversation-trace.js';
 export { ConversationSessionLruCache } from './cache.js';

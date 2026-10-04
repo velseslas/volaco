@@ -4,6 +4,7 @@
  */
 
 import type { ApplicationSemanticModel } from '../application-understanding/types.js';
+import type { ConversationContext } from './engine/context-builder.js';
 
 export type ConversationState =
   | 'EXPLORING'
@@ -251,6 +252,8 @@ export interface ReasoningRequest {
     readonly project: ProjectMemory;
     readonly turn: TurnMemory;
   };
+  /** ÉTAPE 30 — contexte conversationnel borné et déterministe construit par ConversationContextBuilder. */
+  readonly context?: ConversationContext | undefined;
 }
 
 export interface ReasoningResponse {

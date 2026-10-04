@@ -8,6 +8,7 @@ import { ConversationAssumptionEngine } from './assumption-engine.js';
 import { ClarificationEngine } from './clarification-engine.js';
 import { ContradictionDetector } from './contradiction-detector.js';
 import { ConversationCompass } from './conversation-compass.js';
+import { ConversationContextBuilder } from './context-builder.js';
 import { ExecutionBridge } from './execution-bridge.js';
 import { ImpactBridge } from './impact-bridge.js';
 import { ConversationIntentEngine } from './intent-engine.js';
@@ -28,6 +29,10 @@ import type {
 } from '../types.js';
 
 export class ConversationEngine {
+  // ÉTAPE 30 — source unique du contexte conversationnel transmis au provider.
+  // Instance sans état (fonction pure) : aucune mémoire globale.
+  private readonly contextBuilder = new ConversationContextBuilder();
+
   constructor(
     private readonly intentEngine: ConversationIntentEngine,
     private readonly clarificationEngine: ClarificationEngine,
@@ -145,6 +150,19 @@ export class ConversationEngine {
     // PHASE 5/6 - nextAction du LLM pour surcharger le Compass
     let llmNextAction: import('../types.js').NextActionKind | undefined;
 
+    // ÉTAPE 30 — le contexte conversationnel borné (historique pertinent +
+    // mémoire projet + décisions + contraintes) est construit UNE fois ici,
+    // à l'unique point d'appel du provider, et transmis tel quel. Le pool
+    // d'historique est l'historique COMPLET de la session (session.turns —
+    // store existant) ; la sélection bornée est le travail du builder.
+    const fullHistory: HumanAiMessage[] = session.turns.flatMap((t) => [t.userMessage, t.agentResponse]);
+    const conversationContext = this.contextBuilder.build({
+      userMessage: cleanUserText,
+      history: fullHistory,
+      projectMemory: session.projectMemory,
+      turnMemory: session.turnMemory
+    });
+
     if (reasoningProvider) {
       try {
         const timeoutMs = 60000;
@@ -162,7 +180,8 @@ export class ConversationEngine {
             memory: {
               project: session.projectMemory,
               turn: session.turnMemory
-            }
+            },
+            context: conversationContext
           }),
           timeoutPromise
         ]).finally(() => {
@@ -250,6 +269,12 @@ export class ConversationEngine {
     }
     if (providerMetadata && Boolean(providerMetadata['fallbackUsed'])) {
       traceEvents.push(`Fallback: true`);
+    }
+    // ÉTAPE 30 — observabilité du contexte réellement transmis au provider.
+    if (typeof conversationContext !== 'undefined') {
+      traceEvents.push(
+        `Context: ${conversationContext.stats.totalChars} chars, ${conversationContext.stats.historyIncluded}/${conversationContext.stats.historyTotal} messages, ${conversationContext.stats.decisionsIncluded} décision(s)`
+      );
     }
 
     const trace: ConversationTrace = deepFreeze({

@@ -159,6 +159,12 @@ export class ConversationIntelligenceService {
       this.understandingBridge.fetchUnderstanding(tenantId, projectId, userRole, requestId)
     );
 
+    // ÉTAPE 30 (scénario E) — une nouvelle session du MÊME projet retrouve la
+    // mémoire projet persistée (décisions, préférences, contraintes, plans)
+    // via la source unique existante (sessions durables du tenant:projet) —
+    // sans copier l'état d'une ancienne session (turns/turnMemory restent vides).
+    const persistedProjectMemory = this.getLatestProjectMemory(tenantId, projectId, userRole, requestId);
+
     const session: ConversationSession = deepFreeze({
       sessionId,
       conversationId,
@@ -170,7 +176,7 @@ export class ConversationIntelligenceService {
       activeDecisions: [],
       applicationSnapshot: initialSnapshot,
       turnMemory: this.memoryManager.createInitialTurnMemory(),
-      projectMemory: this.memoryManager.createInitialProjectMemory()
+      projectMemory: persistedProjectMemory ?? this.memoryManager.createInitialProjectMemory()
     });
 
     const cacheKey = ConversationSessionLruCache.buildKey(tenantId, projectId, sessionId);
