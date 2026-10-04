@@ -10,3 +10,4 @@ Thumbs.db
 
 # Données runtime du Studio (projets, révisions, mémoire conversationnelle)
 .volaco-data/
+workspace/

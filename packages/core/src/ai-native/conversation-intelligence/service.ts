@@ -22,6 +22,7 @@ import { ExecutionBridge, type ExecutionResult } from './engine/execution-bridge
 import { ImpactBridge } from './engine/impact-bridge.js';
 import { ConversationIntentEngine } from './engine/intent-engine.js';
 import { MemoryManager } from './engine/memory-manager.js';
+import { computeTraceId } from './engine/canonical.js';
 import { PlanGenerator } from './engine/plan-generator.js';
 import { UnderstandingBridge } from './engine/understanding-bridge.js';
 import { ConversationTraceCollector } from './observability/conversation-trace.js';
@@ -35,6 +36,7 @@ import type {
   ConversationTurn,
   ReasoningProvider
 } from './types.js';
+import type { ConversationState, EngineeringPlan, HumanAiMessage, IntentResult } from './types.js';
 
 export const DEFAULT_CONVERSATION_CONFIG: ConversationIntelligenceConfig = {
   maxTurnsPerSession: 50,
@@ -235,6 +237,97 @@ export class ConversationIntelligenceService {
       return null;
     }
     return latest.projectMemory ?? null;
+  }
+
+  /**
+   * P6 — enregistre un tour RÉEL issu du flux stream (génération HTML) :
+   * message utilisateur, réponse de l'agent, intention réelle (P2-d),
+   * plan généré. La session est persistée avec le tour et la mémoire
+   * projet est alimentée (plan accepté) — le chemin principal et le
+   * moteur conversationnel convergent enfin.
+   */
+  public recordStreamTurn(params: {
+    tenantId: string;
+    projectId: string;
+    sessionId: string;
+    userRole?: Role | undefined;
+    userMessage: string;
+    assistantMessage: string;
+    intent: IntentResult;
+    plan?: EngineeringPlan | undefined;
+    durationMs?: number | undefined;
+    requestId?: string | undefined;
+  }): ConversationSession | undefined {
+    const userRole = params.userRole ?? 'OWNER';
+    const session = this.getSession(params.tenantId, params.projectId, params.sessionId, userRole, params.requestId);
+    if (!session) return undefined;
+
+    const turnIndex = session.turns.length + 1;
+    const turnId = `turn-${session.sessionId}-${turnIndex}`;
+    const now = new Date().toISOString();
+    const userMessage: HumanAiMessage = Object.freeze({
+      id: turnId + '-user',
+      sender: 'HUMAN',
+      content: params.userMessage,
+      timestamp: now
+    });
+    const agentResponse: HumanAiMessage = Object.freeze({
+      id: turnId + '-agent',
+      sender: 'AGENT',
+      content: params.assistantMessage,
+      timestamp: now
+    });
+
+    const nextState: ConversationState = 'COMPLETED';
+    const trace: ConversationTrace = Object.freeze({
+      traceId: computeTraceId(session.sessionId, turnId),
+      sessionId: session.sessionId,
+      turnId,
+      stateBefore: session.currentState,
+      stateAfter: nextState,
+      intentCategory: params.intent.category,
+      contextHash: 'stream-' + session.turns.length,
+      applicationHash: 'stream',
+      actionTaken: 'Génération HTML via stream (intention réelle P2-d)',
+      confidence: params.intent.confidence,
+      events: ['Stream: tour enregistré à la fin du flux'],
+      durationMs: params.durationMs ?? 0
+    });
+
+    const turn: ConversationTurn = Object.freeze({
+      turnIndex,
+      turnId,
+      userMessage,
+      stateBefore: session.currentState,
+      stateAfter: nextState,
+      intent: params.intent,
+      assumptions: [],
+      decisions: session.activeDecisions,
+      plan: params.plan,
+      agentResponse,
+      trace
+    });
+
+    // Mémoire projet : le plan du stream est enregistré comme accepté
+    // (il a été exécuté — le fichier a été sauvegardé).
+    const memoryManager = new MemoryManager();
+    let projectMemory = session.projectMemory;
+    if (params.plan) {
+      projectMemory = memoryManager.recordPlanDecision(projectMemory, params.plan.planId, true);
+    }
+
+    const updatedSession: ConversationSession = {
+      ...session,
+      currentState: nextState,
+      turns: [...session.turns, turn],
+      activeIntent: params.intent,
+      projectMemory
+    };
+
+    this.cache.set(ConversationSessionLruCache.buildKey(session.tenantId, session.projectId, session.sessionId), updatedSession);
+    this.persistSession(updatedSession);
+    this.totalTurnsProcessed += 1;
+    return updatedSession;
   }
 
   public async processTurn(
