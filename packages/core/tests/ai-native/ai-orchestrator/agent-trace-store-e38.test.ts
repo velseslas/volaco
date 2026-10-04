@@ -29,8 +29,8 @@ import {
   buildBatchTrace,
   AgentTraceStore,
   AGENT_TRACE_MAX,
-  type AgentTask,
-  type ExecutionTrace
+  type ExecutionTrace,
+  type AgentTask
 } from '../../../src/index.js';
 
 describe('ÉTAPE 38 Phase 3 — AgentTraceStore', () => {
@@ -328,6 +328,100 @@ describe('ÉTAPE 38 Phase 3 — AgentTraceStore', () => {
     assert.ok(brokenStore.get(tenantId, projectId, 'agx-e38s-q'), 'trace conservée en mémoire');
     assert.equal(brokenStore.get(tenantId, projectId, 'agx-e38s-q')!.status, trace.status, 'verdict inchangé');
     void store;
+  });
+
+  // ============================================================================
+  // ÉTAPE 39 Phase 5 — CAP ISOLÉ PAR tenantId + projectId
+  // ============================================================================
+  describe('É39 Phase 5 — cap isolé par tenant/projet', () => {
+    function makeBucketTrace(executionId: string, tenantId: string, projectId: string, status: string = 'SUCCESS'): ExecutionTrace {
+      return buildTaskTrace({
+        outcome: {
+          executionId, agentId: 'reference-agent', taskId: 'task-' + executionId,
+          status: status as never,
+          result: { taskId: 'task-' + executionId, agentId: 'reference-agent', status: 'SUCCESS' as const, artifacts: [], conflicts: [], tokensUsed: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }, durationMs: 1 },
+          artifacts: [], mutation: { requested: false, executed: false, appliedCount: 0 },
+          verification: { performed: false, passed: false, checks: [] },
+          rollback: { performed: false, verified: false, restoredFiles: [] },
+          cancellation: { requested: false },
+          phases: [], startedAt: '2026-01-01T00:00:00.000Z', completedAt: '2026-01-01T00:00:01.000Z', durationMs: 1000
+        },
+        tenantId, projectId
+      });
+    }
+
+    it('A+B: tenant A à 501 → 500 conservées ; tenant B à 501 → 500 conservées (indépendamment)', async () => {
+      const store = new AgentTraceStore({ persist: false });
+      for (let i = 0; i < AGENT_TRACE_MAX + 1; i++) {
+        store.record(makeBucketTrace('agx-a-' + i, 'tenant-a-cap', 'proj-a-cap'));
+      }
+      for (let i = 0; i < AGENT_TRACE_MAX + 1; i++) {
+        store.record(makeBucketTrace('agx-b-' + i, 'tenant-b-cap', 'proj-b-cap'));
+      }
+      assert.equal(store.query('tenant-a-cap', 'proj-a-cap').length, AGENT_TRACE_MAX, 'bucket A = 500');
+      assert.equal(store.query('tenant-b-cap', 'proj-b-cap').length, AGENT_TRACE_MAX, 'bucket B = 500');
+    });
+
+    it('C: la 501e trace de A n évince aucune trace de B', async () => {
+      const store = new AgentTraceStore({ persist: false });
+      // B d abord (une trace), puis A déborde, puis vérifier B intact
+      store.record(makeBucketTrace('agx-b-keep', 'tenant-b-cap', 'proj-b-cap'));
+      for (let i = 0; i < AGENT_TRACE_MAX + 1; i++) {
+        store.record(makeBucketTrace('agx-a-' + i, 'tenant-a-cap', 'proj-a-cap'));
+      }
+      assert.ok(store.get('tenant-b-cap', 'proj-b-cap', 'agx-b-keep'), 'la trace de B est intacte après débordement de A');
+    });
+
+    it('D+E: la plus ancienne de A est évincée, la plus récente conservée', async () => {
+      const store = new AgentTraceStore({ persist: false });
+      for (let i = 0; i < AGENT_TRACE_MAX + 1; i++) {
+        store.record(makeBucketTrace('agx-a-' + i, 'tenant-a-cap', 'proj-a-cap'));
+      }
+      assert.equal(store.get('tenant-a-cap', 'proj-a-cap', 'agx-a-0'), undefined, 'la plus ancienne évincée');
+      assert.ok(store.get('tenant-a-cap', 'proj-a-cap', 'agx-a-' + AGENT_TRACE_MAX), 'la plus récente conservée');
+    });
+
+    it('F: même comportement pour plusieurs projets d un même tenant', async () => {
+      const store = new AgentTraceStore({ persist: false });
+      for (let i = 0; i < AGENT_TRACE_MAX + 1; i++) {
+        store.record(makeBucketTrace('agx-p1-' + i, 'tenant-multi', 'proj-multi-1'));
+      }
+      for (let i = 0; i < 3; i++) {
+        store.record(makeBucketTrace('agx-p2-' + i, 'tenant-multi', 'proj-multi-2'));
+      }
+      assert.equal(store.query('tenant-multi', 'proj-multi-1').length, AGENT_TRACE_MAX, 'proj-1 borné à 500');
+      assert.equal(store.query('tenant-multi', 'proj-multi-2').length, 3, 'proj-2 intact (bucket distinct)');
+    });
+
+    it('G: upsert d une trace existante ne crée pas de doublon (cap isolé)', async () => {
+      const store = new AgentTraceStore({ persist: false });
+      for (let i = 0; i < AGENT_TRACE_MAX; i++) {
+        store.record(makeBucketTrace('agx-up-' + i, 'tenant-up', 'proj-up'));
+      }
+      assert.equal(store.query('tenant-up', 'proj-up').length, AGENT_TRACE_MAX);
+      // Upsert de la trace la plus récente : toujours 500, pas 501
+      store.record(makeBucketTrace('agx-up-' + (AGENT_TRACE_MAX - 1), 'tenant-up', 'proj-up'));
+      assert.equal(store.query('tenant-up', 'proj-up').length, AGENT_TRACE_MAX);
+    });
+
+    it('M: rétrocompatibilité — traces au format persistant existant lisibles', async () => {
+      const store = new AgentTraceStore({ persist: true });
+      const { trace } = await realTaskTrace('agx-e38s-m-retro');
+      store.record(trace);
+      // Le format persistant reste un tableau ExecutionTrace[] : une nouvelle
+      // instance lit l'existant sans migration.
+      const reloaded = new AgentTraceStore({ persist: true });
+      assert.deepEqual(reloaded.get(tenantId, projectId, 'agx-e38s-m-retro'), trace);
+    });
+
+    it('O: aucun node:fs ni backend nouveau — éviction purement en mémoire', () => {
+      const full = resolve(process.cwd(), 'packages/core/src/observability/agent-trace-store.ts');
+      assert.ok(existsSync(full));
+      const code = readFileSync(full, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+      assert.doesNotMatch(code, /node:fs/);
+      assert.ok(code.includes('enforceBucketCap'), 'éviction par bucket');
+      assert.ok(code.includes('slice(0, excess)'), 'éviction déterministe des plus anciennes');
+    });
   });
 
   // Protection contre mutation externe

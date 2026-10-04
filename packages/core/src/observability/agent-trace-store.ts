@@ -24,8 +24,11 @@
  * simultané tenant+projet à la lecture ET à l'écriture (upsert par clé
  * composée — même clé = remplacement, jamais de doublon).
  *
- * CAP : AGENT_TRACE_MAX = 500 — slice(-500) à l'écriture (les plus
- * récentes conservées, déterministe), même politique que AuditStore.
+ * CAP : AGENT_TRACE_MAX = 500 PAR couple tenantId+projectId — quand un
+ * bucket dépasse 500, seules les 500 plus récentes de CE bucket sont
+ * conservées (déterministe) ; une trace n'évince JAMAIS une trace d'un
+ * autre tenant/projet. Le format persistant (tableau ExecutionTrace[])
+ * est inchangé — rétrocompatible avec les documents existants.
  *
  * FAILURE-SAFE : aucun problème de persistance ne jette vers l'appelant ni
  * ne modifie le verdict contenu dans une trace.
@@ -95,10 +98,32 @@ export class AgentTraceStore {
     } else {
       this.traces.push(frozen);
     }
-    if (this.traces.length > AGENT_TRACE_MAX) {
-      this.traces = this.traces.slice(-AGENT_TRACE_MAX);
-    }
+    // ÉTAPE 39 Phase 5 — éviction ISOLÉE par bucket tenantId+projectId : une
+    // trace n'évince jamais une trace d'un autre tenant/projet.
+    this.enforceBucketCap(trace.tenantId, trace.projectId);
     this.persist();
+  }
+
+  /**
+   * ÉTAPE 39 Phase 5 — éviction déterministe PAR BUCKET : quand le bucket
+   * (tenantId+projectId) de la trace enregistrée dépasse AGENT_TRACE_MAX,
+   * seules les AGENT_TRACE_MAX plus récentes de CE bucket sont conservées
+   * (ordre d'insertion = ordre chronologique d'enregistrement). Les buckets
+   * des autres tenants/projets ne sont jamais touchés.
+   */
+  private enforceBucketCap(tenantId: string, projectId: string): void {
+    const bucketTenant = tenantId.trim();
+    const bucketProject = projectId.trim();
+    const bucketIndexes: number[] = [];
+    this.traces.forEach((t, index) => {
+      if (t.tenantId === bucketTenant && t.projectId === bucketProject) {
+        bucketIndexes.push(index);
+      }
+    });
+    const excess = bucketIndexes.length - AGENT_TRACE_MAX;
+    if (excess <= 0) return;
+    const evictIndexes = new Set(bucketIndexes.slice(0, excess));
+    this.traces = this.traces.filter((_, index) => !evictIndexes.has(index));
   }
 
   /** Lecture isolée : tenantId + projectId + executionId tous requis. */
