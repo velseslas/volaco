@@ -251,44 +251,12 @@ export class AgentRuntimeService {
     // Bind AINT-006 Preview Mutation if service is available
     if (this.mutationService) {
       this.toolRegistry.registerHandler('preview_mutation', async (input, ctx) => {
-        let plan = input.plan as import('../mutation-orchestrator/types.js').MutationPlan | undefined;
-        if (!plan || !plan.mutations) {
-          let baseGraphHash = 'mock-graph-hash';
-          if (this.semanticGraphService) {
-            try {
-              const g = this.semanticGraphService.buildGraph(
-                { tenantId: ctx.tenantId, projectId: ctx.projectId },
-                ctx.userRole,
-                ctx.requestId
-              );
-              baseGraphHash = g.graphHash;
-            } catch (err) {
-              logger.warn('Échec du calcul du hash du graphe sémantique — fallback sur valeur par défaut', {
-                component: 'agent-runtime',
-                tenantId: ctx.tenantId,
-                projectId: ctx.projectId,
-                err: err instanceof Error ? err.message : String(err)
-              });
-            }
-          }
-          const targetFiles = ((input.targetFiles || (input.plan as { targetFiles?: string[] })?.targetFiles) as string[]) ?? ['src/main.ts'];
-          plan = this.mutationService!.createPlan({
-            tenantId: ctx.tenantId,
-            projectId: ctx.projectId,
-            baseGraphHash,
-            mutations: targetFiles.map((path, idx) => ({
-              mutationId: `mut-${idx + 1}`,
-              kind: 'UPDATE_FILE' as const,
-              target: path,
-              preconditions: [],
-              operation: { path, content: '// preview\n' },
-              expectedOutcome: `Preview ${path}`,
-              evidence: []
-            }))
-          }, ctx.userRole, ctx.requestId);
+        const plan = input.plan as import('../mutation-orchestrator/types.js').MutationPlan | undefined;
+        if (!plan || !plan.mutations || plan.mutations.length === 0) {
+          throw new Error('MUTATION_UNSUPPORTED: le plan ne contient aucune modification de fichier concrète — le contenu doit être fourni par le plan');
         }
 
-        return this.mutationService?.previewPlan(
+        return this.mutationService!.previewPlan(
           plan,
           { dryRun: true, allowBreaking: true, allowHighRisk: true },
           ctx.userRole,
@@ -298,44 +266,12 @@ export class AgentRuntimeService {
 
       // Bind AINT-006 Execute Mutation
       this.toolRegistry.registerHandler('execute_mutation', async (input, ctx) => {
-        let plan = input.plan as import('../mutation-orchestrator/types.js').MutationPlan | undefined;
-        if (!plan || !plan.mutations) {
-          let baseGraphHash = 'mock-graph-hash';
-          if (this.semanticGraphService) {
-            try {
-              const g = this.semanticGraphService.buildGraph(
-                { tenantId: ctx.tenantId, projectId: ctx.projectId },
-                ctx.userRole,
-                ctx.requestId
-              );
-              baseGraphHash = g.graphHash;
-            } catch (err) {
-              logger.warn('Échec du calcul du hash du graphe sémantique — fallback sur valeur par défaut', {
-                component: 'agent-runtime',
-                tenantId: ctx.tenantId,
-                projectId: ctx.projectId,
-                err: err instanceof Error ? err.message : String(err)
-              });
-            }
-          }
-          const targetFiles = ((input.targetFiles || (input.plan as { targetFiles?: string[] })?.targetFiles) as string[]) ?? ['src/main.ts'];
-          plan = this.mutationService!.createPlan({
-            tenantId: ctx.tenantId,
-            projectId: ctx.projectId,
-            baseGraphHash,
-            mutations: targetFiles.map((path, idx) => ({
-              mutationId: `mut-${idx + 1}`,
-              kind: 'UPDATE_FILE' as const,
-              target: path,
-              preconditions: [],
-              operation: { path, content: '// update\n' },
-              expectedOutcome: `Update ${path}`,
-              evidence: []
-            }))
-          }, ctx.userRole, ctx.requestId);
+        const plan = input.plan as import('../mutation-orchestrator/types.js').MutationPlan | undefined;
+        if (!plan || !plan.mutations || plan.mutations.length === 0) {
+          throw new Error('MUTATION_UNSUPPORTED: le plan ne contient aucune modification de fichier concrète — le contenu doit être fourni par le plan');
         }
 
-        return this.mutationService?.executePlan(
+        return this.mutationService!.executePlan(
           plan,
           { dryRun: false, allowBreaking: true, allowHighRisk: true },
           ctx.userRole,

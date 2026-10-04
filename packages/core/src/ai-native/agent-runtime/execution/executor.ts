@@ -66,41 +66,30 @@ export class PlanExecutor {
 
         try {
           let planPayload = step.parameters.plan as MutationPlan | undefined;
-          if (!planPayload || !planPayload.mutations) {
-            let baseGraphHash = 'mock-graph-hash';
-            if (this.semanticGraphService) {
-              try {
-                const g = this.semanticGraphService.buildGraph(
-                  { tenantId: context.tenantId, projectId: context.projectId },
-                  context.userRole,
-                  context.requestId
-                );
-                baseGraphHash = g.graphHash;
-              } catch (err) {
-                logger.warn('Échec du calcul du hash du graphe de plan — fallback sur valeur par défaut', {
-                  component: 'plan-executor',
-                  err: err instanceof Error ? err.message : String(err)
-                });
-              }
-            }
 
-            const isDelete = plan.goal.toLowerCase().includes('supprimer') || plan.goal.toLowerCase().includes('delete') || plan.risks.some((r) => r.includes('Perte') || r.includes('Suppression'));
-            const kind = isDelete ? ('DELETE_FILE' as const) : ('UPDATE_FILE' as const);
-
-            planPayload = this.mutationService.createPlan({
-              tenantId: context.tenantId,
-              projectId: context.projectId,
-              baseGraphHash,
-              mutations: plan.expectedChanges.map((path, idx) => ({
-                mutationId: `mut-${idx + 1}`,
-                kind,
-                target: path,
-                preconditions: [],
-                operation: { path, content: isDelete ? undefined : '// updated by agent runtime\n' },
-                expectedOutcome: isDelete ? `Delete ${path}` : `Update ${path}`,
-                evidence: []
-              }))
-            }, context.userRole, context.requestId);
+          // É29/PROBLÈME A — plus JAMAIS de contenu fabriqué : si le plan ne
+          // contient pas de modifications de fichier concrètes, la mutation
+          // est NON SUPPORTÉE (échec explicite). Auparavant, l'exécuteur
+          // fabriquait '// updated by agent runtime\n' et écrasait le fichier
+          // cible avec ce placeholder — un faux succès de mutation réelle.
+          if (!planPayload || !planPayload.mutations || planPayload.mutations.length === 0) {
+            const unsupported = 'MUTATION_UNSUPPORTED: le plan ne contient aucune modification de fichier concrète (le contenu des mutations doit être fourni par le plan — génération de contenu à venir)';
+            const failedStep: AgentStep = {
+              id: step.id,
+              index: step.index,
+              description: step.description,
+              tool: step.tool,
+              parameters: step.parameters,
+              expectedOutput: step.expectedOutput,
+              status: 'FAILED',
+              error: unsupported
+            };
+            executedSteps.push(failedStep);
+            return {
+              success: false,
+              executedSteps,
+              error: unsupported
+            };
           }
 
           const mutResult = await this.mutationService.executePlan(

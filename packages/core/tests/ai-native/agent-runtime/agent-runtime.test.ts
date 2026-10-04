@@ -30,7 +30,9 @@ import {
   ForbiddenError,
   NotFoundError,
   ValidationError,
-  type AgentRun
+  type AgentRun,
+  type MutationPlan,
+  type ToolExecutionContext
 } from '../../../src/index.js';
 
 describe('AINT-007 : LLM / Agent Runtime Unit & Integration Tests', () => {
@@ -525,7 +527,7 @@ describe('AINT-007 : LLM / Agent Runtime Unit & Integration Tests', () => {
   // BLOC I — MUTATION & AINT-006 INTEGRATION (4 tests)
   // =========================================================================
   describe('I. Mutation Orchestration Integration (AINT-006 Only)', () => {
-    it('I.1 doit exécuter une mutation via le runtime en déléguant à AINT-006', async () => {
+    it('I.1 É29 : plan template sans contenu concret → run FAILED, JAMAIS COMPLETED (aucun faux succès)', async () => {
       const run = await runtime.startRun({
         tenantId: 'tenant-1',
         projectId: 'proj-1',
@@ -534,10 +536,80 @@ describe('AINT-007 : LLM / Agent Runtime Unit & Integration Tests', () => {
         autoExecutePlan: true
       });
 
-      assert.strictEqual(run.state, 'COMPLETED');
+      // Contrat honnête É29 : le plan template ne porte aucune mutation concrète
+      // → exécution refusée (MUTATION_UNSUPPORTED), run FAILED.
+      assert.strictEqual(run.state, 'FAILED');
+      assert.match(run.error ?? '', /MUTATION_UNSUPPORTED/);
       assert.ok(run.plan);
       const execStep = run.plan.steps.find((s) => s.tool === 'execute_mutation');
       assert.ok(execStep);
+
+      // Aucune écriture : le fichier cible doit être strictement inchangé.
+      const untouched = fileSource.getFile('tenant-1', 'proj-1', 'src/main.ts');
+      assert.ok(untouched);
+      assert.match(untouched.content, /export const sum = add\(1, 2\);/);
+      assert.doesNotMatch(untouched.content, /updated by agent runtime/);
+    });
+
+    it('I.1-bis É29 : une VRAIE mutation (plan concret) exécutée via le runtime retourne success ET écrit le fichier', async () => {
+      const registry = runtime.getToolRegistry();
+      const context: ToolExecutionContext = {
+        tenantId: 'tenant-1',
+        projectId: 'proj-1',
+        runId: 'run-e29-real',
+        userRole: 'ENGINEER'
+      };
+
+      // Le hash de graphe doit être RÉEL (garde anti-obsolescence STALE_MUTATION_PLAN d'AINT-006)
+      const graph = graphService.buildGraph({ tenantId: 'tenant-1', projectId: 'proj-1' }, 'ENGINEER');
+      const concretePlan: MutationPlan = {
+        schemaVersion: '1.0.0',
+        planId: 'plan-e29-real-1',
+        tenantId: 'tenant-1',
+        projectId: 'proj-1',
+        createdAt: new Date().toISOString(),
+        baseGraphHash: graph.graphHash,
+        mutations: [
+          {
+            mutationId: 'm-e29-1',
+            kind: 'CREATE_FILE',
+            target: 'src/e29-real.ts',
+            preconditions: [
+              { kind: 'FILE_NOT_EXISTS', target: 'src/e29-real.ts', description: 'le fichier ne doit pas encore exister' }
+            ],
+            operation: { path: 'src/e29-real.ts', content: 'export const e29Real = true;\n' },
+            expectedOutcome: 'src/e29-real.ts créé avec le contenu fourni',
+            evidence: [{ kind: 'AST_EXPORT', source: 'test', detail: 'mutation de test É29' }]
+          }
+        ],
+        expectedChanges: ['src/e29-real.ts'],
+        riskLevel: 'LOW',
+        validationStatus: 'VALIDATED',
+        planHash: 'hash-e29'
+      };
+
+      const res = await registry.execute('execute_mutation', { plan: concretePlan }, context);
+
+      assert.strictEqual(res.success, true, 'une vraie mutation exécutée retourne success');
+      const written = fileSource.getFile('tenant-1', 'proj-1', 'src/e29-real.ts');
+      assert.ok(written, 'le fichier doit être réellement écrit par la mutation');
+      assert.match(written.content, /export const e29Real = true;/);
+    });
+
+    it('I.1-ter É29 : execute_mutation sans plan concret ne retourne JAMAIS success', async () => {
+      const registry = runtime.getToolRegistry();
+      const context: ToolExecutionContext = {
+        tenantId: 'tenant-1',
+        projectId: 'proj-1',
+        runId: 'run-e29-unsup',
+        userRole: 'ENGINEER'
+      };
+
+      const res = await registry.execute('execute_mutation', { plan: { targetFiles: ['src/x.ts'] } }, context);
+
+      assert.strictEqual(res.success, false, 'unsupported ne doit jamais être success');
+      assert.match(res.error ?? '', /MUTATION_UNSUPPORTED/);
+      assert.equal(fileSource.getFile('tenant-1', 'proj-1', 'src/x.ts'), null, 'rien ne doit être écrit');
     });
 
     it('I.2 doit respecter l impact gate avant toute exécution de mutation', async () => {
@@ -565,7 +637,7 @@ describe('AINT-007 : LLM / Agent Runtime Unit & Integration Tests', () => {
       assert.ok(preview.plan);
     });
 
-    it('I.4 doit exécuter le plan après confirmation utilisateur explicite', async () => {
+    it('I.4 É29 : confirmation utilisateur → le vrai résultat remonte (FAILED + MUTATION_UNSUPPORTED, fichier non supprimé)', async () => {
       const run = await runtime.startRun({
         tenantId: 'tenant-1',
         projectId: 'proj-1',
@@ -586,7 +658,14 @@ describe('AINT-007 : LLM / Agent Runtime Unit & Integration Tests', () => {
         'proj-1'
       );
 
-      assert.strictEqual(continued.state, 'COMPLETED');
+      // Contrat honnête É29 : le plan template n'a pas de mutation concrète
+      // → le vrai résultat (échec explicite) remonte tel quel à l'appelant.
+      assert.strictEqual(continued.state, 'FAILED');
+      assert.match(continued.error ?? '', /MUTATION_UNSUPPORTED/);
+      assert.ok(
+        fileSource.getFile('tenant-1', 'proj-1', 'src/utils.ts') !== null,
+        'le fichier ne doit PAS être supprimé puisque rien n a été exécuté'
+      );
     });
   });
 

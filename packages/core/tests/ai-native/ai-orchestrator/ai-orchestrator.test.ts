@@ -26,6 +26,7 @@ import {
   type AgentArtifact,
   type AgentConflict,
   type EngineeringTaskGraph,
+  MutationOrchestratorService,
   type OrchestrationRun,
   type TaskContextPayload,
   type EngineeringPlan,
@@ -1395,7 +1396,7 @@ describe('AINT-010 — AI Orchestrator & Engineering Agent Orchestrator', () => 
       assert.equal(res.appliedCount, 0);
     });
 
-    it('60. doit fonctionner en mode mock/déterministe sans mutationService', async () => {
+    it('60. É29 : sans mutationService, échec explicite — JAMAIS de faux succès mock', async () => {
       const bridge = new MutationBridge();
       const artifacts: AgentArtifact[] = [
         {
@@ -1419,9 +1420,11 @@ describe('AINT-010 — AI Orchestrator & Engineering Agent Orchestrator', () => 
         projectId
       });
 
-      assert.equal(res.success, true);
-      assert.equal(res.appliedCount, 1);
-      assert.ok(res.transactionId?.startsWith('mock-tx-'));
+      // Contrat honnête É29 : rien n'a été écrit → success:false + MUTATION_UNSUPPORTED.
+      assert.equal(res.success, false);
+      assert.equal(res.appliedCount, 0);
+      assert.match(res.error ?? '', /MUTATION_UNSUPPORTED/);
+      assert.ok(!res.transactionId, 'aucun faux transactionId mock ne doit être généré');
     });
 
     it('61. doit mapper fidèlement les opérations CREATE, UPDATE et DELETE', async () => {
@@ -1834,10 +1837,45 @@ describe('AINT-010 — AI Orchestrator & Engineering Agent Orchestrator', () => 
     let service: AIOrchestratorService;
 
     beforeEach(() => {
-      service = new AIOrchestratorService(
+      // É29 — production-like : un VRAI service de mutation (source en mémoire)
+    const memoryFiles: Record<string, string> = {
+      'src/App.tsx': 'export default function App() { return <div/>; }'
+    };
+    const memSource = {
+      getFile: (tenantId: string, projectId: string, filePath: string) =>
+        memoryFiles[filePath] !== undefined
+          ? { path: filePath, name: filePath, content: memoryFiles[filePath], sizeBytes: memoryFiles[filePath].length, updatedAt: new Date() }
+          : null,
+      getAllProjectFiles: (tenantId: string, projectId: string) => ({ ...memoryFiles }),
+      computeTreeHash: (tenantId: string, projectId: string) => 'mem-hash-' + Object.keys(memoryFiles).length,
+      createFile: (tenantId: string, projectId: string, filePath: string, content: string) => {
+        memoryFiles[filePath] = content;
+      },
+      updateFile: (tenantId: string, projectId: string, filePath: string, content: string) => {
+        if (memoryFiles[filePath] === undefined) throw new Error(`FILE_NOT_FOUND: ${filePath}`);
+        memoryFiles[filePath] = content;
+      },
+      deleteFile: (tenantId: string, projectId: string, filePath: string) =>
+        delete memoryFiles[filePath],
+      renameFile: (tenantId: string, projectId: string, oldPath: string, newPath: string) => {
+        if (memoryFiles[oldPath] === undefined) throw new Error(`FILE_NOT_FOUND: ${oldPath}`);
+        memoryFiles[newPath] = memoryFiles[oldPath];
+        delete memoryFiles[oldPath];
+      },
+      moveFile: (tenantId: string, projectId: string, oldPath: string, newPath: string) => {
+        if (memoryFiles[oldPath] === undefined) throw new Error(`FILE_NOT_FOUND: ${oldPath}`);
+        memoryFiles[newPath] = memoryFiles[oldPath];
+        delete memoryFiles[oldPath];
+      },
+      cloneState: (tenantId: string, projectId: string) => ({ ...memoryFiles })
+    };
+    const mutationOrchestrator = new MutationOrchestratorService(
+      memSource as import('../../../src/ai-native/mutation-orchestrator/filesystem/adapter.js').IMutableFileSource
+    );
+    service = new AIOrchestratorService(
         undefined, // understanding
         undefined, // impact
-        undefined, // mutation
+        mutationOrchestrator, // mutation — RÉEL (É29)
         undefined, // dna
         undefined, // graph
         undefined, // provider

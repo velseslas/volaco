@@ -39,11 +39,13 @@ export class MutationBridge {
     }
 
     if (!this.mutationService) {
-      // Mock / Verification mode: mutations prepared without physical disk write
+      // É29/PROBLÈME B — plus JAMAIS de mock-tx « succès » : sans service de
+      // mutation, l'opération est NON SUPPORTÉE (échec explicite remonté à
+      // l'orchestrateur, qui marquera les tâches en échec).
       return {
-        success: true,
-        transactionId: `mock-tx-${Date.now().toString(36)}`,
-        appliedCount: fileChanges.length
+        success: false,
+        appliedCount: 0,
+        error: 'MUTATION_UNSUPPORTED: service de mutation (AINT-006) non configuré'
       };
     }
 

@@ -726,6 +726,64 @@ describe('AINT-009 — Conversation Intelligence & Human-AI Engineering Engine',
       assert.equal(bridge.canExecute(plan, 'WAITING_CONFIRMATION'), true);
       assert.equal(bridge.canExecute(plan, 'EXECUTING'), true);
     });
+
+    it('J3 É29 : un run COMPLETED sans mutation exécutée alors que le plan demande des fichiers → JAMAIS success', async () => {
+      // Runtime RÉEL (memSource + vrai AINT-006) : le runtime replanifie son
+      // propre plan template et peut finir COMPLETED sans avoir écrit quoi que
+      // ce soit. Le pont doit détecter ce faux succès et remonter un échec
+      // explicite (MUTATION_UNSUPPORTED), jamais success:true.
+      const { InMemoryMutableFileSource, CodeIntelligenceService, ApplicationDNAService, ContextAssemblyService, SemanticCodeGraphService, ImpactIntelligenceService, MutationOrchestratorService, AgentRuntimeService, MockLLMProvider } = await import('../../../src/index.js');
+      const fileSource = new InMemoryMutableFileSource({
+        'tenant_corp_alpha:proj_ecommerce_v1': {
+          'src/keep.ts': 'export const keep = 1;\n'
+        }
+      });
+      const codeIntel = new CodeIntelligenceService(fileSource);
+      const dna = new ApplicationDNAService(codeIntel);
+      const ctxAsm = new ContextAssemblyService(codeIntel, dna, fileSource);
+      const graph = new SemanticCodeGraphService(codeIntel, dna, fileSource);
+      const impact = new ImpactIntelligenceService(graph);
+      const mutationService = new MutationOrchestratorService(fileSource, codeIntel, dna, graph, impact);
+      const runtime = new AgentRuntimeService(mutationService, codeIntel, dna, ctxAsm, graph, impact, new MockLLMProvider({ simulatedLatencyMs: 0 }));
+      const realBridge = new ExecutionBridge(runtime, mutationService);
+
+      const plan: EngineeringPlan = {
+        planId: 'p-e29-fileops',
+        title: 'Ajout module facturation',
+        summary: 'Analyse de la structure du projet',
+        planHash: 'h-e29',
+        status: 'APPROVED',
+        steps: [
+          { stepIndex: 0, title: 'Analyse', description: 'Analyser', operation: 'ANALYZE', requiresApproval: false },
+          { stepIndex: 1, title: 'Création', description: 'Créer src/billing.ts', targetFiles: ['src/billing.ts'], operation: 'CREATE', requiresApproval: false }
+        ]
+      };
+
+      const session: ConversationSession = {
+        sessionId: 'sess-e29-j3',
+        conversationId: 'conv-e29-j3',
+        tenantId,
+        projectId,
+        currentState: 'WAITING_CONFIRMATION',
+        turns: [],
+        activeAssumptions: [],
+        activeDecisions: [],
+        applicationSnapshot: { treeHash: 't', graphHash: 'g', generatedAt: new Date().toISOString() },
+        projectMemory: { goals: [], architecturalDecisions: [], learnedPreferences: [], glossary: [] },
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      } as unknown as ConversationSession;
+
+      const res = await realBridge.executePlan(plan, session, 'OWNER');
+
+      assert.equal(res.success, false, 'un run sans mutation exécutée ne doit PAS valider un plan demandant des écritures');
+      assert.match(res.error ?? '', /MUTATION_UNSUPPORTED/);
+      assert.equal(
+        fileSource.getFile('tenant_corp_alpha', 'proj_ecommerce_v1', 'src/billing.ts'),
+        null,
+        'aucun fichier ne doit être écrit'
+      );
+    });
   });
 
   // ============================================================================
@@ -869,15 +927,18 @@ describe('AINT-009 — Conversation Intelligence & Human-AI Engineering Engine',
       assert.equal(confirmedSession.activePlan?.status, 'APPROVED');
 
       // Turn 3: Execute approved plan
+      // Contrat honnête É29 : sans Agent Runtime câblé, RIEN n'est exécuté —
+      // le pont remonte un échec explicite (MUTATION_UNSUPPORTED), jamais un succès déclaratif.
       const execResult = await service.executeApprovedPlan({
         tenantId,
         projectId,
         sessionId: session.sessionId
       });
 
-      assert.equal(execResult.executionResult.success, true);
-      assert.equal(execResult.session.currentState, 'VALIDATING');
-      assert.equal(execResult.session.activePlan?.status, 'EXECUTED');
+      assert.equal(execResult.executionResult.success, false);
+      assert.match(execResult.executionResult.error ?? '', /MUTATION_UNSUPPORTED/);
+      assert.equal(execResult.session.currentState, 'FAILED');
+      assert.equal(execResult.session.activePlan?.status, 'FAILED');
 
       // Check traces recorded
       const traces = service.getTraces(session.sessionId);
