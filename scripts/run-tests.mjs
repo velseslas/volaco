@@ -57,7 +57,10 @@ if (srcNewest > distTime) {
 }
 
 const args = process.argv.slice(2).length > 0 ? process.argv.slice(2) : ['dist/**/*.test.js'];
-const result = spawnSync('node', ['--test', ...args], {
+// Sérialisation des fichiers de test : les stores persistants partagés
+// (agent-execution-traces) ne supportent pas l'écriture concurrente des
+// process sans éviction non déterministe (cap 500).
+const result = spawnSync('node', ['--test', '--test-concurrency=1', ...args], {
   stdio: 'inherit',
   env: process.env,
   shell: process.platform === 'win32'

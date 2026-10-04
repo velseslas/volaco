@@ -180,6 +180,49 @@ export async function handleAgentExecutionRoutes(
     return true;
   }
 
+  // ÉTAPE 39 Phase 3 — détail corrélé d'un batch : la trace BATCH stockée +
+  // les traces TASK stockées corrélées (batchExecutionId + taskExecutionId).
+  // Branchée AVANT la branche GET détail (sinon '/tasks' serait capturé par
+  // includes('/agents/executions/')). Lecture PURE : aucune fabrication —
+  // les tâches jamais exécutées (BLOCKED/PENDING) restent sans trace TASK
+  // et sont listées dans tasksWithoutTrace depuis la trace BATCH.
+  if (pathname.includes('/agents/executions/') && pathname.endsWith('/tasks') && req.method === 'GET') {
+    assertPermission(context.role, 'PROJECT_READ', requestId);
+    const parts = pathname.split('/');
+    const projectId = parts[4];
+    const executionId = parts[7] ? decodeURIComponent(parts[7]) : '';
+    if (!projectId || !executionId) {
+      sendJson(res, 400, { message: 'projectId et executionId obligatoires', requestId });
+      return true;
+    }
+    console.error('[DBG-ROUTE] tenant:', context.tenantId, '| project:', projectId, '| exec:', executionId, '| query count:', agentTraceStore.query(context.tenantId, projectId).length, '| get:', JSON.stringify(!!agentTraceStore.get(context.tenantId, projectId, executionId)));
+    const batch = agentTraceStore.get(context.tenantId, projectId, executionId);
+    if (!batch || batch.kind !== 'BATCH') {
+      // 404 canonique identique : inexistant / autre tenant / autre projet /
+      // ce n'est pas un batch — aucune information ne fuit.
+      throw new NotFoundError(`Trace de batch '${executionId}'`, requestId);
+    }
+    const allTraces = agentTraceStore.query(context.tenantId, projectId);
+    const batchTasks = batch.tasks ?? [];
+    const expectedTaskIds = new Set(batchTasks.map((t) => t.taskExecutionId));
+    const taskTraces = allTraces.filter((t) =>
+      t.kind === 'TASK' &&
+      t.batchExecutionId === executionId &&
+      expectedTaskIds.has(t.executionId)
+    );
+    const tracedIds = new Set(taskTraces.map((t) => t.executionId));
+    const tasksWithoutTrace = batchTasks
+      .filter((t) => !tracedIds.has(t.taskExecutionId))
+      .map((t) => ({
+        taskId: t.taskId,
+        taskExecutionId: t.taskExecutionId,
+        status: t.status,
+        ...(t.blockedReason !== undefined ? { blockedReason: t.blockedReason } : {})
+      }));
+    sendJson(res, 200, { batch, taskTraces, tasksWithoutTrace, requestId });
+    return true;
+  }
+
   // ÉTAPE 38 Phase 6 — consultation GET : évaluée AVANT le match générique
   // '/agents/execute' (qui contiendrait sinon le préfixe '/agents/executions').
   // Lecture PURE : agentTraceStore.get(...) uniquement — aucun recalcul de
