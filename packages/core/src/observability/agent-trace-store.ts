@@ -120,3 +120,6 @@ export class AgentTraceStore {
     this.persist();
   }
 }
+
+/** Singleton de production — persistance réelle (même convention qu'auditStore). */
+export const agentTraceStore = new AgentTraceStore({ persist: true });

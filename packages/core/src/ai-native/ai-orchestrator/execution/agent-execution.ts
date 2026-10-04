@@ -17,6 +17,8 @@
 
 import { deepFreeze } from '../canonical.js';
 import { auditStore } from '../../../observability/audit.js';
+import { agentTraceStore } from '../../../observability/agent-trace-store.js';
+import { buildTaskTrace } from './trace.js';
 import type { Role } from '../../../identity/permissions.js';
 import { assertPermission } from '../../../identity/permissions.js';
 import type { IReadOnlyFileSource } from '../../understanding/types.js';
@@ -299,6 +301,20 @@ export class AgentExecutionService {
         },
         requestId: request.requestId || 'req_agent_execution'
       });
+
+      // ÉTAPE 38 Phase 4 — la trace est une PROJECTION de l'outcome réel
+      // (verdict déjà déterminé ci-dessus) : buildTaskTrace n'invente rien et
+      // l'enregistrement est FAILURE-SAFE — un échec du store ne peut ni
+      // modifier l'outcome/le verdict, ni faire échouer l'exécution.
+      try {
+        agentTraceStore.record(
+          buildTaskTrace({ outcome, tenantId: request.tenantId, projectId: request.projectId })
+        );
+      } catch {
+        // L'observabilité ne doit jamais transformer un verdict ni faire
+        // échouer la requête métier.
+      }
+
       return deepFreeze(outcome);
     };
 
