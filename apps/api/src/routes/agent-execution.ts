@@ -128,6 +128,58 @@ export async function handleAgentExecutionRoutes(
   req: IncomingMessage, res: ServerResponse, pathname: string,
   context: RequestContext, requestId: string
 ): Promise<boolean> {
+  // ÉTAPE 39 Phase 2 — liste des exécutions persistées du projet (LECTURE PURE).
+  // Convention activity.ts : ?limit=N (taille de RÉPONSE — le cap de
+  // rétention du store reste 500 et n'est pas modifié) et order=ASC|DESC
+  // (défaut DESC). Tri sur startedAt (timestamp réel de ExecutionTrace),
+  // tie-breaker déterministe executionId. Filtres = AND logique.
+  if (pathname.endsWith('/agents/executions') && req.method === 'GET') {
+    assertPermission(context.role, 'PROJECT_READ', requestId);
+    const parts = pathname.split('/');
+    const projectId = parts[4];
+    if (!projectId) {
+      sendJson(res, 400, { message: 'projectId manquant', requestId });
+      return true;
+    }
+    const host = req.headers.host || 'localhost';
+    const url = new URL(req.url || '/', `http://${host}`);
+    const kindParam = url.searchParams.get('kind');
+    const statusParam = url.searchParams.get('status');
+    const agentIdParam = url.searchParams.get('agentId');
+    const limitParam = url.searchParams.get('limit');
+    const order = url.searchParams.get('order') === 'ASC' ? 'ASC' : 'DESC';
+
+    const VALID_KINDS = ['TASK', 'BATCH'];
+    if (kindParam !== null && !VALID_KINDS.includes(kindParam)) {
+      throw new ValidationError(`kind invalide '${kindParam}' (valeurs : TASK, BATCH)`, undefined, requestId);
+    }
+    let limit: number | undefined;
+    if (limitParam !== null) {
+      limit = parseInt(limitParam, 10);
+      if (!Number.isFinite(limit) || limit <= 0) {
+        throw new ValidationError(`limit invalide '${limitParam}' (entier positif attendu)`, undefined, requestId);
+      }
+    }
+
+    // Lecture PURE via le store existant — filtres = AND logique, appliqués
+    // en mémoire (cap 500) ; aucun verdict calculé, les statuts proviennent
+    // des traces stockées telles quelles.
+    let items = agentTraceStore.query(context.tenantId, projectId);
+    if (kindParam !== null) items = items.filter((t) => t.kind === kindParam);
+    if (statusParam !== null) items = items.filter((t) => t.status === statusParam);
+    if (agentIdParam !== null) items = items.filter((t) => t.agentId === agentIdParam);
+    items = items.sort((a, b) => {
+      const timeCmp = a.startedAt.localeCompare(b.startedAt);
+      if (timeCmp !== 0) return timeCmp;
+      return a.executionId < b.executionId ? -1 : a.executionId > b.executionId ? 1 : 0;
+    });
+    if (order === 'DESC') items = items.reverse();
+    if (limit !== undefined) items = items.slice(0, limit);
+
+    sendJson(res, 200, { items, count: items.length, requestId });
+    return true;
+  }
+
   // ÉTAPE 38 Phase 6 — consultation GET : évaluée AVANT le match générique
   // '/agents/execute' (qui contiendrait sinon le préfixe '/agents/executions').
   // Lecture PURE : agentTraceStore.get(...) uniquement — aucun recalcul de

@@ -8,6 +8,19 @@
  */
 
 process.env.VOLACO_EXECUTION_TIMELINE = 'off';
+// ISOLATION (infra de test) : répertoire de persistance NEUF — sinon le
+// singleton persist:true partage le répertoire de toute la suite et le cap
+// 500 évince des traces selon l'ordre des fichiers (les tests D/E de
+// reconstruction deviennent non déterministes). Assertions inchangées.
+// ÉTAPE 38 Phase 6 — reconstruction : le singleton agentTraceStore a figé
+// son chemin de persistance À L'IMPORT (répertoire de la suite) ; les tests
+// de reconstruction épinglent donc ce répertoire-là, pas un autre.
+const singletonDataDir = process.env.VOLACO_DATA_DIR;
+function pinDataDir(): () => void {
+  const previous = process.env.VOLACO_DATA_DIR;
+  process.env.VOLACO_DATA_DIR = singletonDataDir;
+  return () => { process.env.VOLACO_DATA_DIR = previous; };
+}
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -127,25 +140,35 @@ describe('ÉTAPE 38 Phase 6 — GET /agents/executions/:executionId', () => {
   // D — TASK persistant (le GET reflète le store persistant)
   it('D: reconstruction du store persistant → la trace reste consultable et identique', async () => {
     // Nouvelle instance sur le MÊME répertoire de données (persistance réelle)
-    const reloaded = new AgentTraceStore({ persist: true });
-    const reloadedTrace = reloaded.get(tenant, projectId, taskExecutionId);
-    assert.ok(reloadedTrace, 'trace persistée retrouvée après reconstruction');
-    const res = await fetch(getUrl(taskExecutionId), { headers: getHeaders() });
-    const body = await res.json() as { trace: Record<string, unknown> };
-    assert.deepEqual(
-      JSON.parse(JSON.stringify(body.trace)),
-      JSON.parse(JSON.stringify(reloadedTrace)),
-      'GET = contenu du store persistant reconstruit'
-    );
+    const restore = pinDataDir();
+    try {
+      const reloaded = new AgentTraceStore({ persist: true });
+      const reloadedTrace = reloaded.get(tenant, projectId, taskExecutionId);
+      assert.ok(reloadedTrace, 'trace persistée retrouvée après reconstruction');
+      const res = await fetch(getUrl(taskExecutionId), { headers: getHeaders() });
+      const body = await res.json() as { trace: Record<string, unknown> };
+      assert.deepEqual(
+        JSON.parse(JSON.stringify(body.trace)),
+        JSON.parse(JSON.stringify(reloadedTrace)),
+        'GET = contenu du store persistant reconstruit'
+      );
+    } finally {
+      restore();
+    }
   });
 
   // E — BATCH persistant
   it('E: trace BATCH persistante retrouvée après reconstruction', async () => {
-    const reloaded = new AgentTraceStore({ persist: true });
-    const reloadedBatch = reloaded.get(tenant, projectId, batchExecutionId);
-    assert.ok(reloadedBatch);
-    assert.equal(reloadedBatch.kind, 'BATCH');
-    assert.equal(reloadedBatch.tasks?.length, 2);
+    const restore = pinDataDir();
+    try {
+      const reloaded = new AgentTraceStore({ persist: true });
+      const reloadedBatch = reloaded.get(tenant, projectId, batchExecutionId);
+      assert.ok(reloadedBatch);
+      assert.equal(reloadedBatch.kind, 'BATCH');
+      assert.equal(reloadedBatch.tasks?.length, 2);
+    } finally {
+      restore();
+    }
   });
 
   // F — exécution inexistante → 404
@@ -238,15 +261,20 @@ describe('ÉTAPE 38 Phase 6 — GET /agents/executions/:executionId', () => {
 
   // P — 404 sans fuite (couvert en G) + S — isolation après reconstruction
   it('S: isolation après reconstruction du store persistant', async () => {
-    const reloaded = new AgentTraceStore({ persist: true });
-    // Le tenant voisin ne voit rien
-    assert.equal(reloaded.get('tenant_p6_autre', projectId, taskExecutionId), undefined);
-    assert.equal(reloaded.query('tenant_p6_autre', projectId).length, 0);
-    // Le tenant légitime voit ses deux traces (TASK + BATCH)
-    // Le test L+M a exécuté un second batch sur le même tenant/projet :
-    // au moins 1 trace BATCH, chacune retrouvée par executionId.
-    assert.ok(reloaded.query(tenant, projectId).filter((t) => t.kind === 'BATCH').length >= 1);
-    assert.equal(reloaded.query(tenant, projectId).filter((t) => t.executionId === taskExecutionId).length, 1);
+    const restore = pinDataDir();
+    try {
+      const reloaded = new AgentTraceStore({ persist: true });
+      // Le tenant voisin ne voit rien
+      assert.equal(reloaded.get('tenant_p6_autre', projectId, taskExecutionId), undefined);
+      assert.equal(reloaded.query('tenant_p6_autre', projectId).length, 0);
+      // Le tenant légitime voit ses traces (TASK + BATCH)
+      // Le test L+M a exécuté un second batch sur le même tenant/projet :
+      // au moins 1 trace BATCH, chacune retrouvée par executionId.
+      assert.ok(reloaded.query(tenant, projectId).filter((t) => t.kind === 'BATCH').length >= 1);
+      assert.equal(reloaded.query(tenant, projectId).filter((t) => t.executionId === taskExecutionId).length, 1);
+    } finally {
+      restore();
+    }
   });
 
   // Inspection : lecture pure, aucun verdict fabriqué, aucun node:fs dans la branche GET
