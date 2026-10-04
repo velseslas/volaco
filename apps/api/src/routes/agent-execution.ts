@@ -45,10 +45,91 @@ interface AgentExecuteBody {
   };
 }
 
+
+/** ÉTAPE 37 — route batch minimale (LE MÊME scheduler / AgentExecutionService). */
+interface BatchTaskBody {
+  taskId?: string;
+  agentId?: string;
+  dependencies?: string[];
+  order?: number;
+  task?: { title?: string; description?: string; operation?: string; targetFiles?: string[]; requiredCapabilities?: string[] };
+}
+
+async function handleBatch(
+  req: IncomingMessage, res: ServerResponse, pathname: string,
+  context: RequestContext, requestId: string
+): Promise<boolean> {
+  assertPermission(context.role, 'PROJECT_READ', requestId);
+  if (!orchestratorRef) {
+    sendJson(res, 503, { message: 'AIOrchestratorService non configure', requestId });
+    return true;
+  }
+  const parts = pathname.split('/');
+  const projectId = parts[4];
+  if (!projectId) { sendJson(res, 400, { message: 'projectId manquant', requestId }); return true; }
+  const bodyText = await readBody(req);
+  let body: { executionId?: string; maxConcurrency?: number; repair?: boolean; tasks?: BatchTaskBody[] };
+  try { body = bodyText ? JSON.parse(bodyText) : {}; }
+  catch { throw new ValidationError('JSON invalide', undefined, requestId); }
+  if (!Array.isArray(body.tasks) || body.tasks.length === 0) {
+    sendJson(res, 400, { message: 'tasks obligatoire (au moins une tâche)', requestId });
+    return true;
+  }
+  const executionId = (body.executionId && body.executionId.trim()) || `agxb-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    const tasks = body.tasks.map((t, idx) => {
+      const taskBody = t.task;
+      const taskId = String(t.taskId || `task-${idx + 1}`);
+      return {
+        taskId,
+        agentId: String(t.agentId || ''),
+        dependencies: Array.isArray(t.dependencies) ? t.dependencies.map(String) : [],
+        order: typeof t.order === 'number' ? t.order : idx + 1,
+        task: {
+          id: taskId,
+          title: (taskBody && String(taskBody.title)) || `Tâche batch ${idx + 1}`,
+          description: (taskBody && String(taskBody.description)) || '',
+          domain: 'ARCHITECTURE' as const,
+          priority: 1,
+          dependencies: Array.isArray(t.dependencies) ? t.dependencies.map(String) : [],
+          requiredContext: { targetFiles: taskBody && Array.isArray(taskBody.targetFiles) ? taskBody.targetFiles : [] },
+          requiredCapabilities: (taskBody && Array.isArray(taskBody.requiredCapabilities) ? taskBody.requiredCapabilities : []) as never,
+          status: 'READY' as const,
+          operation: ((taskBody && taskBody.operation) || 'CREATE') as never,
+          retryCount: 0,
+          maxRetries: 0
+        }
+      };
+    });
+    logger.info('Batch multi-agents demandé (ÉTAPE 37)', { component: 'agent-execution-route', executionId, tenantId: context.tenantId, projectId, tasks: tasks.length, maxConcurrency: body.maxConcurrency });
+    const outcome = await orchestratorRef.executeBatch({
+      executionId,
+      tenantId: context.tenantId,
+      projectId,
+      tasks,
+      ...(body.maxConcurrency !== undefined ? { maxConcurrency: body.maxConcurrency } : {}),
+      repairPolicy: body.repair === true ? { enabled: true, maxAttempts: 1 } : undefined,
+      userRole: context.role,
+      requestId
+    });
+    logger.info('Batch multi-agents terminé (ÉTAPE 37)', { component: 'agent-execution-route', executionId, status: outcome.status, counts: outcome.counts });
+    sendJson(res, 200, { outcome, requestId });
+    return true;
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    const statusCode = message.includes('DAG_INVALID') || message.includes('AGENT_UNKNOWN') || message.includes('CAPABILITY_UNSUPPORTED') ? 400 : 500;
+    logger.warn('Echec batch multi-agents', { component: 'agent-execution-route', error: message, requestId });
+    sendJson(res, statusCode, { message: 'Erreur batch: ' + message, requestId });
+    return true;
+  }
+}
 export async function handleAgentExecutionRoutes(
   req: IncomingMessage, res: ServerResponse, pathname: string,
   context: RequestContext, requestId: string
 ): Promise<boolean> {
+  if (pathname.includes('/agents/execute-batch') && req.method === 'POST') {
+    return handleBatch(req, res, pathname, context, requestId);
+  }
   if (!pathname.includes('/agents/execute') || req.method !== 'POST') return false;
   assertPermission(context.role, 'PROJECT_READ', requestId);
   if (!orchestratorRef) {

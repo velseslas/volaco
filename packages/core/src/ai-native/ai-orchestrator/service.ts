@@ -25,6 +25,7 @@ import { TestAgent } from './agents/test-agent.js';
 import { ReferenceAgent } from './agents/reference-agent.js';
 import { AgentExecutionService, NULL_FILE_OBSERVER, type AgentExecutionRequest, type AgentExecutionOutcome } from './execution/agent-execution.js';
 import { AgentRegistryService } from './registry/agent-registry.js';
+import { MultiAgentScheduler, type MultiAgentSchedulerRequest, type MultiAgentSchedulerOutcome } from './execution/multi-agent-scheduler.js';
 import type { BaseSpecializedAgent } from './agents/base-agent.js';
 import type {
   AgentDomain,
@@ -66,6 +67,8 @@ export class AIOrchestratorService {
   private readonly agentExecution: AgentExecutionService;
   // ÉTAPE 34 — source unique du roster (le scheduler et l exécuteur en dérivent).
   private readonly agentRegistry: AgentRegistryService;
+  // ÉTAPE 37 — scheduler multi-agents (couche au-dessus de agentExecution).
+  private readonly multiAgentScheduler: MultiAgentScheduler;
   private readonly specializedAgents: Map<AgentDomain, BaseSpecializedAgent>;
 
   constructor(
@@ -130,6 +133,7 @@ export class AIOrchestratorService {
     // Sans source réelle fournie, l'observateur nul rend toute vérification
     // impossible → aucun SUCCESS de mutation ne peut être déclaré.
     this.agentExecution = new AgentExecutionService(this.agentRegistry, this.mutationBridge, fileObserver ?? NULL_FILE_OBSERVER);
+    this.multiAgentScheduler = new MultiAgentScheduler(this.agentExecution);
   }
 
   public async orchestratePlan(params: OrchestratePlanParams): Promise<OrchestrationRun> {
@@ -389,6 +393,11 @@ export class AIOrchestratorService {
   /** ÉTAPE 34 — Registry unique du roster (résolution ID/capability/domaine). */
   public getExecutionAgentRegistry(): AgentRegistryService {
     return this.agentRegistry;
+  }
+
+  /** ÉTAPE 37 — scheduler multi-agents (le MÊME AgentExecutionService). */
+  public async executeBatch(request: MultiAgentSchedulerRequest): Promise<MultiAgentSchedulerOutcome> {
+    return this.multiAgentScheduler.execute(request);
   }
 
   private finalizeRun(data: OrchestrationRun): OrchestrationRun {
