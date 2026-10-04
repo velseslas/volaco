@@ -128,6 +128,29 @@ export async function handleAgentExecutionRoutes(
   req: IncomingMessage, res: ServerResponse, pathname: string,
   context: RequestContext, requestId: string
 ): Promise<boolean> {
+  // ÉTAPE 40 Phase 2 — consultation du Registry RÉEL (É34) : projection des
+  // agents réellement enregistrés (id/name/domain/capabilities/description/
+  // requiresProviderCapabilities). Lecture PURE : aucune exécution, aucune
+  // écriture, aucune fabrication — le roster est global (É34) ; le scope
+  // projet n'est que la convention d'URL.
+  if (pathname.endsWith('/agents') && req.method === 'GET') {
+    assertPermission(context.role, 'PROJECT_READ', requestId);
+    if (!orchestratorRef) {
+      sendJson(res, 503, { message: 'AIOrchestratorService non configure', requestId });
+      return true;
+    }
+    const agents = orchestratorRef.getExecutionAgentRegistry().list().map((entry) => ({
+      agentId: entry.id,
+      name: entry.name,
+      domain: entry.domain,
+      capabilities: [...entry.capabilities],
+      description: entry.description,
+      requiresProviderCapabilities: [...entry.requiresProviderCapabilities]
+    }));
+    sendJson(res, 200, { agents, count: agents.length, requestId });
+    return true;
+  }
+
   // ÉTAPE 39 Phase 2 — liste des exécutions persistées du projet (LECTURE PURE).
   // Convention activity.ts : ?limit=N (taille de RÉPONSE — le cap de
   // rétention du store reste 500 et n'est pas modifié) et order=ASC|DESC
