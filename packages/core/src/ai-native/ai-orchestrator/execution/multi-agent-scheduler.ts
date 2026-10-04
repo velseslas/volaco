@@ -34,6 +34,8 @@ import { ValidationError } from '../../../errors.js';
 import type { Role } from '../../../identity/permissions.js';
 import type { AgentExecutionOutcome, AgentExecutionPhaseEntry } from './agent-execution.js';
 import type { AgentTask, TaskContextPayload } from '../types.js';
+import { agentTraceStore } from '../../../observability/agent-trace-store.js';
+import { buildBatchTrace } from './trace.js';
 
 // ---------------------------------------------------------------------------
 // Contrats
@@ -338,7 +340,7 @@ export class MultiAgentScheduler {
       `completed=${counts.completed} failed=${counts.failed} cancelled=${counts.cancelled} blocked=${counts.blocked} pending=${counts.pending}`
     );
 
-    return deepFreeze({
+    const outcome = deepFreeze({
       executionId: request.executionId,
       status,
       tasks: all
@@ -357,6 +359,21 @@ export class MultiAgentScheduler {
       completedAt: new Date().toISOString(),
       durationMs: Date.now() - startTime
     });
+
+    // ÉTAPE 38 Phase 5 — la trace BATCH est une PROJECTION du verdict réel
+    // (déjà déterminé ci-dessus) : buildBatchTrace n'invente rien et
+    // l'enregistrement est FAILURE-SAFE — un échec du store ne peut ni
+    // modifier l'outcome/le statut global, ni faire échouer le batch.
+    try {
+      agentTraceStore.record(
+        buildBatchTrace({ outcome, tenantId: request.tenantId, projectId: request.projectId })
+      );
+    } catch {
+      // L'observabilité ne doit jamais transformer un verdict ni faire
+      // échouer le batch.
+    }
+
+    return outcome;
   }
 
   /**
