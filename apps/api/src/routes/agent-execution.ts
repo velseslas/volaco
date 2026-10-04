@@ -9,7 +9,8 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { ValidationError } from '../../../../packages/core/src/errors.js';
+import { NotFoundError, ValidationError } from '../../../../packages/core/src/errors.js';
+import { agentTraceStore } from '../../../../packages/core/src/observability/agent-trace-store.js';
 import { assertPermission } from '../../../../packages/core/src/identity/permissions.js';
 import { logger } from '../../../../packages/core/src/logger.js';
 import type { RequestContext } from '../middleware/auth.js';
@@ -127,6 +128,28 @@ export async function handleAgentExecutionRoutes(
   req: IncomingMessage, res: ServerResponse, pathname: string,
   context: RequestContext, requestId: string
 ): Promise<boolean> {
+  // ÉTAPE 38 Phase 6 — consultation GET : évaluée AVANT le match générique
+  // '/agents/execute' (qui contiendrait sinon le préfixe '/agents/executions').
+  // Lecture PURE : agentTraceStore.get(...) uniquement — aucun recalcul de
+  // verdict, aucune reconstruction, aucune écriture.
+  if (pathname.includes('/agents/executions/') && req.method === 'GET') {
+    assertPermission(context.role, 'PROJECT_READ', requestId);
+    const parts = pathname.split('/');
+    const projectId = parts[4];
+    const executionId = parts[7] ? decodeURIComponent(parts[7]) : '';
+    if (!projectId || !executionId) {
+      sendJson(res, 400, { message: 'projectId et executionId obligatoires', requestId });
+      return true;
+    }
+    const trace = agentTraceStore.get(context.tenantId, projectId, executionId);
+    if (!trace) {
+      // 404 canonique identique pour : exécution inexistante / autre tenant /
+      // autre projet — aucune information ne fuit.
+      throw new NotFoundError(`Trace d'exécution '${executionId}'`, requestId);
+    }
+    sendJson(res, 200, { trace, requestId });
+    return true;
+  }
   if (pathname.includes('/agents/execute-batch') && req.method === 'POST') {
     return handleBatch(req, res, pathname, context, requestId);
   }
