@@ -25,5 +25,6 @@ export * from './execution/agent-execution.js';
 export * from './execution/gate.js';
 export * from './execution/repair.js';
 export * from './execution/multi-agent-scheduler.js';
+export * from './execution/trace.js';
 export * from './registry/agent-registry.js';
 export * from './service.js';
