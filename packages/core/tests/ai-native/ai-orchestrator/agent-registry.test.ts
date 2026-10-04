@@ -48,7 +48,7 @@ describe('ÉTAPE 34 — Agent Registry & routage multi-agents', () => {
     const impact = new ImpactIntelligenceService(graph);
     const mutationOrchestrator = new MutationOrchestratorService(fileSource, codeIntel, dna, graph, impact);
     service = new AIOrchestratorService(
-      undefined, undefined, mutationOrchestrator, undefined, undefined, undefined, undefined
+      undefined, undefined, mutationOrchestrator, undefined, undefined, undefined, undefined, fileSource
     );
   });
 
@@ -209,7 +209,7 @@ describe('ÉTAPE 34 — Agent Registry & routage multi-agents', () => {
     const registry = new AgentRegistryService();
     registry.register(new ReferenceAgent());
     registry.unregister('reference-agent');
-    const executor = new AgentExecutionService(registry, new MutationBridge(mutationOrchestrator));
+    const executor = new AgentExecutionService(registry, new MutationBridge(mutationOrchestrator), fileSource);
     const svc = new ConversationIntelligenceService(undefined, undefined, undefined, undefined, undefined);
     svc.attachAgentExecutor({
       execute: (request) => executor.execute(request),
@@ -236,7 +236,7 @@ describe('ÉTAPE 34 — Agent Registry & routage multi-agents', () => {
     const registry = new AgentRegistryService();
     registry.register(makeStubAgent('ref-double-a', ['FILE_MUTATION']));
     registry.register(makeStubAgent('ref-double-b', ['FILE_MUTATION']));
-    const executor = new AgentExecutionService(registry, new MutationBridge(mutationOrchestrator));
+    const executor = new AgentExecutionService(registry, new MutationBridge(mutationOrchestrator), fileSource);
     const svc = new ConversationIntelligenceService(undefined, undefined, undefined, undefined, undefined);
     svc.attachAgentExecutor({
       execute: (request) => executor.execute(request),
@@ -267,7 +267,7 @@ describe('ÉTAPE 34 — Agent Registry & routage multi-agents', () => {
     const mutationOrchestrator = new MutationOrchestratorService(fileSource, codeIntel, dna, graph, impact);
     const registry = new AgentRegistryService();
     registry.register(new ReferenceAgent());
-    const executor = new AgentExecutionService(registry, new MutationBridge(mutationOrchestrator));
+    const executor = new AgentExecutionService(registry, new MutationBridge(mutationOrchestrator), fileSource);
     const svc = new ConversationIntelligenceService(undefined, undefined, undefined, undefined, undefined);
     svc.attachAgentExecutor({
       execute: (request) => executor.execute(request),

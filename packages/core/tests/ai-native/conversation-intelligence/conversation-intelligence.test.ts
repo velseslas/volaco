@@ -1591,7 +1591,7 @@ describe('AINT-009 — Conversation Intelligence & Human-AI Engineering Engine',
       const mutationOrchestrator = new MutationOrchestratorService(fileSourceO, codeIntel, dna, graph, impact);
       const reg = new AgentRegistryService();
       reg.register(new ReferenceAgent());
-      const executor = new AgentExecutionService(reg, new MutationBridge(mutationOrchestrator));
+      const executor = new AgentExecutionService(reg, new MutationBridge(mutationOrchestrator), fileSourceO);
       return { executor, mutationOrchestrator };
     }
 
@@ -1604,7 +1604,7 @@ describe('AINT-009 — Conversation Intelligence & Human-AI Engineering Engine',
       const mutationOrchestrator = new MutationOrchestratorService(fileSourceO, codeIntel, dna, graph, impact);
       const reg = new AgentRegistryService();
       reg.register(new ReferenceAgent());
-      const realExecutor = executor ?? new AgentExecutionService(reg, new MutationBridge(mutationOrchestrator));
+      const realExecutor = executor ?? new AgentExecutionService(reg, new MutationBridge(mutationOrchestrator), fileSourceO);
       const svc = new ConversationIntelligenceService(undefined, undefined, undefined, undefined, undefined);
       svc.attachAgentExecutor(realExecutor as never);
       return svc;
@@ -1694,7 +1694,7 @@ describe('AINT-009 — Conversation Intelligence & Human-AI Engineering Engine',
       const mutationOrchestrator = new MutationOrchestratorService(fileSourceO, codeIntel, dna, graph, impact);
       const throwingRegistry = new AgentRegistryService();
       throwingRegistry.register(new ThrowingRefAgent());
-      const throwingExecutor = new AgentExecutionService(throwingRegistry, new MutationBridge(mutationOrchestrator));
+      const throwingExecutor = new AgentExecutionService(throwingRegistry, new MutationBridge(mutationOrchestrator), fileSourceO);
 
       const svc = await makeRoutedService(throwingExecutor);
       const tenantId = `tenant-e33h-${runTagO}`;

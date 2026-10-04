@@ -63,6 +63,10 @@ export class MutationBridge {
           ? 'CREATE_FILE'
           : payload.operation === 'DELETE'
           ? 'DELETE_FILE'
+          : payload.operation === 'RENAME'
+          ? 'RENAME_FILE'
+          : payload.operation === 'MOVE'
+          ? 'MOVE_FILE'
           : 'UPDATE_FILE';
 
         mutations.push({
@@ -72,6 +76,7 @@ export class MutationBridge {
           preconditions: [],
           operation: {
             path: filePath,
+            ...(payload.newPath !== undefined ? { newPath: payload.newPath } : {}),
             content: payload.proposedContent || ''
           },
           expectedOutcome: payload.reason || 'Modification de fichier par agent spécialisé',
@@ -117,6 +122,37 @@ export class MutationBridge {
         success: false,
         appliedCount: 0,
         error: msg
+      };
+    }
+  }
+
+  /**
+   * ÉTAPE 35 — rollback RÉEL d'une transaction via le single writer
+   * (MutationOrchestratorService.rollback — restaure le snapshot de la
+   * transaction). Aucun accès direct au workspace.
+   */
+  public rollbackTransaction(params: {
+    transactionId: string;
+    tenantId: string;
+    projectId: string;
+    userRole?: Role | undefined;
+    requestId?: string | undefined;
+  }): { success: boolean; restoredFiles: readonly string[]; error?: string | undefined } {
+    if (!this.mutationService) {
+      return { success: false, restoredFiles: [], error: 'MUTATION_UNSUPPORTED: service de mutation (AINT-006) non configuré' };
+    }
+    try {
+      const result = this.mutationService.rollback(
+        params.transactionId,
+        params.userRole ?? 'ENGINEER',
+        params.requestId
+      );
+      return { success: result.success, restoredFiles: result.restoredFiles };
+    } catch (err: unknown) {
+      return {
+        success: false,
+        restoredFiles: [],
+        error: err instanceof Error ? err.message : String(err)
       };
     }
   }

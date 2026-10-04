@@ -181,7 +181,9 @@ function bootstrapConversationEngine(): void {
   // ÉTAPE 32 — le même service orchestrateur alimente la route d'exécution
   // unitaire d'agent (le reference-agent est enregistré dans son roster).
   const orchestratorInstance = new AIOrchestratorService(
-    understandingService, impactService, mutationService, dnaService, semanticGraphService, aiProviderRegistry
+    understandingService, impactService, mutationService, dnaService, semanticGraphService, aiProviderRegistry,
+    undefined,
+    fileSource // ÉTAPE 35 — observateur réel : vérification/rollback sur le FileStore
   );
   configureOrchestratorService(orchestratorInstance);
   configureAgentExecutionRoute(orchestratorInstance);

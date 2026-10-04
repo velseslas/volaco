@@ -118,8 +118,10 @@ export type AgentArtifactKind =
 
 export interface ProposedFileChangePayload {
   readonly filePath: string;
-  readonly operation: 'CREATE' | 'UPDATE' | 'DELETE';
+  readonly operation: 'CREATE' | 'UPDATE' | 'DELETE' | 'RENAME' | 'MOVE';
   readonly proposedContent?: string | undefined;
+  /** ÉTAPE 35 — nouvelle cible pour RENAME/MOVE. */
+  readonly newPath?: string | undefined;
   readonly reason: string;
 }
 

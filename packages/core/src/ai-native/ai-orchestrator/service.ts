@@ -23,7 +23,7 @@ import { DataAgent } from './agents/data-agent.js';
 import { SecurityAgent } from './agents/security-agent.js';
 import { TestAgent } from './agents/test-agent.js';
 import { ReferenceAgent } from './agents/reference-agent.js';
-import { AgentExecutionService, type AgentExecutionRequest, type AgentExecutionOutcome } from './execution/agent-execution.js';
+import { AgentExecutionService, NULL_FILE_OBSERVER, type AgentExecutionRequest, type AgentExecutionOutcome } from './execution/agent-execution.js';
 import { AgentRegistryService } from './registry/agent-registry.js';
 import type { BaseSpecializedAgent } from './agents/base-agent.js';
 import type {
@@ -40,6 +40,7 @@ import type { MutationOrchestratorService } from '../mutation-orchestrator/servi
 import type { ApplicationDNAService } from '../dna/service.js';
 import type { SemanticCodeGraphService } from '../semantic-graph/service.js';
 import type { AIProviderRegistry } from '../../ai/providers/registry.js';
+import type { IReadOnlyFileSource } from '../understanding/types.js';
 import { aiProviderRegistry } from '../../ai/providers/registry.js';
 
 export const DEFAULT_ORCHESTRATOR_CONFIG: AIOrchestratorConfig = {
@@ -80,7 +81,9 @@ export class AIOrchestratorService {
     private readonly dnaService?: ApplicationDNAService | undefined,
     private readonly graphService?: SemanticCodeGraphService | undefined,
     private readonly providerRegistry?: AIProviderRegistry | undefined,
-    config?: Partial<AIOrchestratorConfig> | undefined
+    config?: Partial<AIOrchestratorConfig> | undefined,
+    // ÉTAPE 35 — observateur read-only de la source de vérité (vérification/rollback).
+    fileObserver?: IReadOnlyFileSource | undefined
   ) {
     this.config = {
       ...DEFAULT_ORCHESTRATOR_CONFIG,
@@ -124,7 +127,9 @@ export class AIOrchestratorService {
     // ÉTAPE 32/34 — contrat d'exécution unitaire d'agent : la résolution passe
     // par le Registry (source unique) + le bridge de mutation existant
     // (single writer).
-    this.agentExecution = new AgentExecutionService(this.agentRegistry, this.mutationBridge);
+    // Sans source réelle fournie, l'observateur nul rend toute vérification
+    // impossible → aucun SUCCESS de mutation ne peut être déclaré.
+    this.agentExecution = new AgentExecutionService(this.agentRegistry, this.mutationBridge, fileObserver ?? NULL_FILE_OBSERVER);
   }
 
   public async orchestratePlan(params: OrchestratePlanParams): Promise<OrchestrationRun> {

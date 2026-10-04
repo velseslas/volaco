@@ -57,7 +57,8 @@ describe('ÉTAPE 32 — Contrat réel d exécution d agent', () => {
       undefined, // dna
       undefined, // graph
       undefined, // provider
-      undefined
+      undefined,
+      fileSource // ÉTAPE 35 — observateur réel de la source
     );
   });
 
@@ -213,7 +214,7 @@ describe('ÉTAPE 32 — Contrat réel d exécution d agent', () => {
     const mutationOrchestrator = new MutationOrchestratorService(fileSource, codeIntel, dna, graph, impact);
     const throwingRegistry = new AgentRegistryService();
     throwingRegistry.register(new ThrowingAgent());
-    const directExecutor = new AgentExecutionService(throwingRegistry, new MutationBridge(mutationOrchestrator));
+    const directExecutor = new AgentExecutionService(throwingRegistry, new MutationBridge(mutationOrchestrator), fileSource);
 
     const outcome = await directExecutor.execute({
       executionId: 'agx-throw-1',
@@ -271,7 +272,7 @@ describe('ÉTAPE 32 — Contrat réel d exécution d agent', () => {
     const mutationOrchestrator = new MutationOrchestratorService(fileSource, codeIntel, dna, graph, impact);
     const emptyRegistry = new AgentRegistryService();
     emptyRegistry.register(new EmptyAgent());
-    const directExecutor = new AgentExecutionService(emptyRegistry, new MutationBridge(mutationOrchestrator));
+    const directExecutor = new AgentExecutionService(emptyRegistry, new MutationBridge(mutationOrchestrator), fileSource);
 
     const outcome = await directExecutor.execute({
       executionId: 'agx-empty-1',
@@ -342,7 +343,7 @@ describe('ÉTAPE 32 — Contrat réel d exécution d agent', () => {
     const mutationOrchestrator = new MutationOrchestratorService(fileSource, codeIntel, dna, graph, impact);
     const malformedRegistry = new AgentRegistryService();
     malformedRegistry.register(new MalformedAgent());
-    const directExecutor = new AgentExecutionService(malformedRegistry, new MutationBridge(mutationOrchestrator));
+    const directExecutor = new AgentExecutionService(malformedRegistry, new MutationBridge(mutationOrchestrator), fileSource);
 
     const outcome = await directExecutor.execute({
       executionId: 'agx-bad-1',
