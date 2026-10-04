@@ -22,6 +22,8 @@ import { BackendAgent } from './agents/backend-agent.js';
 import { DataAgent } from './agents/data-agent.js';
 import { SecurityAgent } from './agents/security-agent.js';
 import { TestAgent } from './agents/test-agent.js';
+import { ReferenceAgent } from './agents/reference-agent.js';
+import { AgentExecutionService, type AgentExecutionRequest, type AgentExecutionOutcome } from './execution/agent-execution.js';
 import type { BaseSpecializedAgent } from './agents/base-agent.js';
 import type {
   AgentDomain,
@@ -58,6 +60,8 @@ export class AIOrchestratorService {
   private readonly mutationBridge: MutationBridge;
   private readonly repairOrchestrator: RepairOrchestrator;
   private readonly agentScheduler: AgentScheduler;
+  // ÉTAPE 32 — contrat d exécution unitaire d agent (source unique : mêmes agents + même bridge de mutation).
+  private readonly agentExecution: AgentExecutionService;
   private readonly specializedAgents: Map<AgentDomain, BaseSpecializedAgent>;
 
   constructor(
@@ -107,6 +111,16 @@ export class AIOrchestratorService {
       this.contextOrchestrator,
       this.config.maxConcurrentTasks
     );
+
+    // ÉTAPE 32 — contrat d'exécution unitaire d'agent : vue par ID sur les
+    // MÊMES instances d'agents (aucun deuxième registry) + le bridge de
+    // mutation existant (single writer). L'agent de référence déterministe
+    // est enregistré ici pour tester/exécuter le contrat.
+    this.agentExecution = new AgentExecutionService(
+      Array.from(this.specializedAgents.values()),
+      this.mutationBridge
+    );
+    this.agentExecution.registerAgent(new ReferenceAgent(registry));
   }
 
   public async orchestratePlan(params: OrchestratePlanParams): Promise<OrchestrationRun> {
@@ -338,6 +352,29 @@ export class AIOrchestratorService {
 
   public getSpecializedAgent(domain: AgentDomain): BaseSpecializedAgent | undefined {
     return this.specializedAgents.get(domain);
+  }
+
+  // ===========================================================================
+  // ÉTAPE 32 — Contrat réel d'exécution d'agent (par ID, statut honnête)
+  // ===========================================================================
+
+  /** Liste les agents exécutables unitairement (roster orchestrateur, par ID). */
+  public listExecutionAgents(): readonly string[] {
+    return this.agentExecution.listAgentIds();
+  }
+
+  /** Vérifie la présence d'un agent exécutable par identifiant. */
+  public hasExecutionAgent(agentId: string): boolean {
+    return this.agentExecution.has(agentId);
+  }
+
+  /**
+   * Exécute UN agent sur UNE tâche selon le contrat É32 : sélection par ID,
+   * capabilities vérifiées, résultat réel, artifacts, mutation OBLIGATOIREMENT
+   * via MutationOrchestratorService, statut honnête (aucun faux succès).
+   */
+  public async executeAgent(request: AgentExecutionRequest): Promise<AgentExecutionOutcome> {
+    return this.agentExecution.execute(request);
   }
 
   private finalizeRun(data: OrchestrationRun): OrchestrationRun {

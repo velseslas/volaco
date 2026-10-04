@@ -37,6 +37,7 @@ import { handleRenderRoutes } from './routes/render.js';
 import { handleAiProxyRoutes } from './routes/ai-proxy.js';
 import { handleDecideRoutes, configureDecideRoute } from './routes/decide.js';
 import { handleOrchestrateRoutes, configureOrchestratorService } from './routes/orchestrate.js';
+import { handleAgentExecutionRoutes, configureAgentExecutionRoute } from './routes/agent-execution.js';
 import { handleDnaRoutes, configureDnaRoute } from './routes/dna.js';
 import { handleDecisionsRoutes, configureDecisionsRoute } from './routes/decisions.js';
 import { handleRepairRoutes } from './routes/repair.js';
@@ -178,9 +179,13 @@ function bootstrapConversationEngine(): void {
   const understandingService = new ApplicationUnderstandingService(
     semanticGraphService, dnaService, impactService, codeIntelService
   );
-  configureOrchestratorService(new AIOrchestratorService(
+  // ÉTAPE 32 — le même service orchestrateur alimente la route d'exécution
+  // unitaire d'agent (le reference-agent est enregistré dans son roster).
+  const orchestratorInstance = new AIOrchestratorService(
     understandingService, impactService, mutationService, dnaService, semanticGraphService, aiProviderRegistry
-  ));
+  );
+  configureOrchestratorService(orchestratorInstance);
+  configureAgentExecutionRoute(orchestratorInstance);
 
   // LOT 3 — la DNA réelle devient consultable (GET /dna) au lieu du
   // manifeste fictif affiché par le Studio.
@@ -344,6 +349,7 @@ const API_ROUTES: readonly RouteEntry[] = [
   { name: 'conversation (SSE)', handler: handleConversationRoutes },
   { name: 'decide (Phase 9.5)', handler: handleDecideRoutes },
   { name: 'orchestrate (Phase 9)', handler: handleOrchestrateRoutes },
+  { name: 'agents/execute (ÉTAPE 32)', handler: handleAgentExecutionRoutes },
   { name: 'render (headless)', handler: handleRenderRoutes },
   { name: 'dna (AINT-002)', handler: handleDnaRoutes },
   { name: 'decisions (ADR)', handler: handleDecisionsRoutes },
