@@ -23,6 +23,8 @@ import type { IReadOnlyFileSource } from '../../understanding/types.js';
 import type { AgentRegistryService } from '../registry/agent-registry.js';
 import type { BaseSpecializedAgent } from '../agents/base-agent.js';
 import type { MutationBridge } from '../engine/mutation-bridge.js';
+import { evaluateFileMutationGate, type GateResult } from './gate.js';
+import { buildRepairPlan, classifyGateFailure, FileRepairService, isRepairSupported, type RepairOutcome } from './repair.js';
 import type {
   AgentArtifact,
   AgentResult,
@@ -53,6 +55,13 @@ export interface AgentExecutionRequest {
    * du cycle : avant l'agent, entre artifact et mutation, après mutation.
    */
   readonly signal?: AbortSignal | undefined;
+  /**
+   * ÉTAPE 36 — politique de réparation (OPT-IN, désactivée par défaut pour
+   * préserver le comportement É35 : divergence → ROLLED_BACK). Quand elle
+   * est activée, une vérification échouée déclenche UNE tentative bornée
+   * (maxAttempts=1 par défaut) : rollback réel → réapplication → re-Gate.
+   */
+  readonly repairPolicy?: { readonly enabled: boolean; readonly maxAttempts?: number | undefined } | undefined;
 }
 
 export interface AgentExecutionMutationOutcome {
@@ -125,6 +134,21 @@ export interface AgentExecutionOutcome {
   readonly cancellation: AgentExecutionCancellation;
   /** ÉTAPE 35 — timeline observable du cycle. */
   readonly phases: readonly AgentExecutionPhaseEntry[];
+  /** ÉTAPE 36 — résultat du gate (évalué sur la source réelle). */
+  readonly gate?: GateResult | undefined;
+  /** ÉTAPE 36 — réparation bornée éventuelle (opt-in). */
+  readonly repair?: {
+    readonly planned: boolean;
+    readonly reason?: string | undefined;
+    readonly repairId?: string | undefined;
+    readonly attempted: boolean;
+    readonly attemptsUsed: number;
+    readonly gateAfterPassed?: boolean | undefined;
+    readonly rolledBack: boolean;
+    readonly rollbackVerified: boolean;
+    readonly cancelled: boolean;
+    readonly error?: string | undefined;
+  } | undefined;
   readonly error?: string | undefined;
   readonly startedAt: string;
   readonly completedAt: string;
@@ -224,7 +248,8 @@ export class AgentExecutionService {
       verification: AgentExecutionVerification,
       rollback: AgentExecutionRollback,
       cancellation: AgentExecutionCancellation,
-      error?: string | undefined
+      error?: string | undefined,
+      extra?: { readonly gate?: GateResult | undefined; readonly repair?: AgentExecutionOutcome['repair'] | undefined }
     ): AgentExecutionOutcome => {
       const completedAt = new Date().toISOString();
       recordPhase(`FINAL_${status}`);
@@ -241,6 +266,7 @@ export class AgentExecutionService {
         cancellation,
         phases,
         ...(error !== undefined ? { error } : {}),
+        ...(extra && Object.keys(extra).length > 0 ? extra : {}),
         startedAt,
         completedAt,
         durationMs: Date.now() - startTime
@@ -501,7 +527,7 @@ export class AgentExecutionService {
 
     // 10. ÉTAPE 35 — VÉRIFICATION RÉELLE : observation de la source de vérité.
     recordPhase('VERIFICATION_STARTED');
-    const verification = this.verifyAgainstSource(fileChanges, beforeSnapshot, request);
+    const { verification, gate: gateEvaluated } = this.verifyAgainstSource(fileChanges, beforeSnapshot, request);
     recordPhase(
       verification.passed ? 'VERIFICATION_PASSED' : 'VERIFICATION_FAILED',
       `${verification.checks.filter((c) => c.passed).length}/${verification.checks.length} contrôle(s)`
@@ -547,21 +573,237 @@ export class AgentExecutionService {
         mutation,
         verification,
         noRollback,
-        noCancellation
+        noCancellation,
+        undefined,
+        { gate: gateEvaluated }
       );
     }
 
-    // 12. Vérification échouée → JAMAIS SUCCESS → rollback réel + vérification.
-    const rollbackOutcome = await this.rollbackAndVerify(request, mutationResult.transactionId, beforeSnapshot);
-    if (rollbackOutcome.verified) {
+    // 12. ÉTAPE 36 — GATE_FAILED : le gate a échoué. Selon la politique
+    // (OPT-IN, désactivée par défaut → comportement É35 conservé) :
+    // classification → RepairPlan → safety checks → UNE tentative bornée
+    // (rollback réel → réapplication → re-Gate) → verdict final.
+    const gateFailed: GateResult = gateEvaluated;
+    recordPhase('GATE_FAILED', verification.error);
+
+    const repairPolicy = request.repairPolicy;
+    if (repairPolicy?.enabled !== true) {
+      // Comportement É35 inchangé (aucune politique de réparation).
+      const rollbackOutcome = await this.rollbackAndVerify(request, mutationResult.transactionId, beforeSnapshot);
+      if (rollbackOutcome.verified) {
+        return finish(
+          'ROLLED_BACK',
+          result,
+          mutation,
+          verification,
+          rollbackOutcome,
+          noCancellation,
+          `VERIFICATION_FAILED_ROLLED_BACK: ${verification.error ?? 'la source ne correspond pas a l artifact'} — rollback réel vérifié`,
+          { gate: gateFailed }
+        );
+      }
       return finish(
-        'ROLLED_BACK',
+        'FAILED_ROLLBACK',
         result,
         mutation,
         verification,
         rollbackOutcome,
         noCancellation,
-        `VERIFICATION_FAILED_ROLLED_BACK: ${verification.error ?? 'la source ne correspond pas a l artifact'} — rollback réel vérifié`
+        `FAILED_ROLLBACK: vérification échouée ET restauration impossible — ${rollbackOutcome.error ?? 'raison inconnue'}`,
+        { gate: gateFailed }
+      );
+    }
+
+    // --- Cycle de réparation borné (maxAttempts = 1 par défaut) -------------
+    const maxAttempts = repairPolicy.maxAttempts ?? 1;
+    const attempt = 0;
+    const reason = classifyGateFailure({
+      gate: gateFailed,
+      mutationExecuted: mutationResult.success,
+      ...(mutationResult.error !== undefined ? { mutationError: mutationResult.error } : {}),
+      cancelled: false
+    });
+    const plan = buildRepairPlan({
+      executionId: request.executionId,
+      attempt: attempt + 1,
+      reason,
+      detail: verification.error ?? 'gate échoué',
+      targetPaths: fileChanges.map((a) => (a.payload as { filePath: string }).filePath),
+      maxAttempts
+    });
+
+    if (!isRepairSupported({ reason, fileChanges })) {
+      recordPhase('REPAIR_UNSUPPORTED', reason);
+      const rollbackOutcome = await this.rollbackAndVerify(request, mutationResult.transactionId, beforeSnapshot);
+      const repairSummary = {
+        planned: true,
+        reason,
+        repairId: plan.repairId,
+        attempted: false,
+        attemptsUsed: 0,
+        rolledBack: rollbackOutcome.verified,
+        rollbackVerified: rollbackOutcome.verified,
+        cancelled: false,
+        error: 'REPAIR_UNSUPPORTED: cas de réparation non supporté'
+      };
+      if (rollbackOutcome.verified) {
+        return finish(
+          'ROLLED_BACK',
+          result,
+          mutation,
+          verification,
+          rollbackOutcome,
+          noCancellation,
+          'REPAIR_UNSUPPORTED: cas non supporté — rollback réel de sécurité, aucun faux succès',
+          { gate: gateFailed, repair: repairSummary }
+        );
+      }
+      return finish(
+        'FAILED_ROLLBACK',
+        result,
+        mutation,
+        verification,
+        rollbackOutcome,
+        noCancellation,
+        'REPAIR_UNSUPPORTED + restauration impossible — état non garanti',
+        { gate: gateFailed, repair: repairSummary }
+      );
+    }
+
+    recordPhase('REPAIR_PLANNED', plan.repairId + ' (' + reason + ')');
+    const repairService = new FileRepairService(this.mutationBridge);
+    const agentCapabilities = registered ? registered.capabilities : undefined;
+
+    // Safety checks AVANT toute action.
+    const refusal = repairService.safetyCheck({
+      plan,
+      executionId: request.executionId,
+      tenantId: request.tenantId,
+      projectId: request.projectId,
+      attempt,
+      fileChanges,
+      resolvedAgentCapabilities: agentCapabilities
+    });
+    if (refusal) {
+      recordPhase('REPAIR_REFUSED', refusal);
+      const rollbackOutcome = await this.rollbackAndVerify(request, mutationResult.transactionId, beforeSnapshot);
+      const repairSummary = {
+        planned: true,
+        reason,
+        repairId: plan.repairId,
+        attempted: false,
+        attemptsUsed: 0,
+        rolledBack: rollbackOutcome.verified,
+        rollbackVerified: rollbackOutcome.verified,
+        cancelled: false,
+        error: refusal
+      };
+      if (rollbackOutcome.verified) {
+        return finish('ROLLED_BACK', result, mutation, verification, rollbackOutcome, noCancellation, refusal, { gate: gateFailed, repair: repairSummary });
+      }
+      return finish('FAILED_ROLLBACK', result, mutation, verification, rollbackOutcome, noCancellation, refusal + ' + restauration impossible', { gate: gateFailed, repair: repairSummary });
+    }
+
+    // Réparation bornée : rollback réel → réapplication unique → re-Gate.
+    recordPhase('REPAIR_STARTED', plan.repairId);
+    const repairOutcome: RepairOutcome = await repairService.execute({
+      plan,
+      context: {
+        executionId: request.executionId,
+        tenantId: request.tenantId,
+        projectId: request.projectId,
+        ...(request.userRole !== undefined ? { userRole: request.userRole } : {}),
+        ...(request.requestId !== undefined ? { requestId: request.requestId } : {}),
+        fileChanges,
+        beforeSnapshot,
+        ...(mutationResult.transactionId !== undefined ? { transactionId: mutationResult.transactionId } : {}),
+        failedGate: gateFailed,
+        fileObserver: this.fileObserver,
+        isAborted
+      },
+      bridge: this.mutationBridge,
+      ...(request.userRole !== undefined ? { userRole: request.userRole } : {}),
+      ...(request.requestId !== undefined ? { requestId: request.requestId } : {})
+    });
+
+    // Cancellation pendant la réparation → état restauré + CANCELLED honnête.
+    if (repairOutcome.cancelled) {
+      recordPhase('REPAIR_CANCELLED', repairOutcome.error);
+      return finish(
+        'CANCELLED',
+        result,
+        mutation,
+        verification,
+        {
+          performed: repairOutcome.rolledBack,
+          verified: repairOutcome.rollbackVerified,
+          restoredFiles: [],
+          ...(repairOutcome.error !== undefined ? { error: repairOutcome.error } : {})
+        },
+        { requested: true, at: 'AFTER_MUTATION' },
+        repairOutcome.error ?? 'REPAIR_CANCELLED',
+        {
+          gate: gateFailed,
+          repair: {
+            planned: true, reason, repairId: plan.repairId, attempted: repairOutcome.performed,
+            attemptsUsed: repairOutcome.attemptsUsed, rolledBack: repairOutcome.rolledBack,
+            rollbackVerified: repairOutcome.rollbackVerified, cancelled: true,
+            ...(repairOutcome.error !== undefined ? { error: repairOutcome.error } : {})
+          }
+        }
+      );
+    }
+
+    // Re-Gate : PASS → COMMITTED effectif (SUCCESS honnête, fait réel vérifié).
+    if (repairOutcome.gateAfter?.passed === true) {
+      recordPhase('REPAIR_COMPLETED', 'gateAfter=PASS');
+      return finish(
+        result.degraded === true ? 'DEGRADED' : 'SUCCESS',
+        result,
+        mutation,
+        {
+          performed: true,
+          passed: true,
+          checks: repairOutcome.gateAfter.checks
+        },
+        noRollback,
+        noCancellation,
+        undefined,
+        {
+          gate: repairOutcome.gateAfter,
+          repair: {
+            planned: true, reason, repairId: plan.repairId, attempted: true,
+            attemptsUsed: repairOutcome.attemptsUsed, gateAfterPassed: true,
+            rolledBack: repairOutcome.rolledBack, rollbackVerified: repairOutcome.rollbackVerified,
+            cancelled: false
+          }
+        }
+      );
+    }
+
+    // Re-Gate FAIL ou réapplication échouée → verdict final honnête
+    // (rollback final + vérification). AUCUN second repair (anti-boucle).
+    recordPhase('REPAIR_FAILED', repairOutcome.error ?? repairOutcome.gateAfter?.reason);
+    const finalRollback = await this.rollbackAndVerify(request, mutationResult.transactionId, beforeSnapshot);
+    const repairSummaryFailed = {
+      planned: true, reason, repairId: plan.repairId, attempted: repairOutcome.performed,
+      attemptsUsed: repairOutcome.attemptsUsed,
+      ...(repairOutcome.gateAfter !== undefined ? { gateAfterPassed: repairOutcome.gateAfter.passed } : {}),
+      rolledBack: finalRollback.verified || repairOutcome.rollbackVerified,
+      rollbackVerified: finalRollback.verified,
+      cancelled: false,
+      ...(repairOutcome.error !== undefined ? { error: repairOutcome.error } : {})
+    };
+    if (finalRollback.verified) {
+      return finish(
+        'ROLLED_BACK',
+        result,
+        mutation,
+        verification,
+        finalRollback,
+        noCancellation,
+        `REPAIR_THEN_ROLLED_BACK: la réparation n a pas rétabli un état conforme — rollback réel vérifié`,
+        { gate: gateFailed, repair: repairSummaryFailed }
       );
     }
     return finish(
@@ -569,126 +811,47 @@ export class AgentExecutionService {
       result,
       mutation,
       verification,
-      rollbackOutcome,
+      finalRollback,
       noCancellation,
-      `FAILED_ROLLBACK: vérification échouée ET restauration impossible — ${rollbackOutcome.error ?? 'raison inconnue'}`
+      `FAILED_ROLLBACK: réparation échouée ET restauration impossible — ${finalRollback.error ?? 'raison inconnue'}`,
+      { gate: gateFailed, repair: repairSummaryFailed }
     );
   }
 
   /**
-   * ÉTAPE 35 — vérification RÉELLE : observe la source de vérité (avant/
-   * après) et compare à ce que l'artifact déclarait. Ne fait JAMAIS confiance
-   * au booléen du composant qui a muté.
+   * ÉTAPE 35/36 — vérification RÉELLE déléguée au gate unique
+   * (FILE_MUTATION_GATE) : UNE seule implémentation des contrôles, utilisée
+   * par la première vérification ET par le re-Gate de la réparation.
    */
+  private evaluateGate(
+    fileChanges: readonly AgentArtifact[],
+    beforeSnapshot: readonly BeforeSnapshotEntry[],
+    request: AgentExecutionRequest
+  ): GateResult {
+    return evaluateFileMutationGate({
+      executionId: request.executionId,
+      tenantId: request.tenantId,
+      projectId: request.projectId,
+      fileChanges,
+      beforeSnapshot,
+      fileObserver: this.fileObserver
+    });
+  }
+
   private verifyAgainstSource(
     fileChanges: readonly AgentArtifact[],
     beforeSnapshot: readonly BeforeSnapshotEntry[],
     request: AgentExecutionRequest
-  ): AgentExecutionVerification {
-    const checks: AgentExecutionVerificationCheck[] = [];
-    const beforeOf = (path: string): BeforeSnapshotEntry | undefined =>
-      beforeSnapshot.find((b) => b.path === path);
-    const readNow = (path: string) => this.fileObserver.getFile(request.tenantId, request.projectId, path);
-
-    try {
-      for (const artifact of fileChanges) {
-        const payload = artifact.payload as {
-          filePath: string;
-          operation: 'CREATE' | 'UPDATE' | 'DELETE' | 'RENAME' | 'MOVE';
-          proposedContent?: string | undefined;
-          newPath?: string | undefined;
-        };
-        const before = beforeOf(payload.filePath);
-
-        if (payload.operation === 'CREATE') {
-          checks.push({
-            check: `CREATE ${payload.filePath} : fichier absent avant`,
-            passed: before?.existed === false,
-            ...(before?.existed === true ? { detail: 'le fichier existait déjà avant la mutation' } : {})
-          });
-          const after = readNow(payload.filePath);
-          checks.push({
-            check: `CREATE ${payload.filePath} : fichier présent après`,
-            passed: after !== null,
-            ...(after === null ? { detail: 'fichier toujours absent après mutation' } : {})
-          });
-          checks.push({
-            check: `CREATE ${payload.filePath} : contenu identique a l artifact`,
-            passed: after !== null && after.content === payload.proposedContent,
-            ...(after !== null && after.content !== payload.proposedContent ? { detail: 'contenu divergent' } : {})
-          });
-        } else if (payload.operation === 'UPDATE') {
-          checks.push({
-            check: `UPDATE ${payload.filePath} : fichier présent avant`,
-            passed: before?.existed === true,
-            ...(before?.existed === false ? { detail: 'fichier absent avant' } : {})
-          });
-          const after = readNow(payload.filePath);
-          checks.push({
-            check: `UPDATE ${payload.filePath} : contenu identique a l artifact`,
-            passed: after !== null && after.content === payload.proposedContent,
-            ...(after === null ? { detail: 'fichier absent après' } : after !== null && after.content !== payload.proposedContent ? { detail: 'contenu divergent' } : {})
-          });
-        } else if (payload.operation === 'DELETE') {
-          checks.push({
-            check: `DELETE ${payload.filePath} : fichier présent avant`,
-            passed: before?.existed === true,
-            ...(before?.existed === false ? { detail: 'fichier déjà absent avant' } : {})
-          });
-          const after = readNow(payload.filePath);
-          checks.push({
-            check: `DELETE ${payload.filePath} : fichier absent après`,
-            passed: after === null,
-            ...(after !== null ? { detail: 'fichier toujours présent' } : {})
-          });
-        } else {
-          // RENAME / MOVE — newPath validé non vide en amont.
-          const newPath = payload.newPath as string;
-          const beforeNew = beforeOf(newPath);
-          const afterOld = readNow(payload.filePath);
-          const afterNew = readNow(newPath);
-          checks.push({
-            check: `${payload.operation} ${payload.filePath} → ${newPath} : cible présente avant`,
-            passed: before?.existed === true,
-            ...(before?.existed === false ? { detail: 'cible absente avant' } : {})
-          });
-          checks.push({
-            check: `${payload.operation} : nouvelle localisation libre avant`,
-            passed: beforeNew?.existed === false,
-            ...(beforeNew?.existed === true ? { detail: 'la destination existait déjà avant' } : {})
-          });
-          checks.push({
-            check: `${payload.operation} : ancienne localisation absente après`,
-            passed: afterOld === null,
-            ...(afterOld !== null ? { detail: 'ancien fichier toujours présent' } : {})
-          });
-          checks.push({
-            check: `${payload.operation} : nouvelle localisation présente après`,
-            passed: afterNew !== null,
-            ...(afterNew === null ? { detail: 'nouveau fichier absent' } : {})
-          });
-          checks.push({
-            check: `${payload.operation} : contenu conservé`,
-            passed: before?.existed === true && afterNew !== null && afterNew.content === before.content,
-            ...(before?.existed === true && afterNew !== null && afterNew.content !== before.content ? { detail: 'contenu modifié durant le déplacement' } : {})
-          });
-        }
-      }
-    } catch (err: unknown) {
-      return {
-        performed: true,
-        passed: false,
-        checks,
-        error: `VERIFICATION_ERROR: ${err instanceof Error ? err.message : String(err)}`
-      };
-    }
-
-    const passed = checks.length > 0 && checks.every((c) => c.passed);
+  ): { verification: AgentExecutionVerification; gate: GateResult } {
+    const gate = this.evaluateGate(fileChanges, beforeSnapshot, request);
     return {
-      performed: true,
-      passed,
-      checks,
-      ...(passed ? {} : { error: `${checks.filter((c) => !c.passed).length} contrôle(s) de vérification en échec` })
+      gate,
+      verification: {
+        performed: true,
+        passed: gate.passed,
+        checks: gate.checks,
+        ...(gate.reason !== undefined ? { error: gate.reason } : {})
+      }
     };
   }
 

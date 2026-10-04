@@ -34,6 +34,8 @@ interface AgentExecuteBody {
   agentId?: string;
   executionId?: string;
   dryRun?: boolean;
+  /** ÉTAPE 36 — active la réparation bornée (maxAttempts=1) après Gate FAIL. */
+  repair?: boolean;
   task?: {
     title?: string;
     description?: string;
@@ -119,7 +121,8 @@ export async function handleAgentExecutionRoutes(
       projectId,
       userRole: context.role,
       requestId,
-      dryRun: body.dryRun === true
+      dryRun: body.dryRun === true,
+      repairPolicy: body.repair === true ? { enabled: true, maxAttempts: 1 } : undefined
     });
     logger.info('Exécution d agent terminée (ÉTAPE 32)', {
       component: 'agent-execution-route',
