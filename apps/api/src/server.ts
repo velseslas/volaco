@@ -155,11 +155,10 @@ function bootstrapConversationEngine(): void {
       : undefined
   );
 
-  configureConversationIntelligenceService(
-    // 5e argument = reasoningProvider. Sans lui, le service utilise
-    // DefaultReasoningProvider (canned strings). On passe le LLM câblé au-dessus.
-    new ConversationIntelligenceService(undefined, undefined, agentRuntime, undefined, reasoningProvider)
-  );
+  // 5e argument = reasoningProvider. Sans lui, le service utilise
+  // DefaultReasoningProvider (canned strings). On passe le LLM câblé au-dessus.
+  const conversationServiceInstance = new ConversationIntelligenceService(undefined, undefined, agentRuntime, undefined, reasoningProvider);
+  configureConversationIntelligenceService(conversationServiceInstance);
 
   // LOT 1 — Decision Engine (Phase 9.5) et AI Orchestrator (Phase 9) : les
   // routes existaient mais n'étaient ni configurées ni montées. Le Decision
@@ -186,6 +185,15 @@ function bootstrapConversationEngine(): void {
   );
   configureOrchestratorService(orchestratorInstance);
   configureAgentExecutionRoute(orchestratorInstance);
+
+  // ÉTAPE 33 — pont Conversation → Agent : l'exécuteur d'agents du
+  // orchestrateur (AgentExecutionService É32 — source unique) est attaché au
+  // pont conversationnel. Les intentions supportées sont routées vers le
+  // reference-agent (routage déterministe), les autres échouent honnêtement
+  // (UNSUPPORTED_INTENT) au lieu du chemin Agent Runtime.
+  conversationServiceInstance.attachAgentExecutor({
+    execute: (request) => orchestratorInstance.executeAgent(request)
+  });
 
   // LOT 3 — la DNA réelle devient consultable (GET /dna) au lieu du
   // manifeste fictif affiché par le Studio.

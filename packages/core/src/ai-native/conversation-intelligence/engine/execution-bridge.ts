@@ -8,6 +8,25 @@ import type { Role } from '../../../identity/permissions.js';
 import type { AgentRuntimeService } from '../../agent-runtime/service.js';
 import type { MutationOrchestratorService } from '../../mutation-orchestrator/service.js';
 import type { ConversationSession, ConversationState, EngineeringPlan } from '../types.js';
+import { routeIntentToAgent } from './intent-router.js';
+
+/**
+ * ÉTAPE 33 — exécuteur d'agent (contrat É32) injectable. Type structurel
+ * minimal : le serveur attache l'AgentExecutionService de l'orchestrateur
+ * (source unique — aucun deuxième runtime ni registry).
+ */
+export interface ConversationAgentExecutor {
+  execute(request: {
+    executionId: string;
+    agentId: string;
+    task: import('../../ai-orchestrator/types.js').AgentTask;
+    context: import('../../ai-orchestrator/types.js').TaskContextPayload;
+    tenantId: string;
+    projectId: string;
+    userRole?: Role | undefined;
+    requestId?: string | undefined;
+  }): Promise<import('../../ai-orchestrator/execution/agent-execution.js').AgentExecutionOutcome>;
+}
 
 export interface ExecutionResult {
   readonly success: boolean;
@@ -17,10 +36,22 @@ export interface ExecutionResult {
 }
 
 export class ExecutionBridge {
+  private agentExecutor?: ConversationAgentExecutor | undefined;
+
   constructor(
     private readonly agentRuntime?: AgentRuntimeService | undefined,
     private readonly mutationService?: MutationOrchestratorService | undefined
   ) {}
+
+  /**
+   * ÉTAPE 33 — attache l'exécuteur d'agents (AgentExecutionService É32).
+   * Une fois attaché, l'exécution d'un plan approuvé passe par le routage
+   * déterministe intention → agent ; sans exécuteur, le chemin historique
+   * (Agent Runtime, contrat É29/É31) est conservé à l'identique.
+   */
+  public setAgentExecutor(executor: ConversationAgentExecutor): void {
+    this.agentExecutor = executor;
+  }
 
   public canExecute(plan: EngineeringPlan, state: ConversationState): boolean {
     if (plan.status === 'REJECTED' || plan.status === 'FAILED') {
@@ -40,6 +71,68 @@ export class ExecutionBridge {
       throw new ValidationError(
         `Impossible d'exécuter le plan '${plan.planId}' dans l'état '${session.currentState}' (Statut plan: '${plan.status}')`
       );
+    }
+
+    // ÉTAPE 33 — chemin ROUTÉ : intention → agentId → AgentExecutionService
+    // (contrat É32 honnête). Utilisé UNIQUEMENT quand un exécuteur est
+    // attaché (serveur / tests dédiés) ; sinon chemin legacy ci-dessous.
+    if (this.agentExecutor) {
+      const lastTurn = session.turns[session.turns.length - 1];
+      const route = routeIntentToAgent({
+        intent: session.activeIntent,
+        userMessage: lastTurn?.userMessage.content ?? '',
+        sessionId: session.sessionId,
+        planId: plan.planId
+      });
+
+      if (!route.supported) {
+        return {
+          success: false,
+          executedSteps: 0,
+          message: route.reason ?? 'UNSUPPORTED_INTENT',
+          error: route.reason ?? 'UNSUPPORTED_INTENT: intention non routable vers un agent'
+        };
+      }
+
+      try {
+        const outcome = await this.agentExecutor.execute({
+          executionId: route.executionId,
+          agentId: route.agentId!,
+          task: route.task!,
+          context: route.context!,
+          tenantId: session.tenantId,
+          projectId: session.projectId,
+          userRole,
+          requestId
+        });
+
+        if (outcome.status === 'SUCCESS' || outcome.status === 'DEGRADED') {
+          // Le contrat É32 garantit : mutation réellement COMMITTED (ou tâche
+          // sans mutation), artifacts réels. Le statut DEGRADED reste marqué.
+          return {
+            success: true,
+            executedSteps: 1,
+            message:
+              `Plan exécuté via l'agent '${outcome.agentId}' (executionId: ${outcome.executionId}, ` +
+              `mutation: ${outcome.mutation.executed ? `COMMITTED tx=${outcome.mutation.transactionId ?? 'n/a'} applied=${outcome.mutation.appliedCount}` : 'non requise'}` +
+              `${outcome.status === 'DEGRADED' ? ', contenu dégradé' : ''}).`
+          };
+        }
+        return {
+          success: false,
+          executedSteps: 0,
+          message: `L'agent '${outcome.agentId}' a échoué (executionId: ${outcome.executionId}).`,
+          error: outcome.error ?? `AGENT_EXECUTION_${outcome.status}`
+        };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          success: false,
+          executedSteps: 0,
+          message: `Échec de l'exécution de l'agent (executionId: ${route.executionId}).`,
+          error: msg
+        };
+      }
     }
 
     if (this.agentRuntime) {

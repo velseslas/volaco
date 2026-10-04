@@ -30,6 +30,17 @@ import {
   type IntentResult,
   type ArchitecturalDecisionRecord,
   ConversationContextBuilder,
+  InMemoryMutableFileSource,
+  CodeIntelligenceService,
+  ApplicationDNAService,
+  SemanticCodeGraphService,
+  ImpactIntelligenceService,
+  MutationOrchestratorService,
+  AgentExecutionService,
+  MutationBridge,
+  BaseSpecializedAgent,
+  ReferenceAgent,
+  ConversationIntelligenceService as _CIS,
   CONTEXT_BUDGETS,
   MAX_CONTEXT_CHARS,
   type ReasoningProvider,
@@ -1552,6 +1563,205 @@ describe('AINT-009 — Conversation Intelligence & Human-AI Engineering Engine',
       assert.equal(ctx2.rendered, ctx3.rendered, 'même entrée → même rendu');
       assert.match(ctx1.rendered, /interfaces sombres/);
       assert.match(ctx2.rendered, /interfaces sombres/);
+    });
+  });
+
+  // ============================================================================
+  // SECTION O: É33 — Conversation → Agent Intent Routing
+  // Le pipeline RÉEL : message → intention → routage déterministe →
+  // AgentExecutionService (contrat É32, mutation réelle via AINT-006) →
+  // fichier persisté dans la source. Aucun mock de succès.
+  // ============================================================================
+  describe('Section O: É33 — Conversation → Agent Intent Routing', () => {
+    let runTagO: string;
+    let fileSourceO: InstanceType<typeof InMemoryMutableFileSource>;
+
+    beforeEach(() => {
+      runTagO = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+      fileSourceO = new InMemoryMutableFileSource({});
+    });
+
+    /** Chaîne mutation RÉELLE (AINT-006) + AgentExecutionService (É32). */
+    async function makeRealExecutor() {
+      const codeIntel = new CodeIntelligenceService(fileSourceO);
+      const dna = new ApplicationDNAService(codeIntel);
+      const graph = new SemanticCodeGraphService(codeIntel, dna, fileSourceO);
+      const impact = new ImpactIntelligenceService(graph);
+      const mutationOrchestrator = new MutationOrchestratorService(fileSourceO, codeIntel, dna, graph, impact);
+      const executor = new AgentExecutionService([new ReferenceAgent()], new MutationBridge(mutationOrchestrator));
+      return { executor, mutationOrchestrator };
+    }
+
+    /** Service CI réel avec l'exécuteur d'agents attaché (pont É33). */
+    async function makeRoutedService(executor?: unknown) {
+      const codeIntel = new CodeIntelligenceService(fileSourceO);
+      const dna = new ApplicationDNAService(codeIntel);
+      const graph = new SemanticCodeGraphService(codeIntel, dna, fileSourceO);
+      const impact = new ImpactIntelligenceService(graph);
+      const mutationOrchestrator = new MutationOrchestratorService(fileSourceO, codeIntel, dna, graph, impact);
+      const realExecutor = executor ?? new AgentExecutionService([new ReferenceAgent()], new MutationBridge(mutationOrchestrator));
+      const svc = new ConversationIntelligenceService(undefined, undefined, undefined, undefined, undefined);
+      svc.attachAgentExecutor(realExecutor as never);
+      return svc;
+    }
+
+    it('O-A→G: intention supportée → reference-agent exécuté → artifact → mutation COMMITTED → fichier persisté', async () => {
+      const svc = await makeRoutedService();
+      const tenantId = `tenant-e33a-${runTagO}`;
+      const projectId = `proj-e33a-${runTagO}`;
+
+      const session = svc.createSession({ tenantId, projectId });
+      const turn1 = await svc.processTurn({ tenantId, projectId, sessionId: session.sessionId, message: 'Crée le fichier src/demo.ts contenant le module atlas' });
+      assert.ok(turn1.turn.plan);
+      await svc.confirmPlan({ tenantId, projectId, sessionId: session.sessionId, planId: turn1.turn.plan!.planId, approved: true });
+
+      const exec = await svc.executeApprovedPlan({ tenantId, projectId, sessionId: session.sessionId });
+
+      // A — agentId attendu dans le résultat réel
+      assert.match(exec.executionResult.message ?? '', /reference-agent/, 'le résultat nomme l agent réellement exécuté');
+      // C/D — AgentExecutionService réellement appelé et agent exécuté (preuves réelles ci-dessous)
+      assert.equal(exec.executionResult.success, true, 'exécution routée réellement réussie');
+      // K — executionId conservé (agx-<sessionId>-<planId>)
+      assert.match(exec.executionResult.message ?? '', new RegExp(`agx-${session.sessionId}`));
+      // F — mutation réellement exécutée (tx COMMITTED dans le message)
+      assert.match(exec.executionResult.message ?? '', /COMMITTED/);
+      // E/G — artifact réel produit et fichier réellement persisté dans la source
+      const written = fileSourceO.getFile(tenantId, projectId, 'src/demo.ts');
+      assert.ok(written, 'le fichier existe dans la source durable');
+      assert.match(written.content, /reference-agent/);
+      assert.match(written.content, /module atlas/, 'le contenu dérive de la tâche (message utilisateur)');
+      // État session honnête
+      assert.equal(exec.session.currentState, 'VALIDATING');
+      assert.equal(exec.session.activePlan?.status, 'EXECUTED');
+    });
+
+    it('O-B: intention non supportée (2 fichiers) → AUCUN agent, FAILED/UNSUPPORTED_INTENT, aucun fichier', async () => {
+      const svc = await makeRoutedService();
+      const tenantId = `tenant-e33b-${runTagO}`;
+      const projectId = `proj-e33b-${runTagO}`;
+
+      const session = svc.createSession({ tenantId, projectId });
+      const turn1 = await svc.processTurn({ tenantId, projectId, sessionId: session.sessionId, message: 'Crée les fichiers src/a.ts et src/b.ts' });
+      assert.ok(turn1.turn.plan);
+      await svc.confirmPlan({ tenantId, projectId, sessionId: session.sessionId, planId: turn1.turn.plan!.planId, approved: true });
+
+      const exec = await svc.executeApprovedPlan({ tenantId, projectId, sessionId: session.sessionId });
+
+      assert.equal(exec.executionResult.success, false);
+      assert.match(exec.executionResult.error ?? '', /UNSUPPORTED_INTENT/);
+      assert.equal(exec.session.currentState, 'FAILED');
+      assert.equal(exec.session.activePlan?.status, 'FAILED');
+      assert.equal(fileSourceO.getFile(tenantId, projectId, 'src/a.ts'), null, 'aucun fichier écrit');
+      assert.equal(fileSourceO.getFile(tenantId, projectId, 'src/b.ts'), null, 'aucun fichier écrit');
+    });
+
+    it('O-B2: intention sans fichier nommé → UNSUPPORTED_INTENT, aucun agent', async () => {
+      const svc = await makeRoutedService();
+      const tenantId = `tenant-e33b2-${runTagO}`;
+      const projectId = `proj-e33b2-${runTagO}`;
+
+      const session = svc.createSession({ tenantId, projectId });
+      const turn1 = await svc.processTurn({ tenantId, projectId, sessionId: session.sessionId, message: 'Crée une page dashboard magnifique' });
+      assert.ok(turn1.turn.plan);
+      await svc.confirmPlan({ tenantId, projectId, sessionId: session.sessionId, planId: turn1.turn.plan!.planId, approved: true });
+
+      const exec = await svc.executeApprovedPlan({ tenantId, projectId, sessionId: session.sessionId });
+
+      assert.equal(exec.executionResult.success, false);
+      assert.match(exec.executionResult.error ?? '', /UNSUPPORTED_INTENT/);
+      assert.equal(exec.session.currentState, 'FAILED');
+    });
+
+    it('O-H: erreur agent propagée (agent qui lance une exception) → FAILED honnête, aucun fichier', async () => {
+      class ThrowingRefAgent extends BaseSpecializedAgent {
+        constructor() {
+          super({ id: 'reference-agent', name: 'ref', domain: 'ARCHITECTURE', capabilities: ['SERVICE_LOGIC'], description: 'échoue volontairement', riskLevel: 'LOW', requiredProviderCapabilities: [], allowedTools: [] }, undefined);
+        }
+        public override async executeTask(): Promise<never> {
+          throw new Error('BOOM_AGENT_EXCEPTION');
+        }
+        protected buildArtifacts(): readonly [] { return []; }
+      }
+      const codeIntel = new CodeIntelligenceService(fileSourceO);
+      const dna = new ApplicationDNAService(codeIntel);
+      const graph = new SemanticCodeGraphService(codeIntel, dna, fileSourceO);
+      const impact = new ImpactIntelligenceService(graph);
+      const mutationOrchestrator = new MutationOrchestratorService(fileSourceO, codeIntel, dna, graph, impact);
+      const throwingExecutor = new AgentExecutionService([new ThrowingRefAgent()], new MutationBridge(mutationOrchestrator));
+
+      const svc = await makeRoutedService(throwingExecutor);
+      const tenantId = `tenant-e33h-${runTagO}`;
+      const projectId = `proj-e33h-${runTagO}`;
+
+      const session = svc.createSession({ tenantId, projectId });
+      const turn1 = await svc.processTurn({ tenantId, projectId, sessionId: session.sessionId, message: 'Crée le fichier src/demo.ts module exception' });
+      await svc.confirmPlan({ tenantId, projectId, sessionId: session.sessionId, planId: turn1.turn.plan!.planId, approved: true });
+
+      const exec = await svc.executeApprovedPlan({ tenantId, projectId, sessionId: session.sessionId });
+
+      assert.equal(exec.executionResult.success, false, 'erreur agent jamais transformée en succès');
+      assert.match(exec.executionResult.error ?? '', /BOOM_AGENT_EXCEPTION/);
+      assert.equal(exec.session.currentState, 'FAILED');
+      assert.equal(fileSourceO.getFile(tenantId, projectId, 'src/demo.ts'), null, 'aucun fichier écrit');
+    });
+
+    it('O-I: erreur mutation propagée (CREATE sur fichier existant) → FAILED, fichier intact', async () => {
+      fileSourceO.createFile(`tenant-e33i-${runTagO}`, `proj-e33i-${runTagO}`, 'src/demo.ts', 'export const original = true;\n');
+      const svc = await makeRoutedService();
+      const tenantId = `tenant-e33i-${runTagO}`;
+      const projectId = `proj-e33i-${runTagO}`;
+
+      const session = svc.createSession({ tenantId, projectId });
+      const turn1 = await svc.processTurn({ tenantId, projectId, sessionId: session.sessionId, message: 'Crée le fichier src/demo.ts refusé' });
+      await svc.confirmPlan({ tenantId, projectId, sessionId: session.sessionId, planId: turn1.turn.plan!.planId, approved: true });
+
+      const exec = await svc.executeApprovedPlan({ tenantId, projectId, sessionId: session.sessionId });
+
+      assert.equal(exec.executionResult.success, false, 'mutation refusée jamais un succès');
+      assert.equal(exec.session.currentState, 'FAILED');
+      const intact = fileSourceO.getFile(tenantId, projectId, 'src/demo.ts');
+      assert.ok(intact, 'le fichier original existe toujours');
+      assert.equal(intact ? intact.content : '', 'export const original = true;\n', 'fichier original intact');
+    });
+
+    it('O-L: isolation tenant/projet — fichier visible uniquement du tenant/projet cible', async () => {
+      const svc = await makeRoutedService();
+      const tenantId = `tenant-e33l-${runTagO}`;
+      const projectId = `proj-e33l-${runTagO}`;
+
+      const session = svc.createSession({ tenantId, projectId });
+      const turn1 = await svc.processTurn({ tenantId, projectId, sessionId: session.sessionId, message: 'Crée le fichier src/isolation.ts module isolé' });
+      await svc.confirmPlan({ tenantId, projectId, sessionId: session.sessionId, planId: turn1.turn.plan!.planId, approved: true });
+      const exec = await svc.executeApprovedPlan({ tenantId, projectId, sessionId: session.sessionId });
+
+      assert.equal(exec.executionResult.success, true);
+      assert.ok(fileSourceO.getFile(tenantId, projectId, 'src/isolation.ts'));
+      assert.equal(fileSourceO.getFile('tenant-autre', projectId, 'src/isolation.ts'), null);
+      assert.equal(fileSourceO.getFile(tenantId, 'proj-autre', 'src/isolation.ts'), null);
+    });
+
+    it('O-M: routage déterministe — même message → même agent, même cible, même opération, contenu identique', async () => {
+      const svc = await makeRoutedService();
+      const tenantId = `tenant-e33m-${runTagO}`;
+
+      const results: string[] = [];
+      for (const suffix of ['m1', 'm2']) {
+        const projectId = `proj-e33${suffix}-${runTagO}`;
+        const session = svc.createSession({ tenantId, projectId });
+        const turn1 = await svc.processTurn({ tenantId, projectId, sessionId: session.sessionId, message: 'Crée le fichier src/determinisme.ts module déterministe' });
+        await svc.confirmPlan({ tenantId, projectId, sessionId: session.sessionId, planId: turn1.turn.plan!.planId, approved: true });
+        const exec = await svc.executeApprovedPlan({ tenantId, projectId, sessionId: session.sessionId });
+        assert.equal(exec.executionResult.success, true);
+        assert.match(exec.executionResult.message ?? '', /reference-agent/);
+        results.push(fileSourceO.getFile(tenantId, projectId, 'src/determinisme.ts')!.content);
+      }
+      // Le routage est déterministe : même agent, même cible, même opération,
+      // même titre/description de tâche. Seul l'identifiant de TRAÇAGE
+      // (REFERENCE_TASK_ID = agx-<sessionId>-<planId>) diffère entre deux
+      // sessions — par conception (traçabilité K).
+      const stripTrace = (c: string): string => c.split('\n').filter((l) => !l.includes('REFERENCE_TASK_ID')).join('\n');
+      assert.equal(stripTrace(results[0] ?? ''), stripTrace(results[1] ?? ''), 'même tâche → mêmes octets hors identifiant de traçage');
+      assert.match(results[0] ?? '', /REFERENCE_TASK_ID/, 'l identifiant de traçage est bien présent dans le fichier');
     });
   });
 });

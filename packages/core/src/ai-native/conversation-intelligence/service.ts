@@ -18,7 +18,7 @@ import { ClarificationEngine } from './engine/clarification-engine.js';
 import { ContradictionDetector } from './engine/contradiction-detector.js';
 import { ConversationCompass } from './engine/conversation-compass.js';
 import { ConversationEngine } from './engine/conversation-engine.js';
-import { ExecutionBridge, type ExecutionResult } from './engine/execution-bridge.js';
+import { ExecutionBridge, type ConversationAgentExecutor, type ExecutionResult } from './engine/execution-bridge.js';
 import { ImpactBridge } from './engine/impact-bridge.js';
 import { ConversationIntentEngine } from './engine/intent-engine.js';
 import { MemoryManager } from './engine/memory-manager.js';
@@ -457,6 +457,16 @@ export class ConversationIntelligenceService {
     });
 
     return updatedSession;
+  }
+
+  /**
+   * ÉTAPE 33 — attache l'exécuteur d'agents (AgentExecutionService É32 de
+   * l'orchestrateur). Une fois attaché, executeApprovedPlan route les
+   * intentions supportées vers l'agent (routage déterministe) au lieu du
+   * chemin Agent Runtime historique.
+   */
+  public attachAgentExecutor(executor: ConversationAgentExecutor): void {
+    this.executionBridge.setAgentExecutor(executor);
   }
 
   public async executeApprovedPlan(
