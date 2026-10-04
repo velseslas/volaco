@@ -12,7 +12,7 @@ import { ConversationContextBuilder } from './context-builder.js';
 import { ExecutionBridge } from './execution-bridge.js';
 import { ImpactBridge } from './impact-bridge.js';
 import { ConversationIntentEngine } from './intent-engine.js';
-import { MemoryManager } from './memory-manager.js';
+import { MemoryManager, extractUserPreference } from './memory-manager.js';
 import { PlanGenerator } from './plan-generator.js';
 import { UnderstandingBridge } from './understanding-bridge.js';
 import type { Role } from '../../../identity/permissions.js';
@@ -270,10 +270,10 @@ export class ConversationEngine {
     if (providerMetadata && Boolean(providerMetadata['fallbackUsed'])) {
       traceEvents.push(`Fallback: true`);
     }
-    // ÉTAPE 30 — observabilité du contexte réellement transmis au provider.
+    // ÉTAPE 30/31 — observabilité du contexte réellement transmis au provider.
     if (typeof conversationContext !== 'undefined') {
       traceEvents.push(
-        `Context: ${conversationContext.stats.totalChars} chars, ${conversationContext.stats.historyIncluded}/${conversationContext.stats.historyTotal} messages, ${conversationContext.stats.decisionsIncluded} décision(s)`
+        `Context: ${conversationContext.stats.totalChars} chars, ${conversationContext.stats.historyIncluded}/${conversationContext.stats.historyTotal} messages, ${conversationContext.stats.preferencesIncluded} préférence(s), ${conversationContext.stats.decisionsIncluded} décision(s), sections: ${conversationContext.sections.map((s) => s.id).join(',') || 'aucune'}`
       );
     }
 
@@ -313,6 +313,19 @@ export class ConversationEngine {
       for (const constraint of intent.constraints) {
         updatedProjectMemory = this.memoryManager.addConstraint(updatedProjectMemory, constraint);
       }
+    }
+
+    // ÉTAPE 31 — préférence utilisateur exprimée → API existante
+    // setUserPreference → stockage existant (ProjectMemory.userPreferences,
+    // persisté avec la session). Détection déterministe, formes négatives
+    // exclues (ce sont des contraintes).
+    const expressedPreference = extractUserPreference(cleanUserText);
+    if (expressedPreference) {
+      updatedProjectMemory = this.memoryManager.setUserPreference(
+        updatedProjectMemory,
+        expressedPreference.key,
+        expressedPreference.value
+      );
     }
 
     const updatedSession: ConversationSession = deepFreeze({

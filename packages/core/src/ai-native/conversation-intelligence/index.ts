@@ -48,7 +48,7 @@ export { ClarificationEngine, classifyAmbiguities } from './engine/clarification
 export { ConversationAssumptionEngine, deriveAssumptions } from './engine/assumption-engine.js';
 export { PlanGenerator } from './engine/plan-generator.js';
 export { ContradictionDetector } from './engine/contradiction-detector.js';
-export { MemoryManager } from './engine/memory-manager.js';
+export { MemoryManager, extractUserPreference, type ExtractedUserPreference } from './engine/memory-manager.js';
 export { UnderstandingBridge } from './engine/understanding-bridge.js';
 export { ImpactBridge, type PlanImpactResult } from './engine/impact-bridge.js';
 export { ExecutionBridge, type ExecutionResult } from './engine/execution-bridge.js';

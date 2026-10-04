@@ -142,3 +142,58 @@ export class MemoryManager {
     });
   }
 }
+
+// ---------------------------------------------------------------------------
+// ÉTAPE 31 — détection déterministe d'une préférence utilisateur exprimée.
+// Heuristique purement lexicale (aucun LLM, aucun aléa) : la phrase est
+// enregistrée via l'API existante setUserPreference dans le stockage
+// existant (ProjectMemory.userPreferences — scope réel tenant/projet).
+// ---------------------------------------------------------------------------
+
+/** Formes négatives exclues : elles relèvent des contraintes, pas des préférences. */
+const NEGATION_PATTERN = /\b(?:ne (?:pas|jamais|veut)|jamais|sans|aucun|aucune)\b/i;
+
+/** « Je préfère X » / « Je souhaite X » / « J'aimerais X » — 1 à 6 mots capturés. */
+const PREFERENCE_PATTERN =
+  /(?:je\s+)?(?:pr[ée]f[èe]re|prefere|souhaite|aimerais)\s+(?:que\s+|les?\s+|la\s+|des?\s+|une?\s+|l')?([a-zà-ÿ0-9][\wà-ÿ'’-]*(?:\s+[a-zà-ÿ0-9][\wà-ÿ'’-]*){0,5})/i;
+
+/** Mots génériques exclus de la dérivation de clé. */
+const GENERIC_WORDS: ReadonlySet<string> = new Set([
+  'que', 'les', 'des', 'une', 'Dans', 'pour', 'avec', 'tout', 'toute', 'toutes', 'tous',
+  'être', 'etre', 'avoir', 'faire', 'cela', 'cette', 'ceux', 'celui'
+]);
+
+export interface ExtractedUserPreference {
+  readonly key: string;
+  readonly value: string;
+}
+
+/**
+ * Extrait UNE préférence utilisateur d'un message, de façon déterministe.
+ * Retourne null si le message n'exprime pas de préférence claire (ou si la
+ * forme est négative — une négation est une contrainte, pas une préférence).
+ * Même entrée → même sortie.
+ */
+export function extractUserPreference(text: string): ExtractedUserPreference | null {
+  if (!text || typeof text !== 'string') return null;
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (NEGATION_PATTERN.test(normalized)) return null;
+
+  const match = normalized.match(PREFERENCE_PATTERN);
+  if (!match) return null;
+  const phrase = (match[1] ?? '').trim().replace(/[.,;:!?]+$/, '');
+  if (phrase.length < 3) return null;
+
+  // Clé = slug des 2 premiers mots significatifs (sémantique de mise à jour :
+  // réexprimer la même préférence remplace la valeur précédente).
+  const words = phrase
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w.length >= 3 && !GENERIC_WORDS.has(w));
+  const key = words.slice(0, 2).join('-') || phrase.toLowerCase().slice(0, 40);
+  if (!key) return null;
+
+  return { key, value: phrase };
+}
