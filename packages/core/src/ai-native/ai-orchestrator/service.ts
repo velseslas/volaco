@@ -24,6 +24,7 @@ import { SecurityAgent } from './agents/security-agent.js';
 import { TestAgent } from './agents/test-agent.js';
 import { ReferenceAgent } from './agents/reference-agent.js';
 import { AgentExecutionService, type AgentExecutionRequest, type AgentExecutionOutcome } from './execution/agent-execution.js';
+import { AgentRegistryService } from './registry/agent-registry.js';
 import type { BaseSpecializedAgent } from './agents/base-agent.js';
 import type {
   AgentDomain,
@@ -62,6 +63,8 @@ export class AIOrchestratorService {
   private readonly agentScheduler: AgentScheduler;
   // ÉTAPE 32 — contrat d exécution unitaire d agent (source unique : mêmes agents + même bridge de mutation).
   private readonly agentExecution: AgentExecutionService;
+  // ÉTAPE 34 — source unique du roster (le scheduler et l exécuteur en dérivent).
+  private readonly agentRegistry: AgentRegistryService;
   private readonly specializedAgents: Map<AgentDomain, BaseSpecializedAgent>;
 
   constructor(
@@ -98,13 +101,19 @@ export class AIOrchestratorService {
     this.mutationBridge = new MutationBridge(this.mutationService);
     this.repairOrchestrator = new RepairOrchestrator(this.config.maxSelfRepairCycles);
 
-    // Instantiate standard 5 specialized domain agents
-    this.specializedAgents = new Map<AgentDomain, BaseSpecializedAgent>();
-    this.specializedAgents.set('UI', new UiAgent(registry));
-    this.specializedAgents.set('BACKEND', new BackendAgent(registry));
-    this.specializedAgents.set('DATA', new DataAgent(registry));
-    this.specializedAgents.set('SECURITY', new SecurityAgent(registry));
-    this.specializedAgents.set('TEST', new TestAgent(registry));
+    // ÉTAPE 34 — le Registry est LA source unique du roster : les 5 agents
+    // de domaine + le reference-agent y sont enregistrés UNE fois. La vue
+    // par domaine du scheduler et la résolution de l'exécuteur en dérivent
+    // (mêmes instances, aucune duplication).
+    this.agentRegistry = new AgentRegistryService();
+    this.agentRegistry.register(new UiAgent(registry));
+    this.agentRegistry.register(new BackendAgent(registry));
+    this.agentRegistry.register(new DataAgent(registry));
+    this.agentRegistry.register(new SecurityAgent(registry));
+    this.agentRegistry.register(new TestAgent(registry));
+    this.agentRegistry.register(new ReferenceAgent(registry));
+
+    this.specializedAgents = this.agentRegistry.domainMap();
 
     this.agentScheduler = new AgentScheduler(
       this.specializedAgents,
@@ -112,15 +121,10 @@ export class AIOrchestratorService {
       this.config.maxConcurrentTasks
     );
 
-    // ÉTAPE 32 — contrat d'exécution unitaire d'agent : vue par ID sur les
-    // MÊMES instances d'agents (aucun deuxième registry) + le bridge de
-    // mutation existant (single writer). L'agent de référence déterministe
-    // est enregistré ici pour tester/exécuter le contrat.
-    this.agentExecution = new AgentExecutionService(
-      Array.from(this.specializedAgents.values()),
-      this.mutationBridge
-    );
-    this.agentExecution.registerAgent(new ReferenceAgent(registry));
+    // ÉTAPE 32/34 — contrat d'exécution unitaire d'agent : la résolution passe
+    // par le Registry (source unique) + le bridge de mutation existant
+    // (single writer).
+    this.agentExecution = new AgentExecutionService(this.agentRegistry, this.mutationBridge);
   }
 
   public async orchestratePlan(params: OrchestratePlanParams): Promise<OrchestrationRun> {
@@ -375,6 +379,11 @@ export class AIOrchestratorService {
    */
   public async executeAgent(request: AgentExecutionRequest): Promise<AgentExecutionOutcome> {
     return this.agentExecution.execute(request);
+  }
+
+  /** ÉTAPE 34 — Registry unique du roster (résolution ID/capability/domaine). */
+  public getExecutionAgentRegistry(): AgentRegistryService {
+    return this.agentRegistry;
   }
 
   private finalizeRun(data: OrchestrationRun): OrchestrationRun {

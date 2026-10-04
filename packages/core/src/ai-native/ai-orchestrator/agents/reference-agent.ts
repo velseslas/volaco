@@ -33,7 +33,7 @@ export class ReferenceAgent extends BaseSpecializedAgent {
         id: REFERENCE_AGENT_ID,
         name: 'Reference Agent (déterministe)',
         domain: 'ARCHITECTURE',
-        capabilities: ['SERVICE_LOGIC', 'SCHEMA_MODELING'],
+        capabilities: ['SERVICE_LOGIC', 'SCHEMA_MODELING', 'FILE_MUTATION'],
         description:
           'Agent de référence déterministe pour le contrat d exécution É32 : produit un fichier réel à partir de la tâche, sans LLM, sans réseau, sans MCP.',
         riskLevel: 'LOW',

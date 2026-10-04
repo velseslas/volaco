@@ -52,7 +52,7 @@ export { MemoryManager, extractUserPreference, type ExtractedUserPreference } fr
 export { UnderstandingBridge } from './engine/understanding-bridge.js';
 export { ImpactBridge, type PlanImpactResult } from './engine/impact-bridge.js';
 export { ExecutionBridge, type ConversationAgentExecutor, type ExecutionResult } from './engine/execution-bridge.js';
-export { routeIntentToAgent, ROUTED_AGENT_ID, ROUTED_AGENT_CAPABILITIES, type ConversationAgentRoute } from './engine/intent-router.js';
+export { routeIntentToAgent, FILE_MUTATION_CAPABILITY, type ConversationAgentRoute } from './engine/intent-router.js';
 export { ConversationEngine } from './engine/conversation-engine.js';
 export {
   ConversationContextBuilder,

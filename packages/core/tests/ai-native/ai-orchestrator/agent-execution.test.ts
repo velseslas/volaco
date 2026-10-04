@@ -19,6 +19,7 @@ import {
   AIOrchestratorService,
   AgentExecutionService,
   MutationBridge,
+  AgentRegistryService,
   BaseSpecializedAgent,
   ReferenceAgent,
   REFERENCE_AGENT_ID,
@@ -210,10 +211,9 @@ describe('ÉTAPE 32 — Contrat réel d exécution d agent', () => {
     const graph = new SemanticCodeGraphService(codeIntel, dna, fileSource);
     const impact = new ImpactIntelligenceService(graph);
     const mutationOrchestrator = new MutationOrchestratorService(fileSource, codeIntel, dna, graph, impact);
-    const directExecutor = new AgentExecutionService(
-      [new ThrowingAgent()],
-      new MutationBridge(mutationOrchestrator)
-    );
+    const throwingRegistry = new AgentRegistryService();
+    throwingRegistry.register(new ThrowingAgent());
+    const directExecutor = new AgentExecutionService(throwingRegistry, new MutationBridge(mutationOrchestrator));
 
     const outcome = await directExecutor.execute({
       executionId: 'agx-throw-1',
@@ -269,10 +269,9 @@ describe('ÉTAPE 32 — Contrat réel d exécution d agent', () => {
     const graph = new SemanticCodeGraphService(codeIntel, dna, fileSource);
     const impact = new ImpactIntelligenceService(graph);
     const mutationOrchestrator = new MutationOrchestratorService(fileSource, codeIntel, dna, graph, impact);
-    const directExecutor = new AgentExecutionService(
-      [new EmptyAgent()],
-      new MutationBridge(mutationOrchestrator)
-    );
+    const emptyRegistry = new AgentRegistryService();
+    emptyRegistry.register(new EmptyAgent());
+    const directExecutor = new AgentExecutionService(emptyRegistry, new MutationBridge(mutationOrchestrator));
 
     const outcome = await directExecutor.execute({
       executionId: 'agx-empty-1',
@@ -341,10 +340,9 @@ describe('ÉTAPE 32 — Contrat réel d exécution d agent', () => {
     const graph = new SemanticCodeGraphService(codeIntel, dna, fileSource);
     const impact = new ImpactIntelligenceService(graph);
     const mutationOrchestrator = new MutationOrchestratorService(fileSource, codeIntel, dna, graph, impact);
-    const directExecutor = new AgentExecutionService(
-      [new MalformedAgent()],
-      new MutationBridge(mutationOrchestrator)
-    );
+    const malformedRegistry = new AgentRegistryService();
+    malformedRegistry.register(new MalformedAgent());
+    const directExecutor = new AgentExecutionService(malformedRegistry, new MutationBridge(mutationOrchestrator));
 
     const outcome = await directExecutor.execute({
       executionId: 'agx-bad-1',

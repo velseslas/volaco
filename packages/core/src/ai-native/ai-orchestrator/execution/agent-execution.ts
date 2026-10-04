@@ -18,6 +18,7 @@ import { auditStore } from '../../../observability/audit.js';
 import type { Role } from '../../../identity/permissions.js';
 import { assertPermission } from '../../../identity/permissions.js';
 import type { BaseSpecializedAgent } from '../agents/base-agent.js';
+import { AgentRegistryService } from '../registry/agent-registry.js';
 import type { MutationBridge } from '../engine/mutation-bridge.js';
 import type {
   AgentArtifact,
@@ -85,36 +86,38 @@ export class AgentExecutionService {
   /**
    * Index par ID sur le roster d'agents de l'orchestrateur — les MÊMES
    * instances que le scheduler (aucun deuxième registry : ce n'est qu'une
-   * vue par identifiant pour l'exécution unitaire).
+  /**
+   * ÉTAPE 34 — le Registry est LA source unique de résolution : les agents
+   * sont décrits et référencés (mêmes instances que le scheduler), jamais
+   * copiés.
    */
-  private readonly agentsById = new Map<string, BaseSpecializedAgent>();
+  public readonly registry: AgentRegistryService;
 
   constructor(
-    agents: readonly BaseSpecializedAgent[],
+    registry: AgentRegistryService,
     private readonly mutationBridge: MutationBridge
   ) {
-    for (const agent of agents) {
-      this.agentsById.set(agent.definition.id, agent);
-    }
+    this.registry = registry;
   }
 
   /**
-   * Enregistre un agent supplémentaire dans le roster de l'orchestrateur
-   * (ex : reference-agent). Prévention stricte de doublon.
+   * Enregistre un agent dans le Registry (prévention stricte de doublon).
    */
   public registerAgent(agent: BaseSpecializedAgent): void {
-    if (this.agentsById.has(agent.definition.id)) {
-      throw new Error(`Agent déjà enregistré : '${agent.definition.id}'`);
-    }
-    this.agentsById.set(agent.definition.id, agent);
+    this.registry.register(agent);
   }
 
   public has(agentId: string): boolean {
-    return this.agentsById.has(agentId);
+    return this.registry.has(agentId);
   }
 
   public listAgentIds(): readonly string[] {
-    return Array.from(this.agentsById.keys()).sort();
+    return this.registry.list().map((entry) => entry.id);
+  }
+
+  /** ÉTAPE 34 — accès au Registry (le routeur conversationnel l'utilise). */
+  public getRegistry(): AgentRegistryService {
+    return this.registry;
   }
 
   /**
@@ -177,7 +180,9 @@ export class AgentExecutionService {
     };
 
     // 1. Agent inconnu → JAMAIS success.
-    const agent = this.agentsById.get(request.agentId);
+    // ÉTAPE 34 — résolution via le Registry (source unique).
+    const registered = this.registry.get(request.agentId);
+    const agent = registered ? registered.agent : undefined;
     if (!agent) {
       return finish(
         'FAILURE',

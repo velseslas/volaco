@@ -22,4 +22,5 @@ export * from './engine/validation-gate.js';
 export * from './engine/mutation-bridge.js';
 export * from './engine/repair-orchestrator.js';
 export * from './execution/agent-execution.js';
+export * from './registry/agent-registry.js';
 export * from './service.js';

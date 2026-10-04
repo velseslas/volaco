@@ -16,6 +16,8 @@ import { routeIntentToAgent } from './intent-router.js';
  * (source unique — aucun deuxième runtime ni registry).
  */
 export interface ConversationAgentExecutor {
+  /** ÉTAPE 34 — accès au Registry (source unique de résolution des agents). */
+  getRegistry(): import('../../ai-orchestrator/registry/agent-registry.js').AgentRegistryService;
   execute(request: {
     executionId: string;
     agentId: string;
@@ -82,7 +84,8 @@ export class ExecutionBridge {
         intent: session.activeIntent,
         userMessage: lastTurn?.userMessage.content ?? '',
         sessionId: session.sessionId,
-        planId: plan.planId
+        planId: plan.planId,
+        registry: this.agentExecutor.getRegistry()
       });
 
       if (!route.supported) {

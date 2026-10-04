@@ -38,6 +38,7 @@ import {
   MutationOrchestratorService,
   AgentExecutionService,
   MutationBridge,
+  AgentRegistryService,
   BaseSpecializedAgent,
   ReferenceAgent,
   ConversationIntelligenceService as _CIS,
@@ -1588,7 +1589,9 @@ describe('AINT-009 — Conversation Intelligence & Human-AI Engineering Engine',
       const graph = new SemanticCodeGraphService(codeIntel, dna, fileSourceO);
       const impact = new ImpactIntelligenceService(graph);
       const mutationOrchestrator = new MutationOrchestratorService(fileSourceO, codeIntel, dna, graph, impact);
-      const executor = new AgentExecutionService([new ReferenceAgent()], new MutationBridge(mutationOrchestrator));
+      const reg = new AgentRegistryService();
+      reg.register(new ReferenceAgent());
+      const executor = new AgentExecutionService(reg, new MutationBridge(mutationOrchestrator));
       return { executor, mutationOrchestrator };
     }
 
@@ -1599,7 +1602,9 @@ describe('AINT-009 — Conversation Intelligence & Human-AI Engineering Engine',
       const graph = new SemanticCodeGraphService(codeIntel, dna, fileSourceO);
       const impact = new ImpactIntelligenceService(graph);
       const mutationOrchestrator = new MutationOrchestratorService(fileSourceO, codeIntel, dna, graph, impact);
-      const realExecutor = executor ?? new AgentExecutionService([new ReferenceAgent()], new MutationBridge(mutationOrchestrator));
+      const reg = new AgentRegistryService();
+      reg.register(new ReferenceAgent());
+      const realExecutor = executor ?? new AgentExecutionService(reg, new MutationBridge(mutationOrchestrator));
       const svc = new ConversationIntelligenceService(undefined, undefined, undefined, undefined, undefined);
       svc.attachAgentExecutor(realExecutor as never);
       return svc;
@@ -1675,7 +1680,7 @@ describe('AINT-009 — Conversation Intelligence & Human-AI Engineering Engine',
     it('O-H: erreur agent propagée (agent qui lance une exception) → FAILED honnête, aucun fichier', async () => {
       class ThrowingRefAgent extends BaseSpecializedAgent {
         constructor() {
-          super({ id: 'reference-agent', name: 'ref', domain: 'ARCHITECTURE', capabilities: ['SERVICE_LOGIC'], description: 'échoue volontairement', riskLevel: 'LOW', requiredProviderCapabilities: [], allowedTools: [] }, undefined);
+          super({ id: 'reference-agent', name: 'ref', domain: 'ARCHITECTURE', capabilities: ['SERVICE_LOGIC', 'FILE_MUTATION'], description: 'échoue volontairement', riskLevel: 'LOW', requiredProviderCapabilities: [], allowedTools: [] }, undefined);
         }
         public override async executeTask(): Promise<never> {
           throw new Error('BOOM_AGENT_EXCEPTION');
@@ -1687,7 +1692,9 @@ describe('AINT-009 — Conversation Intelligence & Human-AI Engineering Engine',
       const graph = new SemanticCodeGraphService(codeIntel, dna, fileSourceO);
       const impact = new ImpactIntelligenceService(graph);
       const mutationOrchestrator = new MutationOrchestratorService(fileSourceO, codeIntel, dna, graph, impact);
-      const throwingExecutor = new AgentExecutionService([new ThrowingRefAgent()], new MutationBridge(mutationOrchestrator));
+      const throwingRegistry = new AgentRegistryService();
+      throwingRegistry.register(new ThrowingRefAgent());
+      const throwingExecutor = new AgentExecutionService(throwingRegistry, new MutationBridge(mutationOrchestrator));
 
       const svc = await makeRoutedService(throwingExecutor);
       const tenantId = `tenant-e33h-${runTagO}`;

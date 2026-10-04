@@ -28,6 +28,7 @@ export type AgentCapability =
   | 'AUTH_RBAC'
   | 'VULNERABILITY_SCAN'
   | 'UNIT_TEST_GEN'
+  | 'FILE_MUTATION'
   | 'INTEGRATION_TEST'
   | 'E2E_SCENARIO'
   | 'IMPACT_ASSESSMENT';

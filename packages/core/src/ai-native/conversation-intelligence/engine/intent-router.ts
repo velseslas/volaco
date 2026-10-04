@@ -1,32 +1,30 @@
 /**
  * VibeCode Core - AI-Native Engineering Tier (AINT-009)
- * ÉTAPE 33 — Routage déterministe Intention → Agent (Conversation → Agent)
+ * ÉTAPE 34 — Routage déterministe Intention → Agent via le REGISTRY
  *
- * Routage MINIMAL et EXPLICABLE (aucun LLM, aucun scoring, aucun état) :
- * une intention conversationnelle clairement identifiable est routée vers le
- * reference-agent (contrat É32) ; tout ce qui dépasse le contrat de référence
- * est explicitement NON SUPPORTÉ (échec honnête, aucun agent exécuté).
+ * Évolution É33 : l'agentId n'est PLUS en dur. Le routeur demande au
+ * Registry (source unique É34) les agents compatibles avec la capability
+ * requise par l'intention :
  *
- * Règle (v1, volontairement bornée) :
- *   - le message utilisateur nomme EXACTEMENT UN fichier avec extension
- *     source connue (.ts/.tsx/.js/.jsx/.json/.md/.css/.html) ;
- *   - la catégorie d'intention est une opération de fichier exécutable
- *     (CREATE / MODIFY / DELETE / REFACTOR / DEBUG) ;
- *   → agentId 'reference-agent', AgentTask construit depuis l'intention.
- *   Sinon → UNSUPPORTED_INTENT (raison explicite), AUCUN agent exécuté.
+ *   intention fichier (CREATE/MODIFY/DELETE/REFACTOR/DEBUG) + exactement
+ *   un fichier source nommé → capability 'FILE_MUTATION' → resolveByCapability
+ *     0 candidat  → UNSUPPORTED_AGENT_CAPABILITY
+ *     >1 candidat → AMBIGUOUS_AGENT_ROUTE (candidats listés, pas de choix
+ *                   arbitraire)
+ *     1 candidat  → route vers cet agent
  *
- * Contrats réutilisés (aucun second système) : IntentResult, AgentTask,
- * TaskContextPayload — exécution par AgentExecutionService (É32).
+ * Aucun LLM de routage. Mêmes entrées → même route.
  */
 
-import type { AgentTask, TaskContextPayload } from '../../ai-orchestrator/types.js';
+import type { AgentTask, TaskContextPayload, AgentCapability } from '../../ai-orchestrator/types.js';
+import type { AgentRegistryService } from '../../ai-orchestrator/registry/agent-registry.js';
 import type { IntentResult } from '../types.js';
 
-/** Agent cible du routage v1 (l'unique agent du contrat de référence). */
-export const ROUTED_AGENT_ID = 'reference-agent';
-
-/** Capacité requise pour le reference-agent (déclarée dans son contrat É32). */
-export const ROUTED_AGENT_CAPABILITIES = ['SERVICE_LOGIC'] as const;
+/**
+ * Capability requise pour muter un fichier via le contrat de référence
+ * (déclarée uniquement par le reference-agent — v1 sans ambiguïté).
+ */
+export const FILE_MUTATION_CAPABILITY: AgentCapability = 'FILE_MUTATION';
 
 /** Catégories d'intention exécutables sur fichiers. */
 const EXECUTABLE_CATEGORIES: ReadonlySet<string> = new Set([
@@ -43,7 +41,7 @@ export interface ConversationAgentRoute {
   readonly task?: AgentTask | undefined;
   readonly context?: TaskContextPayload | undefined;
   readonly requiredCapabilities?: readonly string[] | undefined;
-  /** Raison explicite du non-routage (unsupported). */
+  /** Raison explicite du non-routage (unsupported/ambiguous). */
   readonly reason?: string | undefined;
 }
 
@@ -53,6 +51,8 @@ export interface RouteIntentParams {
   readonly userMessage: string;
   readonly sessionId: string;
   readonly planId: string;
+  /** ÉTAPE 34 — le Registry est la source de résolution des agents. */
+  readonly registry: AgentRegistryService;
 }
 
 function mapOperation(category: string): 'CREATE' | 'MODIFY' | 'DELETE' {
@@ -62,11 +62,11 @@ function mapOperation(category: string): 'CREATE' | 'MODIFY' | 'DELETE' {
 }
 
 /**
- * Route une intention conversationnelle vers un agent (déterministe).
- * Même entrée → même route.
+ * Route une intention conversationnelle vers un agent du Registry
+ * (déterministe). Même entrée → même route.
  */
 export function routeIntentToAgent(params: RouteIntentParams): ConversationAgentRoute {
-  const { intent, userMessage, sessionId, planId } = params;
+  const { intent, userMessage, sessionId, planId, registry } = params;
   const executionId = `agx-${sessionId}-${planId}`;
 
   const unsupported = (reason: string): ConversationAgentRoute => ({
@@ -98,17 +98,31 @@ export function routeIntentToAgent(params: RouteIntentParams): ConversationAgent
     );
   }
 
+  // ÉTAPE 34 — résolution par capability via le Registry (aucun agentId en dur).
+  const candidates = registry.resolveByCapability(FILE_MUTATION_CAPABILITY);
+  if (candidates.length === 0) {
+    return unsupported(
+      `UNSUPPORTED_AGENT_CAPABILITY: aucun agent du registry ne possède la capability '${FILE_MUTATION_CAPABILITY}'`
+    );
+  }
+  if (candidates.length > 1) {
+    return unsupported(
+      `AMBIGUOUS_AGENT_ROUTE: ${candidates.length} agents compatibles '${FILE_MUTATION_CAPABILITY}' [${candidates.map((c) => c.id).join(', ')}] — aucun choix arbitraire`
+    );
+  }
+
+  const candidate = candidates[0]!;
   const targetFile = matches[0]!;
   const operation = mapOperation(intent.category);
   const task: AgentTask = {
     id: `task-${executionId}`,
     title: intent.goal || `${operation} ${targetFile}`,
     description: userMessage.slice(0, 200),
-    domain: 'ARCHITECTURE',
+    domain: candidate.domain,
     priority: 1,
     dependencies: [],
     requiredContext: { targetFiles: [targetFile] },
-    requiredCapabilities: [...ROUTED_AGENT_CAPABILITIES],
+    requiredCapabilities: [FILE_MUTATION_CAPABILITY],
     status: 'READY',
     operation,
     retryCount: 0,
@@ -125,9 +139,9 @@ export function routeIntentToAgent(params: RouteIntentParams): ConversationAgent
   return {
     supported: true,
     executionId,
-    agentId: ROUTED_AGENT_ID,
+    agentId: candidate.id,
     task,
     context,
-    requiredCapabilities: [...ROUTED_AGENT_CAPABILITIES]
+    requiredCapabilities: [FILE_MUTATION_CAPABILITY]
   };
 }

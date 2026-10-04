@@ -192,7 +192,8 @@ function bootstrapConversationEngine(): void {
   // reference-agent (routage déterministe), les autres échouent honnêtement
   // (UNSUPPORTED_INTENT) au lieu du chemin Agent Runtime.
   conversationServiceInstance.attachAgentExecutor({
-    execute: (request) => orchestratorInstance.executeAgent(request)
+    execute: (request) => orchestratorInstance.executeAgent(request),
+    getRegistry: () => orchestratorInstance.getExecutionAgentRegistry()
   });
 
   // LOT 3 — la DNA réelle devient consultable (GET /dna) au lieu du
