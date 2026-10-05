@@ -7681,7 +7681,13 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
       } else {
         html += findings.map(function (f) {
           const sevClass = f.severity === 'CRITICAL' ? 'text-rose-400' : f.severity === 'HIGH' ? 'text-amber-400' : 'text-slate-300';
-          return '<div class="text-xs py-0.5 border-b border-[#131a2e] last:border-0"><span class="font-semibold ' + sevClass + '">' + designPanelEscape(f.severity) + '</span> · ' + designPanelEscape(f.property) + ' — observé : ' + designPanelEscape(f.observedValue) + (f.expectedValue !== undefined && f.expectedValue !== null ? ' (attendu : ' + designPanelEscape(f.expectedValue) + ')' : '') + '</div>';
+          // É44 P2A — recommandation RÉELLE du backend (DesignHarmonyFinding.recommendation),
+          // affichée telle quelle (échappée), jamais recalculée ni fabriquée côté Studio.
+          const hasReco = f.recommendation !== undefined && f.recommendation !== null && String(f.recommendation).trim() !== '';
+          const recoHtml = hasReco
+            ? '<div class="pl-3 pt-0.5 text-[11px] text-sky-300/90"><i class="fa-solid fa-lightbulb text-[9px]"></i> ' + designPanelEscape(f.recommendation) + '</div>'
+            : '<div class="pl-3 pt-0.5 text-[11px] text-slate-500 italic">Recommandation non disponible</div>';
+          return '<div class="text-xs py-0.5 border-b border-[#131a2e] last:border-0"><span class="font-semibold ' + sevClass + '">' + designPanelEscape(f.severity) + '</span> · ' + designPanelEscape(f.property) + ' — observé : ' + designPanelEscape(f.observedValue) + (f.expectedValue !== undefined && f.expectedValue !== null ? ' (attendu : ' + designPanelEscape(f.expectedValue) + ')' : '') + recoHtml + '</div>';
         }).join('');
       }
       bodyEl.innerHTML = html;
