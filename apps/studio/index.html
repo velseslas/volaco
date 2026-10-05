@@ -7620,11 +7620,43 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
       const tokens = data.tokens || {};
       const sub = har.subScores || {};
       const findings = Array.isArray(har.topFindings) ? har.topFindings : [];
+      // É42 Phase 4B — previous/comparison sont des données RÉELLES du backend
+      // (Phase 4A). Affichage tel quel : aucun delta recalculé côté Studio.
+      const cmp = data.comparison;
+      const prev = data.previous;
       let html = '';
       html += '<div class="flex items-center space-x-4 pb-2">';
       html += '<div class="text-3xl font-extrabold font-mono ' + designPanelEscapeClass(data.dqi) + '">DQI ' + data.dqi + '</div>';
       html += '<div class="text-slate-300">Harmonie : <span class="font-semibold ' + designPanelEscapeClass(har.overallScore) + '">' + har.overallScore + '/100</span></div>';
       html += '</div>';
+      // É42 Phase 4B — comparaison avant/après RÉELLE (backend), si disponible
+      if (cmp && prev) {
+        const deltaColor = cmp.scoreDelta > 0 ? 'text-emerald-400' : cmp.scoreDelta < 0 ? 'text-rose-400' : 'text-slate-300';
+        const deltaSign = cmp.scoreDelta > 0 ? '+' : '';
+        html += '<div class="bg-[#080b15] border border-[#1c243c] rounded-lg p-2 mb-2 space-y-1">';
+        html += '<div class="text-[10px] uppercase tracking-wide text-slate-500">Comparaison avec le rapport précédent (backend)</div>';
+        html += '<div class="flex items-center space-x-2 text-xs">' +
+          '<span class="text-slate-300">Δ score : <span class="font-bold ' + deltaColor + '">' + deltaSign + cmp.scoreDelta + '</span></span>' +
+          '<span class="text-slate-500 font-mono text-[10px]">' + agentsPanelEscape(cmp.previousReportId) + ' → ' + agentsPanelEscape(cmp.currentReportId) + '</span>' +
+          '</div>';
+        (cmp.improvements || []).forEach(function (imp) {
+          html += '<div class="text-emerald-300 text-xs"><i class="fa-solid fa-arrow-up text-[10px]"></i> ' + agentsPanelEscape(imp) + '</div>';
+        });
+        (cmp.regressions || []).forEach(function (reg) {
+          html += '<div class="text-rose-300 text-xs"><i class="fa-solid fa-arrow-down text-[10px]"></i> ' + agentsPanelEscape(reg) + '</div>';
+        });
+        (cmp.newDrifts || []).forEach(function (d) {
+          html += '<div class="text-amber-300/90 text-xs"><i class="fa-solid fa-triangle-exclamation text-[10px]"></i> nouveau drift : ' + agentsPanelEscape(d.property) + (d.pageRoute ? ' (' + agentsPanelEscape(d.pageRoute) + ')' : '') + '</div>';
+        });
+        (cmp.resolvedDrifts || []).forEach(function (r) {
+          html += '<div class="text-emerald-300/90 text-xs"><i class="fa-solid fa-check text-[10px]"></i> ' + agentsPanelEscape(r) + '</div>';
+        });
+        html += '<div class="text-slate-500 text-[10px] pt-1">Précédent : ' + agentsPanelEscape(prev.reportId) + ' · score ' + prev.overallScore + '/100</div>';
+        html += '</div>';
+      } else {
+        // Premier rapport : honnêteté — aucune comparaison disponible
+        html += '<div class="text-slate-500 text-xs italic pb-2"><i class="fa-solid fa-circle-info text-[10px]"></i> Premier rapport : aucune comparaison disponible (relancez après une modification pour comparer).</div>';
+      }
       html += '<div class="grid grid-cols-2 gap-x-4 gap-y-0.5 pb-2">';
       html += designPanelSubScore('Couleur', sub.colorHarmony);
       html += designPanelSubScore('Typographie', sub.typographyHarmony);
