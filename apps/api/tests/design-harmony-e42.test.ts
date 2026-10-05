@@ -97,7 +97,8 @@ button{background:#7dd3fc;border:none;border-radius:12px;padding:8px 16px;color:
       assert.ok(field in body, `champ '${field}' réel présent dans la réponse`);
     }
     // La section n'affiche AUCUN champ absent du DTO
-    const knownFields = ['designDirection', 'tokens', 'harmony', 'dqi', 'requestId'];
+    // É42 Phase 4A : previous/comparison sont des champs réels additifs
+    const knownFields = ['designDirection', 'tokens', 'harmony', 'dqi', 'requestId', 'previous', 'comparison'];
     for (const key of Object.keys(body)) {
       assert.ok(knownFields.includes(key), `champ '${key}' provient du backend`);
     }

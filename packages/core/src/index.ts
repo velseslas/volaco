@@ -11,6 +11,7 @@ export * from './security/secrets.js';
 export * from './observability/metrics.js';
 export * from './observability/audit.js';
 export * from './observability/agent-trace-store.js';
+export * from './ai-native/design-harmony/report-store.js';
 export * from './ai/index.js';
 export * from './workspace/index.js';
 export * from './dashboard/index.js';

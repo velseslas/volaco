@@ -14,6 +14,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { VisualIntelligenceService } from '../../../../packages/core/src/ai-native/visual-intelligence/service.js';
 import { DesignHarmonyService } from '../../../../packages/core/src/ai-native/design-harmony/service.js';
+import { designReportStore } from '../../../../packages/core/src/ai-native/design-harmony/report-store.js';
 import { TokenInferer } from '../../../../packages/core/src/ai-native/design-harmony/engine/token-inferer.js';
 import { fileStore } from '../../../../packages/core/src/file-explorer/store.js';
 import { projectStore } from '../../../../packages/core/src/identity/project.js';
@@ -67,6 +68,14 @@ export async function handleDesignRoutes(
     { tenantId: context.tenantId, projectId, snapshots: [snapshot], requestId },
     context.role
   );
+  // ÉTAPE 42 Phase 4A — comparaison avec le DERNIER rapport réellement
+  // persisté (DesignReportStore, clé tenant:project). Premier appel :
+  // previous = null, AUCUN delta inventé. Le rapport courant est ensuite
+  // persisté comme dernier rapport.
+  const previousReport = designReportStore.get(context.tenantId, projectId);
+  const comparison = previousReport
+    ? harmonyService.compareReports(previousReport, report)
+    : undefined;
   const tokens = tokenInferer.inferDesignSystem([snapshot]);
 
   // 3. Design Direction v1 — dérivation déterministe des tokens (§6 CDC V8)
@@ -114,7 +123,17 @@ export async function handleDesignRoutes(
       topFindings: report.findings.slice(0, 10)
     },
     dqi,
+    ...(previousReport ? {
+      previous: {
+        reportId: previousReport.reportId,
+        overallScore: previousReport.overallScore,
+        analyzedRoutes: previousReport.analyzedRoutes
+      },
+      comparison
+    } : {}),
     requestId
   }));
+  // ÉTAPE 42 Phase 4A — le rapport courant devient le dernier rapport.
+  designReportStore.record(report);
   return true;
 }
