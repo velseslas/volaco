@@ -1946,6 +1946,7 @@
             </div>
             <div id="agentsRoster" class="space-y-1"></div>
             <div id="agentsExecutionsList" class="space-y-2 pt-2"></div>
+            <div id="agentsTaskDetail" class="hidden pt-2"></div>
           </div>
 
           <!-- Revisions List Container (CORE-007) -->
@@ -7674,7 +7675,11 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
           const gateTxt = (item.gate && typeof item.gate.passed === 'boolean')
             ? (item.gate.passed ? '<span class="text-emerald-400">gate ✓</span>' : '<span class="text-rose-400">gate ✗</span>')
             : '';
-          return '<div class="bg-[#0c101d] border border-[#1c243c] rounded-lg px-3 py-2 flex items-center justify-between text-xs">' +
+          // É41 Phase B — les TASK sont cliquables (détail via GET /:id) ;
+          // les BATCH ne sont PAS cliquables (Phase C non implémentée).
+          const clickable = item.kind === 'TASK';
+          const row = '<div class="bg-[#0c101d] border border-[#1c243c] rounded-lg px-3 py-2 flex items-center justify-between text-xs' + (clickable ? ' cursor-pointer hover:border-amber-500/40' : ' opacity-80') + '"' +
+            (clickable ? ' onclick="openAgentsTaskDetail(\'' + agentsPanelEscape(item.executionId) + '\')"' : '') + '>' +
             '<div class="flex items-center space-x-2 min-w-0">' + kindBadge +
             '<span class="font-mono text-slate-300 truncate">' + agentsPanelEscape(item.executionId) + '</span>' +
             '<span class="' + agentsPanelStatusColor(item.status) + ' font-semibold">' + agentsPanelEscape(item.status) + '</span>' +
@@ -7683,7 +7688,144 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
             '<span class="text-slate-600">' + agentsPanelDuration(item) + '</span>' +
             '<span>' + gateTxt + '</span>' +
             '</div></div>';
+          return row;
         }).join('');
+    }
+
+    // É41 Phase B — détail d'une exécution TASK : lecture PURE de
+    // GET /agents/executions/:id (réponse réelle du backend, rendue telle
+    // quelle). Aucune donnée inventée : un champ absent reste absent.
+    let agentsTaskDetailEscapeCounter = 0;
+
+    function agentsDetailRow(label, value) {
+      if (value === undefined || value === null || value === '') return '';
+      return '<div class="flex items-start space-x-2 text-xs"><span class="text-slate-500 w-40 flex-shrink-0">' + agentsPanelEscape(label) + '</span><span class="text-slate-300 font-mono break-all">' + agentsPanelEscape(value) + '</span></div>';
+    }
+
+    function agentsDetailFlag(label, value) {
+      if (value === undefined || value === null) return '';
+      return '<div class="flex items-center space-x-2 text-xs"><span class="text-slate-500 w-40 flex-shrink-0">' + agentsPanelEscape(label) + '</span><span class="text-slate-300">' + agentsPanelEscape(String(value)) + '</span></div>';
+    }
+
+    async function openAgentsTaskDetail(executionId) {
+      const listEl = document.getElementById('agentsExecutionsList');
+      const detailEl = document.getElementById('agentsTaskDetail');
+      if (!detailEl || !listEl) return;
+
+      detailEl.classList.remove('hidden');
+      listEl.classList.add('hidden');
+      detailEl.innerHTML = '<div class="text-slate-500 text-xs">Chargement du détail…</div>';
+
+      let trace = null;
+      try {
+        const res = await fetch('/api/v1/projects/' + (userProjects.find(p => p.id === activeProjectId) || {}).serverProjectId + '/agents/executions/' + encodeURIComponent(executionId), { headers: studioApiHeaders() });
+        if (res.status === 404) {
+          detailEl.innerHTML = '<button onclick="closeAgentsTaskDetail()" class="text-amber-400 text-xs mb-2">&larr; Retour à la liste</button><div class="text-rose-300 text-xs">404 — exécution introuvable.</div>';
+          return;
+        }
+        if (!res.ok) {
+          detailEl.innerHTML = '<button onclick="closeAgentsTaskDetail()" class="text-amber-400 text-xs mb-2">&larr; Retour à la liste</button><div class="text-rose-300 text-xs">Erreur ' + res.status + ' lors de la consultation.</div>';
+          return;
+        }
+        const body = await res.json();
+        trace = body.trace;
+      } catch (e) {
+        detailEl.innerHTML = '<button onclick="closeAgentsTaskDetail()" class="text-amber-400 text-xs mb-2">&larr; Retour à la liste</button><div class="text-rose-300 text-xs">Erreur réseau lors de la consultation.</div>';
+        return;
+      }
+      if (!trace) {
+        detailEl.innerHTML = '<button onclick="closeAgentsTaskDetail()" class="text-amber-400 text-xs mb-2">&larr; Retour à la liste</button><div class="text-slate-400 text-xs">Aucune trace disponible.</div>';
+        return;
+      }
+
+      const statusColor = agentsPanelStatusColor(trace.status);
+      const phasesRows = (Array.isArray(trace.phases) ? trace.phases : []).map(function (p) {
+        return '<div class="flex items-start space-x-2 text-xs py-0.5 border-b border-[#131a2e] last:border-0">' +
+          '<span class="font-mono text-amber-300/90 w-56 flex-shrink-0">' + agentsPanelEscape(p.phase) + '</span>' +
+          '<span class="text-slate-500 flex-shrink-0">' + agentsPanelEscape(p.at || '') + '</span>' +
+          '<span class="text-slate-400 break-all">' + agentsPanelEscape(p.detail || '') + '</span>' +
+          '</div>';
+      }).join('');
+
+      const artifactsRows = (Array.isArray(trace.artifacts) ? trace.artifacts : []).map(function (a) {
+        return '<div class="bg-[#080b15] rounded px-2 py-1 text-xs space-y-0.5">' +
+          '<div class="text-slate-300 font-mono">' + agentsPanelEscape(a.kind) + ' · ' + agentsPanelEscape(a.id || '') + '</div>' +
+          '<div class="text-slate-500">cibles : ' + agentsPanelEscape((a.targetFiles || []).join(', ')) + '</div>' +
+          '<div class="text-slate-600 font-mono text-[10px]">hash : ' + agentsPanelEscape(a.hash || '') + '</div>' +
+          '</div>';
+      }).join('');
+
+      const mut = trace.mutation || {};
+      const ver = trace.verification || {};
+      const gate = trace.gate;
+      const rep = trace.repair;
+      const rb = trace.rollback || {};
+      const can = trace.cancellation || {};
+
+      let html = '<div class="flex items-center justify-between pb-2">' +
+        '<button onclick="closeAgentsTaskDetail()" class="text-amber-400 text-xs hover:text-amber-300">&larr; Retour à la liste</button>' +
+        '<button onclick="openAgentsTaskDetail(\'' + agentsPanelEscape(executionId) + '\')" class="text-slate-400 hover:text-white text-xs">Rafraîchir</button>' +
+        '</div>';
+
+      html += '<div class="bg-[#0c101d] border border-[#1c243c] rounded-lg p-3 space-y-1 mb-2">' +
+        '<div class="flex items-center space-x-2 pb-1">' +
+        '<span class="px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 text-[10px] font-bold">TASK</span>' +
+        '<span class="font-mono text-slate-200">' + agentsPanelEscape(trace.executionId) + '</span>' +
+        '<span class="' + statusColor + ' font-bold">' + agentsPanelEscape(trace.status) + '</span>' +
+        '</div>' +
+        agentsDetailRow('agentId', trace.agentId) +
+        agentsDetailRow('taskId', trace.taskId) +
+        agentsDetailRow('startedAt', trace.startedAt) +
+        agentsDetailRow('completedAt', trace.completedAt) +
+        agentsDetailRow('durée', (trace.durationMs != null && trace.durationMs >= 0) ? trace.durationMs + ' ms' : undefined) +
+        agentsDetailRow('batchExecutionId', trace.batchExecutionId) +
+        agentsDetailRow('erreur', trace.error) +
+        '</div>';
+
+      html += '<div class="bg-[#0c101d] border border-[#1c243c] rounded-lg p-3 mb-2">' +
+        '<div class="text-[10px] uppercase tracking-wide text-slate-500 pb-1">Phases (ordre backend)</div>' +
+        (phasesRows || '<div class="text-slate-500 text-xs">Aucune phase retournée.</div>') +
+        '</div>';
+
+      html += '<div class="bg-[#0c101d] border border-[#1c243c] rounded-lg p-3 mb-2">' +
+        '<div class="text-[10px] uppercase tracking-wide text-slate-500 pb-1">Mutation (données réelles)</div>' +
+        agentsDetailFlag('demandée', mut.requested) +
+        agentsDetailFlag('exécutée', mut.executed) +
+        agentsDetailRow('transactionId', mut.transactionId) +
+        agentsDetailFlag('appliedCount', mut.appliedCount) +
+        agentsDetailRow('erreur mutation', mut.error) +
+        '</div>';
+
+      html += '<div class="bg-[#0c101d] border border-[#1c243c] rounded-lg p-3 mb-2">' +
+        '<div class="text-[10px] uppercase tracking-wide text-slate-500 pb-1">Vérification / Gate</div>' +
+        agentsDetailFlag('vérification effectuée', ver.performed) +
+        agentsDetailFlag('vérification PASS', ver.passed) +
+        agentsDetailFlag('contrôles', ver.checkCount) +
+        agentsDetailRow('erreur vérification', ver.error) +
+        (gate ? agentsDetailFlag('gate', gate.passed) + agentsDetailRow('gateId', gate.gateId) + agentsDetailRow('raison gate', gate.reason) : '<div class="text-slate-500 text-xs">Gate non évalué pour cette exécution.</div>') +
+        '</div>';
+
+      html += '<div class="bg-[#0c101d] border border-[#1c243c] rounded-lg p-3 mb-2">' +
+        '<div class="text-[10px] uppercase tracking-wide text-slate-500 pb-1">Artifacts réels</div>' +
+        (artifactsRows || '<div class="text-slate-500 text-xs">Aucun artifact.</div>') +
+        '</div>';
+
+      html += '<div class="bg-[#0c101d] border border-[#1c243c] rounded-lg p-3 mb-2 space-y-1">' +
+        '<div class="text-[10px] uppercase tracking-wide text-slate-500 pb-1">Repair / Rollback / Cancellation</div>' +
+        (rep ? agentsDetailFlag('repair tenté', rep.attempted) + agentsDetailFlag('repairId', rep.repairId) + agentsDetailFlag('gate après repair', rep.gateAfterPassed) + agentsDetailRow('erreur repair', rep.error) : '<div class="text-slate-500 text-xs">Aucun repair.</div>') +
+        agentsDetailFlag('rollback effectué', rb.performed) +
+        agentsDetailFlag('rollback vérifié', rb.verified) +
+        (can.requested ? agentsDetailFlag('annulée', true) + agentsDetailFlag('point d annulation', can.at) : '') +
+        '</div>';
+
+      detailEl.innerHTML = html;
+    }
+
+    function closeAgentsTaskDetail() {
+      const detailEl = document.getElementById('agentsTaskDetail');
+      const listEl = document.getElementById('agentsExecutionsList');
+      if (detailEl) detailEl.classList.add('hidden');
+      if (listEl) listEl.classList.remove('hidden');
     }
 
     function addProjectActivity(type, desc, actor = 'Utilisateur', actorType = 'USER') {
