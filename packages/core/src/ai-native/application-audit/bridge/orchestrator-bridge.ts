@@ -13,7 +13,8 @@ const DOMAIN_TO_AGENT: Record<AgentDomain, string> = {
   DATA: 'agent-data-specialist',
   SECURITY: 'agent-security-specialist',
   TEST: 'agent-test-specialist',
-  ARCHITECTURE: 'agent-architecture-specialist'
+  ARCHITECTURE: 'agent-architecture-specialist',
+  CODE: 'agent-code-specialist'
 };
 
 const DOMAIN_TO_CAPABILITY: Record<AgentDomain, AgentCapability> = {
@@ -22,7 +23,8 @@ const DOMAIN_TO_CAPABILITY: Record<AgentDomain, AgentCapability> = {
   DATA: 'SCHEMA_MODELING',
   SECURITY: 'VULNERABILITY_SCAN',
   TEST: 'UNIT_TEST_GEN',
-  ARCHITECTURE: 'SERVICE_LOGIC'
+  ARCHITECTURE: 'SERVICE_LOGIC',
+  CODE: 'SERVICE_LOGIC'
 };
 
 export class ApplicationAuditOrchestratorBridge {

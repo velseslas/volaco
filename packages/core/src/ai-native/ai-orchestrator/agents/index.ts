@@ -5,3 +5,4 @@ export * from './data-agent.js';
 export * from './security-agent.js';
 export * from './test-agent.js';
 export * from './reference-agent.js';
+export * from './code-agent.js';

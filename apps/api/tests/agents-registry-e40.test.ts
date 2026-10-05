@@ -25,7 +25,8 @@ describe('ÉTAPE 40 Phase 2 — GET /agents (Registry réel)', () => {
     'agent-data-specialist',
     'agent-security-specialist',
     'agent-test-specialist',
-    'reference-agent'
+    'reference-agent',
+    'agent-code-specialist'
   ];
   const FAKE_CDC_IDS = ['intent-agent', 'application-analyst', 'impact-agent', 'planner', 'code-agent', 'database-agent', 'validator-agent', 'repair-agent'];
 
@@ -64,7 +65,7 @@ describe('ÉTAPE 40 Phase 2 — GET /agents (Registry réel)', () => {
     assert.equal(res.status, 200);
     const body = await res.json() as { agents: Array<Record<string, unknown>>; count: number; requestId: string };
     assert.equal(body.count, body.agents.length);
-    assert.equal(body.agents.length, 6, '6 agents réels (5 domaine + reference)');
+    assert.equal(body.agents.length, 7, '7 agents réels (5 domaine + reference + code)');
     for (const agent of body.agents) {
       assert.ok(agent.agentId, 'agentId présent');
       assert.ok(agent.name, 'name réel');
@@ -86,7 +87,7 @@ describe('ÉTAPE 40 Phase 2 — GET /agents (Registry réel)', () => {
     for (const expected of REAL_IDS) {
       assert.ok(ids.includes(expected), `${expected} enregistré`);
     }
-    assert.equal(ids.length, 6);
+    assert.equal(ids.length, 7);
   });
 
   // C — aucun faux agent CDC fabriqué

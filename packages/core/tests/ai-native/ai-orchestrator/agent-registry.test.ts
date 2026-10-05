@@ -142,18 +142,18 @@ describe('ÉTAPE 34 — Agent Registry & routage multi-agents', () => {
   it('C: list + unregister (6 agents du roster, doublon refusé)', () => {
     const registry = service.getExecutionAgentRegistry();
     const ids = registry.list().map((e) => e.id);
-    assert.equal(ids.length, 6, '5 agents de domaine + reference-agent');
-    for (const expected of ['reference-agent', 'agent-ui-specialist', 'agent-backend-specialist', 'agent-data-specialist', 'agent-security-specialist', 'agent-test-specialist']) {
+    assert.equal(ids.length, 7, '5 agents de domaine + reference-agent + code-agent (É40 P4)');
+    for (const expected of ['reference-agent', 'agent-code-specialist', 'agent-ui-specialist', 'agent-backend-specialist', 'agent-data-specialist', 'agent-security-specialist', 'agent-test-specialist']) {
       assert.ok(ids.includes(expected), `${expected} enregistré`);
     }
     assert.throws(() => registry.register(makeStubAgent('reference-agent', ['SERVICE_LOGIC'])), /déjà enregistré/);
 
     assert.equal(registry.unregister('reference-agent'), true);
     assert.equal(registry.has('reference-agent'), false);
-    assert.equal(registry.list().length, 5);
+    assert.equal(registry.list().length, 6);
     assert.equal(registry.unregister('reference-agent'), false, 'unregister idempotent');
     registry.register(new ReferenceAgent());
-    assert.equal(registry.list().length, 6, 'ré-enregistré');
+    assert.equal(registry.list().length, 7, 'ré-enregistré');
   });
 
   // =========================================================================
@@ -166,7 +166,7 @@ describe('ÉTAPE 34 — Agent Registry & routage multi-agents', () => {
     assert.equal(candidates[0]!.id, REFERENCE_AGENT_ID);
     // Une capability partagée (SERVICE_LOGIC : reference + backend) retourne TOUS les candidats.
     const shared = registry.resolveByCapability('SERVICE_LOGIC');
-    assert.equal(shared.length, 2, 'resolveByCapability retourne TOUS les candidats (le routeur refuse l ambiguïté)');
+    assert.equal(shared.length, 3, 'resolveByCapability retourne TOUS les candidats (reference + backend + code)');
   });
 
   it('E: résolution par domaine + vue scheduler dérivée', () => {
@@ -174,9 +174,10 @@ describe('ÉTAPE 34 — Agent Registry & routage multi-agents', () => {
     assert.equal(registry.resolveByDomain('UI')?.id, 'agent-ui-specialist');
     assert.equal(registry.resolveByDomain('ARCHITECTURE')?.id, 'reference-agent');
     assert.equal(registry.resolveByDomain('BACKEND')?.id, 'agent-backend-specialist');
+    assert.equal(registry.resolveByDomain('CODE')?.id, 'agent-code-specialist');
 
     const domainMap = registry.domainMap();
-    assert.equal(domainMap.size, 6, '6 domaines uniques (5 + ARCHITECTURE)');
+    assert.equal(domainMap.size, 7, '7 domaines uniques (5 + ARCHITECTURE + CODE)');
     assert.equal(domainMap.get('TEST')?.definition.id, 'agent-test-specialist');
   });
 

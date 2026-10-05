@@ -15,7 +15,8 @@ export type AgentDomain =
   | 'DATA'
   | 'SECURITY'
   | 'TEST'
-  | 'ARCHITECTURE';
+  | 'ARCHITECTURE'
+  | 'CODE';
 
 export type AgentCapability =
   | 'PAGE_GENERATION'

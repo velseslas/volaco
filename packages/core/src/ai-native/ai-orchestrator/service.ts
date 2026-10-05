@@ -23,6 +23,7 @@ import { DataAgent } from './agents/data-agent.js';
 import { SecurityAgent } from './agents/security-agent.js';
 import { TestAgent } from './agents/test-agent.js';
 import { ReferenceAgent } from './agents/reference-agent.js';
+import { CodeAgent } from './agents/code-agent.js';
 import { AgentExecutionService, NULL_FILE_OBSERVER, type AgentExecutionRequest, type AgentExecutionOutcome } from './execution/agent-execution.js';
 import { AgentRegistryService } from './registry/agent-registry.js';
 import { MultiAgentScheduler, type MultiAgentSchedulerRequest, type MultiAgentSchedulerOutcome } from './execution/multi-agent-scheduler.js';
@@ -117,6 +118,7 @@ export class AIOrchestratorService {
     this.agentRegistry.register(new DataAgent(registry));
     this.agentRegistry.register(new SecurityAgent(registry));
     this.agentRegistry.register(new TestAgent(registry));
+    this.agentRegistry.register(new CodeAgent(registry));
     this.agentRegistry.register(new ReferenceAgent(registry));
 
     this.specializedAgents = this.agentRegistry.domainMap();
