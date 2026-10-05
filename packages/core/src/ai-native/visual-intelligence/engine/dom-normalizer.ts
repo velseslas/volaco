@@ -158,7 +158,13 @@ export class DomNormalizer {
     };
 
     const trimmed = (html || '').trim();
-    if (!trimmed) {
+    // É44 P2C — ignorer les préfixes non-élément (doctype, commentaires,
+    // espaces) avant le premier tag : sans cela, `<!DOCTYPE html>` ne matchait
+    // pas l'ancre `^<[a-zA-Z0-9-]` de parseTag et tout le document dégénérait
+    // en un seul nœud « texte pur » (span/PARAGRAPH). Rien d'autre n'est
+    // retiré : pas de suppression arbitraire de contenu HTML.
+    const content = trimmed.replace(/^(?:\s+|<!DOCTYPE[^>]*>|<!--[\s\S]*?-->)+/i, '');
+    if (!content) {
       return {
         id: 'node-empty',
         tagName: 'div',
@@ -174,7 +180,7 @@ export class DomNormalizer {
       };
     }
 
-    return parseTag(trimmed);
+    return parseTag(content);
   }
 
   public normalizeFromRuntimeProbe(payload: unknown): NormalizedDomNode {
