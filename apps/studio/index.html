@@ -1903,6 +1903,10 @@
                   <i class="fa-solid fa-code-commit text-[10px]"></i>
                   <span>Révisions & Rollback</span>
                 </button>
+                <button onclick="switchHistorySubMode('agents')" id="btnHistTab-agents" class="px-3 py-1 rounded-lg text-slate-400 hover:text-white font-medium text-xs transition flex items-center space-x-1.5">
+                  <i class="fa-solid fa-robot text-[10px]"></i>
+                  <span>Agents (É41)</span>
+                </button>
               </div>
               <button onclick="createManualSnapshotPrompt()" class="px-3.5 py-1.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-bold text-xs rounded-xl shadow-lg shadow-amber-500/20 flex items-center space-x-1.5 transition active:scale-95">
                 <i class="fa-solid fa-camera text-xs"></i>
@@ -1917,6 +1921,31 @@
           <!-- Timeline Container (CAPP-007) -->
           <div id="activityTimelineContainer" class="flex-1 p-6 overflow-y-auto space-y-3">
             <!-- Dynamically injected activity timeline -->
+          </div>
+
+          <!-- Agents Panel Container (É41 — exécutions agents É32→É40, lecture pure) -->
+          <div id="agentsPanelContainer" class="flex-1 p-6 overflow-y-auto space-y-3 hidden">
+            <div class="flex items-center space-x-2 pb-2 flex-wrap">
+              <button onclick="refreshAgentsPanel()" id="btnAgentsRefresh" class="px-3 py-1.5 rounded-xl bg-[#12172a] hover:bg-[#1a223e] border border-[#1e2642] text-slate-300 hover:text-white text-xs font-semibold flex items-center space-x-1.5 transition active:scale-95">
+                <i class="fa-solid fa-rotate text-amber-400 text-xs"></i><span>Rafraîchir</span>
+              </button>
+              <select id="agentsFilterKind" onchange="refreshAgentsPanel()" class="bg-[#060812] border border-[#1e2642] text-slate-300 text-xs rounded-lg px-2 py-1.5">
+                <option value="">Tous les types</option>
+                <option value="TASK">TASK</option>
+                <option value="BATCH">BATCH</option>
+              </select>
+              <select id="agentsFilterStatus" onchange="refreshAgentsPanel()" class="bg-[#060812] border border-[#1e2642] text-slate-300 text-xs rounded-lg px-2 py-1.5">
+                <option value="">Tous les statuts</option>
+                <option value="SUCCESS">SUCCESS</option>
+                <option value="FAILURE">FAILURE</option>
+                <option value="ROLLED_BACK">ROLLED_BACK</option>
+                <option value="CANCELLED">CANCELLED</option>
+                <option value="DEGRADED">DEGRADED</option>
+              </select>
+              <input id="agentsFilterAgentId" placeholder="agentId…" onchange="refreshAgentsPanel()" class="bg-[#060812] border border-[#1e2642] text-slate-300 text-xs rounded-lg px-2 py-1.5 w-44" />
+            </div>
+            <div id="agentsRoster" class="space-y-1"></div>
+            <div id="agentsExecutionsList" class="space-y-2 pt-2"></div>
           </div>
 
           <!-- Revisions List Container (CORE-007) -->
@@ -7504,17 +7533,35 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
       loadServerHistoryData();
       const bTime = document.getElementById('btnHistTab-timeline');
       const bRevs = document.getElementById('btnHistTab-revisions');
+      const bAgents = document.getElementById('btnHistTab-agents');
       const cTime = document.getElementById('activityTimelineContainer');
       const cRevs = document.getElementById('revisionsListContainer');
+      const cAgents = document.getElementById('agentsPanelContainer');
 
       if (mode === 'timeline') {
         if (bTime) bTime.className = 'px-3 py-1 rounded-lg bg-amber-500 text-slate-950 font-bold text-xs transition flex items-center space-x-1.5';
         if (bRevs) bRevs.className = isStudioLightMode
           ? 'px-3 py-1 rounded-lg text-slate-600 hover:text-slate-900 font-semibold text-xs transition flex items-center space-x-1.5'
           : 'px-3 py-1 rounded-lg text-slate-400 hover:text-white font-medium text-xs transition flex items-center space-x-1.5';
+        if (bAgents) bAgents.className = isStudioLightMode
+          ? 'px-3 py-1 rounded-lg text-slate-600 hover:text-slate-900 font-semibold text-xs transition flex items-center space-x-1.5'
+          : 'px-3 py-1 rounded-lg text-slate-400 hover:text-white font-medium text-xs transition flex items-center space-x-1.5';
         if (cTime) cTime.classList.remove('hidden');
         if (cRevs) cRevs.classList.add('hidden');
+        if (cAgents) cAgents.classList.add('hidden');
         renderActivityTimeline();
+      } else if (mode === 'agents') {
+        if (bTime) bTime.className = isStudioLightMode
+          ? 'px-3 py-1 rounded-lg text-slate-600 hover:text-slate-900 font-semibold text-xs transition flex items-center space-x-1.5'
+          : 'px-3 py-1 rounded-lg text-slate-400 hover:text-white font-medium text-xs transition flex items-center space-x-1.5';
+        if (bRevs) bRevs.className = isStudioLightMode
+          ? 'px-3 py-1 rounded-lg text-slate-600 hover:text-slate-900 font-semibold text-xs transition flex items-center space-x-1.5'
+          : 'px-3 py-1 rounded-lg text-slate-400 hover:text-white font-medium text-xs transition flex items-center space-x-1.5';
+        if (bAgents) bAgents.className = 'px-3 py-1 rounded-lg bg-amber-500 text-slate-950 font-bold text-xs transition flex items-center space-x-1.5';
+        if (cTime) cTime.classList.add('hidden');
+        if (cRevs) cRevs.classList.add('hidden');
+        if (cAgents) cAgents.classList.remove('hidden');
+        refreshAgentsPanel();
       } else {
         if (bTime) bTime.className = isStudioLightMode
           ? 'px-3 py-1 rounded-lg text-slate-600 hover:text-slate-900 font-semibold text-xs transition flex items-center space-x-1.5'
@@ -7524,6 +7571,119 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
         if (cRevs) cRevs.classList.remove('hidden');
         renderRevisionsHistory();
       }
+    }
+
+    // É41 Phase A — panneau Agents : lecture PURE des routes GET É38/É39/É40.
+    // Aucune donnée fabriquée, aucun polling : rafraîchissement manuel uniquement.
+    function agentsPanelEscape(text) {
+      return String(text == null ? '' : text)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    function agentsPanelStatusColor(status) {
+      if (status === 'SUCCESS' || status === 'COMPLETED') return 'text-emerald-400';
+      if (status === 'FAILURE' || status === 'FAILED' || status === 'FAILED_ROLLBACK') return 'text-rose-400';
+      if (status === 'CANCELLED') return 'text-slate-400';
+      if (status === 'ROLLED_BACK') return 'text-amber-400';
+      if (status === 'DEGRADED') return 'text-orange-400';
+      return 'text-slate-400';
+    }
+
+    function agentsPanelDuration(item) {
+      if (item.durationMs != null && item.durationMs >= 0) {
+        return '· ' + (item.durationMs / 1000).toFixed(1) + 's';
+      }
+      if (item.startedAt && item.completedAt) {
+        const d = Math.max(0, Math.round((new Date(item.completedAt) - new Date(item.startedAt)) / 1000));
+        return '· ' + d + 's';
+      }
+      return ''; // durée absente du backend : on n'invente rien
+    }
+
+    async function refreshAgentsPanel() {
+      const proj = userProjects.find(p => p.id === activeProjectId);
+      const pid = proj && proj.serverProjectId;
+      const rosterEl = document.getElementById('agentsRoster');
+      const listEl = document.getElementById('agentsExecutionsList');
+      if (!rosterEl || !listEl || !pid) return;
+
+      const kind = document.getElementById('agentsFilterKind') ? document.getElementById('agentsFilterKind').value : '';
+      const status = document.getElementById('agentsFilterStatus') ? document.getElementById('agentsFilterStatus').value : '';
+      const agentId = document.getElementById('agentsFilterAgentId') ? document.getElementById('agentsFilterAgentId').value : '';
+
+      rosterEl.innerHTML = '<div class="text-slate-500 text-xs">Chargement du roster…</div>';
+      listEl.innerHTML = '<div class="text-slate-500 text-xs">Chargement des exécutions…</div>';
+
+      // GET /agents — roster réel (É40)
+      let agents = [];
+      try {
+        const rAgents = await fetch('/api/v1/projects/' + pid + '/agents', { headers: studioApiHeaders() });
+        if (rAgents.ok) {
+          const data = await rAgents.json();
+          agents = Array.isArray(data.agents) ? data.agents : [];
+        }
+      } catch (e) { /* état vide affiché ci-dessous — aucune donnée fabriquée */ }
+
+      // GET /agents/executions — exécutions persistées réelles (É38/É39)
+      let executions = [];
+      try {
+        const params = new URLSearchParams();
+        params.set('order', 'DESC');
+        params.set('limit', '50');
+        if (kind) params.set('kind', kind);
+        if (status) params.set('status', status);
+        if (agentId) params.set('agentId', agentId);
+        const rExec = await fetch('/api/v1/projects/' + pid + '/agents/executions?' + params.toString(), { headers: studioApiHeaders() });
+        if (rExec.ok) {
+          const data = await rExec.json();
+          executions = Array.isArray(data.items) ? data.items : [];
+        }
+      } catch (e) { /* aucune exécution affichée en cas d'erreur réseau */ }
+
+      // Roster réel
+      if (agents.length === 0) {
+        rosterEl.innerHTML = '<div class="text-slate-500 text-xs italic">Aucun agent enregistré côté serveur.</div>';
+      } else {
+        rosterEl.innerHTML = '<div class="text-[10px] uppercase tracking-wide text-slate-500 pb-1">Agents enregistrés (' + agents.length + ')</div>' +
+          agents.map(function (a) {
+            const prov = (a.requiresProviderCapabilities && a.requiresProviderCapabilities.length > 0)
+              ? a.requiresProviderCapabilities.join(', ')
+              : 'aucun (déterministe)';
+            return '<div class="bg-[#0c101d] border border-[#1c243c] rounded-lg px-3 py-1.5 flex items-center space-x-2 text-xs">' +
+              '<i class="fa-solid fa-robot text-amber-400 text-[10px]"></i>' +
+              '<span class="font-semibold text-slate-200">' + agentsPanelEscape(a.name) + '</span>' +
+              '<span class="text-slate-500 font-mono text-[10px]">' + agentsPanelEscape(a.agentId) + '</span>' +
+              '<span class="text-slate-500">· domaine ' + agentsPanelEscape(a.domain) + '</span>' +
+              '<span class="text-slate-600">· provider requis : ' + agentsPanelEscape(prov) + '</span>' +
+              '</div>';
+          }).join('');
+      }
+
+      // Exécutions réelles
+      if (executions.length === 0) {
+        listEl.innerHTML = '<div class="text-slate-500 text-xs italic py-4">Aucune exécution persistée.</div>';
+        return;
+      }
+      listEl.innerHTML = '<div class="text-[10px] uppercase tracking-wide text-slate-500 pb-1">Exécutions persistées (' + executions.length + ')</div>' +
+        executions.map(function (item) {
+          const kindBadge = item.kind === 'BATCH'
+            ? '<span class="px-1.5 py-0.5 rounded bg-violet-500/10 text-violet-300 border border-violet-500/20 text-[10px] font-bold">BATCH</span>'
+            : '<span class="px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 text-[10px] font-bold">TASK</span>';
+          const agentTxt = item.agentId ? agentsPanelEscape(item.agentId) : '<span class="text-slate-600">—</span>';
+          const gateTxt = (item.gate && typeof item.gate.passed === 'boolean')
+            ? (item.gate.passed ? '<span class="text-emerald-400">gate ✓</span>' : '<span class="text-rose-400">gate ✗</span>')
+            : '';
+          return '<div class="bg-[#0c101d] border border-[#1c243c] rounded-lg px-3 py-2 flex items-center justify-between text-xs">' +
+            '<div class="flex items-center space-x-2 min-w-0">' + kindBadge +
+            '<span class="font-mono text-slate-300 truncate">' + agentsPanelEscape(item.executionId) + '</span>' +
+            '<span class="' + agentsPanelStatusColor(item.status) + ' font-semibold">' + agentsPanelEscape(item.status) + '</span>' +
+            '<span class="text-slate-500">' + agentTxt + '</span>' +
+            '<span class="text-slate-600">' + agentsPanelEscape(item.startedAt || '') + '</span>' +
+            '<span class="text-slate-600">' + agentsPanelDuration(item) + '</span>' +
+            '<span>' + gateTxt + '</span>' +
+            '</div></div>';
+        }).join('');
     }
 
     function addProjectActivity(type, desc, actor = 'Utilisateur', actorType = 'USER') {
