@@ -2016,7 +2016,21 @@
           <!-- Main Scrollable Body: Score Card, 8 Dimension Gauges, Filters & Findings -->
           <div class="flex-1 overflow-y-auto p-6 space-y-6 select-text" id="wsAuditScrollBody">
             
-            <!-- Overall Score & 8 Dimensions Grid Header -->
+            <!-- ÉTAPE 42 — Design Harmony (lecture pure GET /design) -->
+          <div id="designHarmonyCard" class="bg-[#0c1020] border border-[#1e2642] rounded-xl p-4 space-y-3">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center space-x-2">
+                <h3 class="text-sm font-bold text-white">Design Harmony (É42)</h3>
+                <span class="px-2 py-0.5 rounded-full bg-violet-500/10 text-violet-300 border border-violet-500/20 text-[10px] font-bold">AINT-011 / V8</span>
+              </div>
+              <button onclick="loadDesignHarmony()" id="btnDesignHarmony" class="px-3 py-1.5 rounded-xl bg-[#12172a] hover:bg-[#1a223e] border border-[#1e2642] text-slate-300 hover:text-white text-xs font-semibold flex items-center space-x-1.5 transition active:scale-95">
+                <i class="fa-solid fa-palette text-violet-400 text-xs"></i><span>Analyser</span>
+              </button>
+            </div>
+            <div id="designHarmonyBody" class="text-slate-400 text-xs">Cliquez sur « Analyser » pour produire le rapport réel (GET /design).</div>
+          </div>
+
+          <!-- Overall Score & 8 Dimensions Grid Header -->
             <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
               <!-- Left: Big Overall Score Card (lg:col-span-4) -->
               <div class="lg:col-span-4 bg-[#0c1020] border border-[#1e2642] rounded-2xl p-5 flex flex-col justify-between shadow-lg relative overflow-hidden">
@@ -7576,6 +7590,84 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
 
     // É41 Phase A — panneau Agents : lecture PURE des routes GET É38/É39/É40.
     // Aucune donnée fabriquée, aucun polling : rafraîchissement manuel uniquement.
+
+    // ÉTAPE 42 — Design Harmony : lecture PURE de GET /design (rapport réel
+    // produit par DesignHarmonyService). Aucun verdict calculé côté Studio :
+    // seuls les champs réellement retournés sont affichés.
+    async function loadDesignHarmony() {
+      const proj = userProjects.find(p => p.id === activeProjectId);
+      const pid = proj && proj.serverProjectId;
+      const bodyEl = document.getElementById('designHarmonyBody');
+      if (!bodyEl || !pid) return;
+      bodyEl.innerHTML = '<div class="text-slate-500 text-xs">Analyse en cours (GET /design)…</div>';
+      let data;
+      try {
+        const res = await fetch('/api/v1/projects/' + pid + '/design', { headers: studioApiHeaders() });
+        if (!res.ok) {
+          const err = await res.json().catch(function () { return {}; });
+          const msg = (err.error && err.error.message) || err.message || ('HTTP ' + res.status);
+          bodyEl.innerHTML = '<div class="text-rose-300 text-xs">Erreur réelle : ' + designPanelEscape(msg) + '</div>';
+          return;
+        }
+        data = await res.json();
+      } catch (e) {
+        bodyEl.innerHTML = '<div class="text-rose-300 text-xs">Erreur réseau : ' + designPanelEscape(String(e && e.message || e)) + '</div>';
+        return;
+      }
+      const har = data.harmony || {};
+      const dir = data.designDirection || {};
+      const ev = dir.evidence || {};
+      const tokens = data.tokens || {};
+      const sub = har.subScores || {};
+      const findings = Array.isArray(har.topFindings) ? har.topFindings : [];
+      let html = '';
+      html += '<div class="flex items-center space-x-4 pb-2">';
+      html += '<div class="text-3xl font-extrabold font-mono ' + designPanelEscapeClass(data.dqi) + '">DQI ' + data.dqi + '</div>';
+      html += '<div class="text-slate-300">Harmonie : <span class="font-semibold ' + designPanelEscapeClass(har.overallScore) + '">' + har.overallScore + '/100</span></div>';
+      html += '</div>';
+      html += '<div class="grid grid-cols-2 gap-x-4 gap-y-0.5 pb-2">';
+      html += designPanelSubScore('Couleur', sub.colorHarmony);
+      html += designPanelSubScore('Typographie', sub.typographyHarmony);
+      html += designPanelSubScore('Espacement', sub.spacingHarmony);
+      html += designPanelSubScore('Formes', sub.shapeHarmony);
+      html += designPanelSubScore('Élévation', sub.elevationHarmony);
+      html += designPanelSubScore('Composants', sub.componentHarmony);
+      html += designPanelSubScore('Multi-pages', sub.crossPageHarmony);
+      html += designPanelSubScore('A11y responsive', sub.responsiveA11yHarmony);
+      html += '</div>';
+      html += '<div class="grid grid-cols-2 gap-x-4 pb-2 text-xs">';
+      html += '<div>Style : <span class="text-slate-200">' + designPanelEscape(dir.style) + '</span></div>';
+      html += '<div>Densité : <span class="text-slate-200">' + designPanelEscape(dir.density) + '</span></div>';
+      html += '<div>Personnalité : <span class="text-slate-200">' + designPanelEscape(dir.personality) + '</span></div>';
+      html += '<div>Énergie : <span class="text-slate-200">' + designPanelEscape(dir.visualEnergy) + '</span></div>';
+      html += '</div>';
+      html += '<div class="text-xs text-slate-500 pb-1">Preuves : rayon dominant ' + (ev.dominantRadiusPx != null ? ev.dominantRadiusPx : '?') + 'px · ' + (ev.colorCount != null ? ev.colorCount : '?') + ' couleurs · ' + (ev.fontCount != null ? ev.fontCount : '?') + ' polices · ' + (ev.totalElements != null ? ev.totalElements : '?') + ' éléments</div>';
+      html += '<div class="text-xs text-slate-500 pb-1">Tokens inférés : confiance ' + (tokens.systemConfidence != null ? tokens.systemConfidence : '?') + ' · preuves : ' + (tokens.evidenceCount != null ? tokens.evidenceCount : '?') + '</div>';
+      html += '<div class="text-[10px] uppercase tracking-wide text-slate-500 pt-1 pb-0.5">Findings réels (' + findings.length + ')</div>';
+      if (findings.length === 0) {
+        html += '<div class="text-slate-500 text-xs italic">Aucun finding retourné par le backend.</div>';
+      } else {
+        html += findings.map(function (f) {
+          const sevClass = f.severity === 'CRITICAL' ? 'text-rose-400' : f.severity === 'HIGH' ? 'text-amber-400' : 'text-slate-300';
+          return '<div class="text-xs py-0.5 border-b border-[#131a2e] last:border-0"><span class="font-semibold ' + sevClass + '">' + designPanelEscape(f.severity) + '</span> · ' + designPanelEscape(f.property) + ' — observé : ' + designPanelEscape(f.observedValue) + (f.expectedValue !== undefined && f.expectedValue !== null ? ' (attendu : ' + designPanelEscape(f.expectedValue) + ')' : '') + '</div>';
+        }).join('');
+      }
+      bodyEl.innerHTML = html;
+    }
+    function designPanelSubScore(label, value) {
+      if (value == null) return '<div class="text-xs"><span class="text-slate-400">' + designPanelEscape(label) + ' :</span> <span class="text-slate-500">non disponible</span></div>';
+      return '<div class="flex items-center justify-between text-xs"><span class="text-slate-400">' + designPanelEscape(label) + '</span><span class="text-slate-200 font-mono">' + value + '/100</span></div>';
+    }
+    function designPanelEscapeClass(score) {
+      return score >= 90 ? 'text-emerald-400' : score >= 70 ? 'text-amber-400' : 'text-rose-400';
+    }
+    function designPanelEscape(text) {
+      return String(text == null ? '' : text)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+
     function agentsPanelEscape(text) {
       return String(text == null ? '' : text)
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
