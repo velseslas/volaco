@@ -7675,11 +7675,14 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
           const gateTxt = (item.gate && typeof item.gate.passed === 'boolean')
             ? (item.gate.passed ? '<span class="text-emerald-400">gate ✓</span>' : '<span class="text-rose-400">gate ✗</span>')
             : '';
-          // É41 Phase B — les TASK sont cliquables (détail via GET /:id) ;
-          // les BATCH ne sont PAS cliquables (Phase C non implémentée).
-          const clickable = item.kind === 'TASK';
+          // É41 Phase B/C — TASK → détail task (GET /:id) ; BATCH → détail
+          // batch corrélé (GET /:id + GET /:id/tasks). Les deux en lecture pure.
+          const clickable = item.kind === 'TASK' || item.kind === 'BATCH';
+          const openHandler = item.kind === 'BATCH'
+            ? 'openAgentsBatchDetail(\'' + agentsPanelEscape(item.executionId) + '\')'
+            : 'openAgentsTaskDetail(\'' + agentsPanelEscape(item.executionId) + '\')';
           const row = '<div class="bg-[#0c101d] border border-[#1c243c] rounded-lg px-3 py-2 flex items-center justify-between text-xs' + (clickable ? ' cursor-pointer hover:border-amber-500/40' : ' opacity-80') + '"' +
-            (clickable ? ' onclick="openAgentsTaskDetail(\'' + agentsPanelEscape(item.executionId) + '\')"' : '') + '>' +
+            (clickable ? ' onclick="' + openHandler + '"' : '') + '>' +
             '<div class="flex items-center space-x-2 min-w-0">' + kindBadge +
             '<span class="font-mono text-slate-300 truncate">' + agentsPanelEscape(item.executionId) + '</span>' +
             '<span class="' + agentsPanelStatusColor(item.status) + ' font-semibold">' + agentsPanelEscape(item.status) + '</span>' +
@@ -7817,6 +7820,140 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
         agentsDetailFlag('rollback vérifié', rb.verified) +
         (can.requested ? agentsDetailFlag('annulée', true) + agentsDetailFlag('point d annulation', can.at) : '') +
         '</div>';
+
+      detailEl.innerHTML = html;
+    }
+
+    // É41 Phase C — détail d'un BATCH : lecture PURE de GET /:id + GET /:id/tasks.
+    // Les tâches avec trace TASK utilisent le détail Phase B (openAgentsTaskDetail).
+    // Les tâches BLOCKED/PENDING sans trace sont listées depuis tasksWithoutTrace
+    // — AUCUNE trace/phase/gate/artifact fabriquée pour elles.
+    async function openAgentsBatchDetail(executionId) {
+      const listEl = document.getElementById('agentsExecutionsList');
+      const detailEl = document.getElementById('agentsTaskDetail');
+      if (!detailEl || !listEl) return;
+
+      detailEl.classList.remove('hidden');
+      listEl.classList.add('hidden');
+      detailEl.innerHTML = '<div class="text-slate-500 text-xs">Chargement du détail batch…</div>';
+
+      const proj = (userProjects.find(p => p.id === activeProjectId) || {}).serverProjectId;
+      let batch = null;
+      let taskTraces = [];
+      let tasksWithoutTrace = [];
+      try {
+        const bRes = await fetch('/api/v1/projects/' + proj + '/agents/executions/' + encodeURIComponent(executionId), { headers: studioApiHeaders() });
+        if (bRes.status === 404) {
+          detailEl.innerHTML = '<button onclick="closeAgentsTaskDetail()" class="text-amber-400 text-xs mb-2">&larr; Retour à la liste</button><div class="text-rose-300 text-xs">404 — batch introuvable.</div>';
+          return;
+        }
+        if (!bRes.ok) {
+          detailEl.innerHTML = '<button onclick="closeAgentsTaskDetail()" class="text-amber-400 text-xs mb-2">&larr; Retour à la liste</button><div class="text-rose-300 text-xs">Erreur ' + bRes.status + ' lors de la consultation du batch.</div>';
+          return;
+        }
+        batch = (await bRes.json()).batch;
+        const tRes = await fetch('/api/v1/projects/' + proj + '/agents/executions/' + encodeURIComponent(executionId) + '/tasks', { headers: studioApiHeaders() });
+        if (tRes.ok) {
+          const tData = await tRes.json();
+          taskTraces = Array.isArray(tData.taskTraces) ? tData.taskTraces : [];
+          tasksWithoutTrace = Array.isArray(tData.tasksWithoutTrace) ? tData.tasksWithoutTrace : [];
+        }
+      } catch (e) {
+        detailEl.innerHTML = '<button onclick="closeAgentsTaskDetail()" class="text-amber-400 text-xs mb-2">&larr; Retour à la liste</button><div class="text-rose-300 text-xs">Erreur réseau lors de la consultation du batch.</div>';
+        return;
+      }
+      if (!batch) {
+        detailEl.innerHTML = '<button onclick="closeAgentsTaskDetail()" class="text-amber-400 text-xs mb-2">&larr; Retour à la liste</button><div class="text-slate-400 text-xs">Aucune trace de batch disponible.</div>';
+        return;
+      }
+
+      const statusColor = agentsPanelStatusColor(batch.status);
+      const counts = batch.counts || {};
+      const countsRows = Object.keys(counts).map(function (k) {
+        return '<span class="text-slate-400 text-xs">' + agentsPanelEscape(k) + ' : <span class="text-slate-200 font-semibold">' + agentsPanelEscape(counts[k]) + '</span></span>';
+      }).join('<span class="text-slate-600 mx-1">·</span>');
+
+      const phasesRows = (Array.isArray(batch.phases) ? batch.phases : []).map(function (p) {
+        return '<div class="flex items-start space-x-2 text-xs py-0.5 border-b border-[#131a2e] last:border-0">' +
+          '<span class="font-mono text-amber-300/90 w-56 flex-shrink-0">' + agentsPanelEscape(p.phase) + '</span>' +
+          '<span class="text-slate-500 flex-shrink-0">' + agentsPanelEscape(p.at || '') + '</span>' +
+          '<span class="text-slate-400 break-all">' + agentsPanelEscape(p.detail || '') + '</span>' +
+          '</div>';
+      }).join('');
+
+      const taskRows = (Array.isArray(batch.tasks) ? batch.tasks : []).map(function (t) {
+        // Corrélation par taskExecutionId (identifiant réel É37) : une trace
+        // TASK corrélée est cliquable (détail Phase B) ; BLOCKED/PENDING
+        // restent listés sans trace — aucun verdict/artifact fabriqué.
+        const hasTrace = taskTraces.some(function (tt) { return tt.executionId === t.taskExecutionId; });
+        const statusColor = agentsPanelStatusColor(t.status);
+        const execColor = t.executionStatus ? agentsPanelStatusColor(t.executionStatus) : 'text-slate-500';
+        const click = hasTrace ? ' cursor-pointer hover:border-amber-500/40' : '';
+        const onclick = hasTrace ? ' onclick="openAgentsTaskDetail(\'' + agentsPanelEscape(t.taskExecutionId) + '\')"' : '';
+        return '<div class="bg-[#080b15] border border-[#161c2e] rounded-lg px-2 py-1.5 text-xs space-y-0.5' + click + '"' + onclick + '>' +
+          '<div class="flex items-center space-x-2 flex-wrap">' +
+          '<span class="font-mono text-slate-300">' + agentsPanelEscape(t.taskId) + '</span>' +
+          '<span class="' + statusColor + ' font-semibold">' + agentsPanelEscape(t.status) + '</span>' +
+          (t.executionStatus ? '<span class="' + execColor + '">(' + agentsPanelEscape(t.executionStatus) + ')</span>' : '<span class="text-slate-600 italic">aucune exécution</span>') +
+          '</div>' +
+          '<div class="font-mono text-[10px] text-slate-500">' + agentsPanelEscape(t.taskExecutionId) + '</div>' +
+          '<div class="text-slate-600 text-[10px]">agent : ' + agentsPanelEscape(t.agentId) + '</div>' +
+          (t.blockedReason ? '<div class="text-amber-300/80 text-[10px]">' + agentsPanelEscape(t.blockedReason) + '</div>' : '') +
+          (hasTrace ? '<div class="text-amber-400/70 text-[10px]">↳ trace TASK consultable (clic)</div>' : '<div class="text-slate-600 text-[10px]">↳ aucune trace d exécution</div>') +
+          '</div>';
+      }).join('');
+
+      const withoutRows = tasksWithoutTrace.map(function (t) {
+        return '<div class="bg-[#080b15] border border-amber-900/40 rounded-lg px-2 py-1.5 text-xs space-y-0.5">' +
+          '<div class="flex items-center space-x-2 flex-wrap">' +
+          '<span class="font-mono text-slate-300">' + agentsPanelEscape(t.taskId) + '</span>' +
+          '<span class="' + agentsPanelStatusColor(t.status) + ' font-semibold">' + agentsPanelEscape(t.status) + '</span>' +
+          '</div>' +
+          '<div class="font-mono text-[10px] text-slate-500">' + agentsPanelEscape(t.taskExecutionId) + '</div>' +
+          (t.blockedReason ? '<div class="text-amber-300/80 text-[10px]">' + agentsPanelEscape(t.blockedReason) + '</div>' : '') +
+          '</div>';
+      }).join('');
+
+      let html = '<div class="flex items-center justify-between pb-2">' +
+        '<button onclick="closeAgentsTaskDetail()" class="text-amber-400 text-xs hover:text-amber-300">&larr; Retour à la liste</button>' +
+        '<button onclick="openAgentsBatchDetail(\'' + agentsPanelEscape(executionId) + '\')" class="text-slate-400 hover:text-white text-xs">Rafraîchir</button>' +
+        '</div>';
+
+      html += '<div class="bg-[#0c101d] border border-[#1c243c] rounded-lg p-3 space-y-1 mb-2">' +
+        '<div class="flex items-center space-x-2 pb-1">' +
+        '<span class="px-1.5 py-0.5 rounded bg-violet-500/10 text-violet-300 border border-violet-500/20 text-[10px] font-bold">BATCH</span>' +
+        '<span class="font-mono text-slate-200">' + agentsPanelEscape(batch.executionId) + '</span>' +
+        '<span class="' + statusColor + ' font-bold">' + agentsPanelEscape(batch.status) + '</span>' +
+        '</div>' +
+        agentsDetailRow('startedAt', batch.startedAt) +
+        agentsDetailRow('endedAt', batch.endedAt) +
+        agentsDetailRow('durée', (batch.durationMs != null && batch.durationMs >= 0) ? batch.durationMs + ' ms' : undefined) +
+        agentsDetailRow('erreur', batch.error) +
+        '</div>';
+
+      if (countsRows) {
+        html += '<div class="bg-[#0c101d] border border-[#1c243c] rounded-lg p-3 mb-2">' +
+          '<div class="text-[10px] uppercase tracking-wide text-slate-500 pb-1">Compteurs (backend)</div>' +
+          '<div class="flex items-center flex-wrap gap-x-2">' + countsRows + '</div>' +
+          '</div>';
+      }
+
+      html += '<div class="bg-[#0c101d] border border-[#1c243c] rounded-lg p-3 mb-2">' +
+        '<div class="text-[10px] uppercase tracking-wide text-slate-500 pb-1">Phases scheduler (ordre backend)</div>' +
+        (phasesRows || '<div class="text-slate-500 text-xs">Aucune phase retournée.</div>') +
+        '</div>';
+
+      html += '<div class="bg-[#0c101d] border border-[#1c243c] rounded-lg p-3 mb-2">' +
+        '<div class="text-[10px] uppercase tracking-wide text-slate-500 pb-1">Tâches du batch (corrélation par taskExecutionId)</div>' +
+        (taskRows || '<div class="text-slate-500 text-xs">Aucune tâche.</div>') +
+        '</div>';
+
+      if (withoutRows) {
+        html += '<div class="bg-[#0c101d] border border-amber-900/40 rounded-lg p-3 mb-2">' +
+          '<div class="text-[10px] uppercase tracking-wide text-amber-300/80 pb-1">Tâches sans trace d exécution (BLOCKED/PENDING)</div>' +
+          withoutRows +
+          '</div>';
+      }
 
       detailEl.innerHTML = html;
     }
