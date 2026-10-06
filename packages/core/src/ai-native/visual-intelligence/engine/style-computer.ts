@@ -83,17 +83,29 @@ export class StyleComputer {
     const extractedColors = new Set<string>();
     const extractedFonts = new Set<string>();
 
-    const resolveRecursive = (n: NormalizedDomNode, parentStyles?: ComputedStyleSnapshot): NormalizedDomNode => {
+    const resolveRecursive = (
+      n: NormalizedDomNode,
+      parentStyles?: ComputedStyleSnapshot,
+      inheritedExplicit?: { color: boolean; fontFamily: boolean }
+    ): NormalizedDomNode => {
+      // É45 P5 (F1) — distinguer les valeurs explicitement fournies (inline,
+      // classes, CSS) — et leurs héritages — des valeurs synthétiques par
+      // défaut : sans cela, la couleur/police par défaut du nœud racine était
+      // comptée comme une observation réelle dans les palettes extraites.
+      const explicit = new Set<string>();
       const styles = this.resolveStylesForClasses(
         n.classes,
         n.attributes['style'],
         customCss,
         n.id,
         n.tagName,
-        parentStyles
+        parentStyles,
+        explicit
       );
+      const colorExplicit = inheritedExplicit?.color === true || explicit.has('color');
+      const fontExplicit = inheritedExplicit?.fontFamily === true || explicit.has('fontFamily');
 
-      if (styles.color && styles.color !== 'transparent' && styles.color !== 'inherit') {
+      if (colorExplicit && styles.color && styles.color !== 'transparent' && styles.color !== 'inherit') {
         extractedColors.add(canonicalizeColor(styles.color));
       }
       if (styles.backgroundColor && styles.backgroundColor !== 'transparent' && styles.backgroundColor !== 'inherit') {
@@ -102,11 +114,13 @@ export class StyleComputer {
       if (styles.borderColor && styles.borderColor !== 'transparent') {
         extractedColors.add(canonicalizeColor(styles.borderColor));
       }
-      if (styles.fontFamily) {
+      if (fontExplicit && styles.fontFamily) {
         extractedFonts.add(styles.fontFamily);
       }
 
-      const children = n.children.map((child) => resolveRecursive(child, styles));
+      const children = n.children.map((child) =>
+        resolveRecursive(child, styles, { color: colorExplicit, fontFamily: fontExplicit })
+      );
       return {
         ...n,
         styles,
@@ -128,7 +142,8 @@ export class StyleComputer {
     customCss = '',
     nodeId = '',
     nodeTagName = '',
-    parentStyles?: ComputedStyleSnapshot
+    parentStyles?: ComputedStyleSnapshot,
+    explicit?: Set<string>
   ): ComputedStyleSnapshot {
     let base = { ...DEFAULT_COMPUTED_STYLE };
     if (parentStyles) {
@@ -143,6 +158,7 @@ export class StyleComputer {
           base = { ...base, backgroundColor: TAILWIND_COLORS[cls]! };
         } else if (cls.startsWith('text-')) {
           base = { ...base, color: TAILWIND_COLORS[cls]! };
+          explicit?.add('color');
         } else if (cls.startsWith('border-')) {
           base = { ...base, borderColor: TAILWIND_COLORS[cls]!, borderWidth: '1px' };
         }
@@ -157,6 +173,7 @@ export class StyleComputer {
       const arbitraryText = cls.match(/^text-\[#([0-9a-fA-F]{3,8})\]$/);
       if (arbitraryText && arbitraryText[1]) {
         base = { ...base, color: canonicalizeColor(`#${arbitraryText[1]}`) };
+        explicit?.add('color');
       }
 
       // Spacing
@@ -205,6 +222,7 @@ export class StyleComputer {
         base = { ...base, fontWeight: '500' };
       } else if (cls === 'font-mono') {
         base = { ...base, fontFamily: 'monospace' };
+        explicit?.add('fontFamily');
       }
 
       if (cls === 'text-xs') {
@@ -245,7 +263,7 @@ export class StyleComputer {
           const isClassMatch = classes.some((c) => selector === `.${c.toLowerCase()}`);
 
           if (isIdMatch || isTagMatch || isClassMatch) {
-            base = this.applyDeclarations(base, body);
+            base = this.applyDeclarations(base, body, explicit);
           }
         }
       }
@@ -253,19 +271,26 @@ export class StyleComputer {
 
     // 3. Process inline styles if present (highest precedence)
     if (inlineStyle) {
-      base = this.applyDeclarations(base, inlineStyle);
+      base = this.applyDeclarations(base, inlineStyle, explicit);
     }
 
     return base;
   }
 
-  private applyDeclarations(base: ComputedStyleSnapshot, declarationsStr: string): ComputedStyleSnapshot {
+  private applyDeclarations(
+    base: ComputedStyleSnapshot,
+    declarationsStr: string,
+    explicit?: Set<string>
+  ): ComputedStyleSnapshot {
     let updated = { ...base };
     const parts = declarationsStr.split(';').map((s) => s.trim()).filter(Boolean);
     for (const p of parts) {
       const [prop, val] = p.split(':').map((s) => s.trim());
       if (prop && val) {
-        if (prop === 'color') updated = { ...updated, color: canonicalizeColor(val) };
+        if (prop === 'color') {
+          updated = { ...updated, color: canonicalizeColor(val) };
+          explicit?.add('color');
+        }
         if (prop === 'background-color' || prop === 'background') updated = { ...updated, backgroundColor: canonicalizeColor(val) };
         if (prop === 'border-color') updated = { ...updated, borderColor: canonicalizeColor(val) };
         if (prop === 'padding') updated = { ...updated, padding: val };
@@ -273,7 +298,10 @@ export class StyleComputer {
         if (prop === 'border-radius') updated = { ...updated, borderRadius: val };
         if (prop === 'font-size') updated = { ...updated, fontSize: val };
         if (prop === 'font-weight') updated = { ...updated, fontWeight: val };
-        if (prop === 'font-family') updated = { ...updated, fontFamily: val };
+        if (prop === 'font-family') {
+          updated = { ...updated, fontFamily: val };
+          explicit?.add('fontFamily');
+        }
         if (prop === 'display') updated = { ...updated, display: val };
         if (prop === 'opacity') {
           const parsed = parseFloat(val);

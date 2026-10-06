@@ -225,7 +225,9 @@ describe('AINT-011 — Visual Intelligence Engine', () => {
 
       assert.ok(colors.length > 0);
       assert.ok(colors.some(c => c === '#4f46e5' || c === '#2563eb' || c === '#111827'));
-      assert.ok(fonts.length > 0);
+      // É45 P5 (F1) — sampleHtml ne déclare AUCUNE police explicite : le
+      // « sans-serif » compté avant correction était le fantôme du défaut.
+      assert.ok(fonts.length === 0);
     });
 
     it('B4: doit parser une feuille de style CSS additionnelle', () => {
