@@ -68,7 +68,7 @@ describe('ÉTAPE 28 : page Preview finale (canvas maximal)', () => {
     const src = page();
     assert.ok(src.includes('<div class="canvas" id="canvas"></div>'), 'canvas présent');
     assert.ok(src.includes('width: 100%; min-height: 100vh;'), 'canvas 100 % plein bord');
-    assert.ok(src.includes('.canvas-panel { display: flex; flex-direction: column; min-width: 0; flex: 1; }'), 'le canvas prend tout l espace disponible');
+    assert.ok(src.includes('.canvas-panel { display: flex; flex-direction: column; min-width: 0; flex: 1; min-height: 0; }'), 'le canvas prend tout l espace disponible (borné — É46 : une seule barre de défilement)');
     assert.ok(!src.includes('width: min(1400px, 100%)'), 'plus de plafonnement carte démo');
     assert.ok(!src.includes('<h2>Live Preview</h2>'), 'aucun titre d outil au-dessus du canvas');
   });
