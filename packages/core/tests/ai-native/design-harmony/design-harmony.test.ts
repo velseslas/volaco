@@ -10,7 +10,6 @@ import {
   ScoreEngine,
   RecommendationEngine,
   DesignHarmonyConversationBridge,
-  DesignHarmonyOrchestratorBridge,
   DesignHarmonyLruCache,
   computeContrastRatio,
   computeColorDistance,
@@ -634,45 +633,6 @@ describe('AINT-012 — Design Harmony Engine', () => {
       assert.ok(explanation.includes('84/100'));
       assert.ok(explanation.includes('Décomposition des Sous-Scores'));
       assert.ok(explanation.includes('Design Drift Détecté'));
-    });
-
-    it('G3: l OrchestratorBridge doit convertir les anomalies en AgentTask pour UiAgent', () => {
-      const bridge = new DesignHarmonyOrchestratorBridge();
-      const dummyReport = {
-        reportId: 'rep-1',
-        tenantId,
-        projectId,
-        analyzedRoutes: ['/settings'],
-        overallScore: 78,
-        subScores: {} as unknown as DesignHarmonyReport['subScores'],
-        inferredDesignSystem: {
-          spacingTokens: { baseGridStep: 8 }
-        } as unknown as InferredDesignSystem,
-        findings: [
-          {
-            id: 'f1',
-            category: 'SPACING',
-            severity: 'HIGH',
-            confidence: 0.9,
-            pageRoute: '/settings',
-            property: 'padding',
-            observedValue: '13px',
-            evidence: [],
-            recommendation: 'Remplacer 13px par 16px',
-            designDrift: true
-          }
-        ],
-        driftSummary: { totalDrifts: 1, criticalDrifts: 1 },
-        reportHash: 'hash1',
-        generatedAt: new Date().toISOString(),
-        durationMs: 50
-      } as unknown as DesignHarmonyReport;
-
-      const tasks = bridge.proposeEngineeringTasks(dummyReport);
-      assert.equal(tasks.length, 1);
-      assert.equal(tasks[0]!.domain, 'UI');
-      assert.equal(tasks[0]!.assignedAgentId, 'agent-ui-specialist');
-      assert.ok(tasks[0]!.description.includes('Remplacer 13px par 16px'));
     });
   });
 

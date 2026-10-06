@@ -21,6 +21,5 @@ export * from './engine/responsive-a11y-harmony.js';
 export * from './engine/score-engine.js';
 export * from './engine/recommendation-engine.js';
 export * from './bridge/conversation-bridge.js';
-export * from './bridge/orchestrator-bridge.js';
 export * from './service.js';
 export { DesignReportStore, designReportStore, designReportKey, DESIGN_REPORT_DATA_FILE,  } from './report-store.js';

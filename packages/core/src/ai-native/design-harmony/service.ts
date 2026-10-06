@@ -8,7 +8,6 @@ import { assertPermission, type Role } from '../../identity/permissions.js';
 import { auditStore } from '../../observability/audit.js';
 import { NotFoundError } from '../../errors.js';
 import type { AIProviderRegistry } from '../../ai/providers/registry.js';
-import type { AgentTask } from '../ai-orchestrator/types.js';
 import {
   compareFindings,
   computeDesignHarmonyReportHash,
@@ -23,7 +22,6 @@ import { ResponsiveA11yHarmonyEngine } from './engine/responsive-a11y-harmony.js
 import { ScoreEngine } from './engine/score-engine.js';
 import { RecommendationEngine } from './engine/recommendation-engine.js';
 import { DesignHarmonyConversationBridge } from './bridge/conversation-bridge.js';
-import { DesignHarmonyOrchestratorBridge } from './bridge/orchestrator-bridge.js';
 import type {
   DesignHarmonyComparison,
   DesignHarmonyConfig,
@@ -49,7 +47,6 @@ export class DesignHarmonyService {
   private readonly scoreEngine: ScoreEngine;
   private readonly recommendationEngine: RecommendationEngine;
   private readonly conversationBridge: DesignHarmonyConversationBridge;
-  private readonly orchestratorBridge: DesignHarmonyOrchestratorBridge;
 
   constructor(
     private readonly providerRegistry?: AIProviderRegistry | undefined,
@@ -69,7 +66,6 @@ export class DesignHarmonyService {
     this.scoreEngine = new ScoreEngine();
     this.recommendationEngine = new RecommendationEngine();
     this.conversationBridge = new DesignHarmonyConversationBridge();
-    this.orchestratorBridge = new DesignHarmonyOrchestratorBridge();
   }
 
   public async analyzeDesignHarmony(
@@ -251,10 +247,6 @@ export class DesignHarmonyService {
 
   public explainReport(report: DesignHarmonyReport): string {
     return this.conversationBridge.explainDesignHarmony(report);
-  }
-
-  public proposeRemediationTasks(report: DesignHarmonyReport): readonly AgentTask[] {
-    return this.orchestratorBridge.proposeEngineeringTasks(report);
   }
 
   public clearCache(): void {
