@@ -252,8 +252,13 @@ export class AIOrchestratorService {
     }
 
     // 6. Check if Human Approval is required
-    if (validationResult.requiresHumanApproval && !autoMutateIfLowRisk) {
-      recordTrace('WAITING_HUMAN_APPROVAL', `Validation de sécurité : approbation humaine requise (Risque: ${validationResult.riskLevel})`);
+    // É47 P2 (P1-1) — autoMutateIfLowRisk=false signifie AUCUNE mutation
+    // automatique : l'orchestration s'arrête en WAITING_HUMAN_APPROVAL même
+    // pour un plan low-risk (avant : seul le cas requiresHumanApproval
+    // était bloqué, et un plan low-risk mutait malgré le flag à false).
+    // Le mode autoMutateIfLowRisk=true reste inchangé.
+    if (!autoMutateIfLowRisk) {
+      recordTrace('WAITING_HUMAN_APPROVAL', `Validation : approbation humaine requise avant mutation (autoMutateIfLowRisk: ${autoMutateIfLowRisk}, risque: ${validationResult.riskLevel})`);
       const waitingRun = this.finalizeRun({
         orchestrationId,
         tenantId,

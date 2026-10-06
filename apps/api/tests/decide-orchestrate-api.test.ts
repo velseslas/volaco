@@ -73,10 +73,12 @@ describe('Lot 1 : routes decide + orchestrate accessibles via HTTP', () => {
     assert.equal(res.status, 400);
   });
 
-  it('3. POST /orchestrate exécute un plan de bout en bout (run COMPLETED)', async () => {
+  it('3. POST /orchestrate (autoMutate=false forcé) : agents exécutés, run WAITING_HUMAN_APPROVAL, AUCUNE mutation', async () => {
     // Forme exacte du plan validé par les tests unitaires ai-orchestrator
-    // (5 domaines DATA/BACKEND/UI/SECURITY/TEST + intent structuré) : le
-    // Validation Gate exige cette complétude pour délivrer un run COMPLETED.
+    // (5 domaines DATA/BACKEND/UI/SECURITY/TEST + intent structuré).
+    // É47 P2 (P1-1) : la route force autoMutateIfLowRisk=false → le run
+    // s'arrête en WAITING_HUMAN_APPROVAL et AUCUN fichier n'est modifié,
+    // même pour ce plan complet.
     const plan = {
       planId: 'plan-api-lot1',
       title: 'Création du module de facturation et paiements',
@@ -108,15 +110,33 @@ describe('Lot 1 : routes decide + orchestrate accessibles via HTTP', () => {
     });
     assert.equal(res.status, 200, 'La route /orchestrate doit être montée et fonctionnelle');
     const body = (await res.json()) as {
-      run: { state: string; orchestrationId: string; completedTaskIds: string[]; artifacts: unknown[]; totalCostUsd: number; totalTokens: number };
+      run: { state: string; orchestrationId: string; completedTaskIds: string[]; artifacts: unknown[]; totalCostUsd: number; totalTokens: number; mutationTransactionId?: string; traces: Array<{ event: string }> };
     };
     assert.ok(body.run.orchestrationId.startsWith('orch-'));
-    assert.equal(body.run.state, 'COMPLETED');
+    // É47 P2 (P1-1) — la mutation n'est JAMAIS exécutée depuis la route
+    assert.equal(body.run.state, 'WAITING_HUMAN_APPROVAL');
+    assert.equal(body.run.mutationTransactionId, undefined, 'aucune transaction de mutation');
+    assert.ok(body.run.traces.some((t) => t.event.includes('approbation humaine')), 'trace d approbation humaine présente');
+    // Les agents ont travaillé (artefacts produits) mais rien n'est appliqué
     assert.ok(body.run.completedTaskIds.length >= 1);
     assert.ok(Array.isArray(body.run.artifacts) && body.run.artifacts.length >= 1);
-    // P2 — contrat honnête : SANS clé IA, le run COMPLETED est dégradé (tokens 0)
+    // Aucun fichier cible créé/modifié dans le projet
+    for (const target of ['src/models/invoice.ts', 'src/components/InvoiceView.tsx']) {
+      const f = await fetch(`${baseUrl}/api/v1/projects/${projectId}/files/content?path=${encodeURIComponent(target)}`, { headers: H });
+      assert.ok(!f.ok, `le fichier ${target} ne doit pas exister après un run WAITING (status ${f.status})`);
+    }
+    // P2 — contrat honnête : SANS clé IA, les agents sont dégradés (tokens 0)
     assert.ok(body.run.totalTokens === 0, 'sans provider IA, aucun token fictif');;
     assert.ok(body.run.totalCostUsd >= 0);
+  });
+
+  it('3-bis. POST /orchestrate en VIEWER -> 403 (É47 P2, P1-2 : RBAC PROJECT_MUTATE)', async () => {
+    const res = await fetch(`${baseUrl}/api/v1/projects/${projectId}/orchestrate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-tenant-id': 'studio-local', 'x-user-role': 'VIEWER' },
+      body: JSON.stringify({ plan: { planId: 'p-v', steps: [{ stepIndex: 0, title: 'x', description: 'x', targetDomain: 'UI', targetFiles: ['a.ts'], operation: 'CREATE', requiresApproval: false }] } })
+    });
+    assert.equal(res.status, 403, 'un VIEWER est rejeté avant toute exécution d agents');
   });
 
   it('4. POST /orchestrate sans plan -> 400', async () => {

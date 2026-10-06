@@ -25,7 +25,10 @@ export async function handleOrchestrateRoutes(
   context: RequestContext, requestId: string
 ): Promise<boolean> {
   if (!pathname.includes('/orchestrate') || req.method !== 'POST') return false;
-  assertPermission(context.role, 'PROJECT_READ', requestId);
+  // É47 P2 (P1-2) — l'orchestration peut appliquer des mutations via AINT-006 :
+  // la route exige PROJECT_MUTATE (et non PROJECT_READ). Un VIEWER est
+  // rejeté en 403 avant toute exécution d'agents (aucun coût caché).
+  assertPermission(context.role, 'PROJECT_MUTATE', requestId);
   if (!orchestratorService) {
     sendJson(res, 503, { message: 'AIOrchestratorService non configure', requestId });
     return true;
