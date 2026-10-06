@@ -82,6 +82,10 @@ export async function handleDesignRoutes(
   const radiusValues = tokens.shapeTokens;
   const colors = snapshot.extractedColors.slice(0, 8);
   const fonts = snapshot.extractedFonts.slice(0, 4);
+  // É44 P3 — la pénalité couleur du DQI doit s'appliquer sur le nombre RÉEL
+  // de couleurs extraites : tronquer à 8 avant comptage rendait le terme
+  // `colors.length - 8` toujours nul (terme mort démontré en Phase 2D).
+  const realColorCount = snapshot.extractedColors.length;
   const interactiveRatio = snapshot.totalElementsCount > 0
     ? snapshot.interactiveElements.length / snapshot.totalElementsCount
     : 0;
@@ -108,7 +112,7 @@ export async function handleDesignRoutes(
 
   // 4. DQI v1 = harmonie (60 %) + qualité perçue dérivée des preuves DOM (40 %).
   //    Heuristique déterministe — le CDC V8 §16 exige la reproductibilité.
-  const perceived = Math.max(0, Math.min(100, 100 - Math.max(0, colors.length - 8) * 4 - Math.max(0, fonts.length - 3) * 6));
+  const perceived = Math.max(0, Math.min(100, 100 - Math.max(0, realColorCount - 8) * 4 - Math.max(0, fonts.length - 3) * 6));
   const dqi = Math.round(report.overallScore * 0.6 + perceived * 0.4);
 
   res.statusCode = 200;
