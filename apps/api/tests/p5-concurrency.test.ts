@@ -102,6 +102,37 @@ describe('P5 : concurrence en réel — 4 générations parallèles, borne 2', (
     assert.equal(res.status, 201);
   });
 
+  it('4. /orchestrate est borné par le sémaphore IA (É47 P2-2)', async () => {
+    // Occupe les 2 slots avec des générations lentes (provider slow-p5)
+    const holders = Promise.all(
+      Array.from({ length: 2 }, () =>
+        fetch(`${baseUrl}/api/v1/projects/${projectId}/images/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-tenant-id': 'tenant_p5_02', 'x-user-role': 'ENGINEER' },
+          body: JSON.stringify({ prompt: 'occupation des slots' })
+        })
+      )
+    );
+    await new Promise((r) => setTimeout(r, 60)); // laisse les 2 slots être acquis
+    // Slots pleins : /orchestrate est refusé 503 AI_BUSY (comme les autres IA lourdes)
+    const orch = await fetch(`${baseUrl}/api/v1/projects/${projectId}/orchestrate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-tenant-id': 'tenant_p5_02', 'x-user-role': 'ENGINEER' },
+      body: JSON.stringify({ plan: { planId: 'p-sem', steps: [{ stepIndex: 0, title: 'x', description: 'x', targetDomain: 'UI', targetFiles: ['a.ts'], operation: 'CREATE', requiresApproval: false }] } })
+    });
+    assert.equal(orch.status, 503, 'orchestration refusée quand les slots IA sont saturés');
+    const busy = await orch.json();
+    assert.equal((busy as { error?: { code?: string } }).error?.code, 'AI_BUSY');
+    await holders; // libération
+    // Slots libres : /orchestrate passe le sémaphore et atteint la route (400 sans plan)
+    const orch2 = await fetch(`${baseUrl}/api/v1/projects/${projectId}/orchestrate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-tenant-id': 'tenant_p5_02', 'x-user-role': 'ENGINEER' },
+      body: '{}'
+    });
+    assert.equal(orch2.status, 400, 'sémaphore traversé : la route répond (plan manquant)');
+  });
+
   it('3. /metrics expose le snapshot runtime (mémoire + IA)', async () => {
     const res = await fetch(`${baseUrl}/api/v1/metrics`, { headers: { 'x-tenant-id': 'tenant_p5_02' } });
     const data = (await res.json()) as { runtime?: { heapUsedMb?: number; rssMb?: number; maxConcurrentAi?: number } };

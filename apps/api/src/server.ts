@@ -441,11 +441,13 @@ export function createApiServer(configOverride: Partial<AppConfig> = {}) {
       // en production sans token valide, d'où sa place dans le try.
       const context = extractRequestContext(req, config, requestId);
       // P5 — SEMAPHORE DE CONCURRENCE IA : les opérations lourdes (LLM,
-      // builds, images) sont bornées (VOLACO_MAX_CONCURRENT_AI, défaut 3).
-      // Au-delà : 503 + Retry-After — jamais de surcharge du process.
+      // builds, images, orchestrations multi-agents) sont bornées
+      // (VOLACO_MAX_CONCURRENT_AI, défaut 3). Au-delà : 503 + Retry-After —
+      // jamais de surcharge du process.
       const isAiHeavy = req.method === 'POST' && (
         /\/app\/(generate|edit|apply-edits)$/.test(pathname) ||
         /\/images\/generate$/.test(pathname) ||
+        /\/orchestrate$/.test(pathname) ||
         /\/stream$/.test(pathname)
       );
       if (isAiHeavy && !tryAcquireAiSlot()) {
