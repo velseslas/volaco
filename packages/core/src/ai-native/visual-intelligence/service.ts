@@ -3,7 +3,7 @@
  * Visual Intelligence Service Facade
  */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { assertPermission, type Role } from '../../identity/permissions.js';
 import { auditStore } from '../../observability/audit.js';
 import { NotFoundError } from '../../errors.js';
@@ -74,7 +74,11 @@ export class VisualIntelligenceService {
 
     const viewportKind = requestedViewport || this.config.defaultViewport;
     const viewport = STANDARD_VIEWPORTS[viewportKind];
-    const cacheKey = `${tenantId}:${projectId}:${pageRoute}:${viewportKind}`;
+    // É45 P2 — empreinte déterministe du contenu dans la clé : sans elle,
+    // tenant:project:page:viewport resservait un snapshot stale après édition
+    // du même projet (LRU sans TTL, clearCache() sans appelant production).
+    const contentFingerprint = createHash('sha256').update(htmlContent ?? '', 'utf8').digest('hex').substring(0, 16);
+    const cacheKey = `${tenantId}:${projectId}:${pageRoute}:${viewportKind}:${contentFingerprint}`;
 
     // 1. Check LRU Cache
     const cached = this.cache.get(cacheKey);
