@@ -123,6 +123,15 @@ export async function analyzeProjectVisual(
       error: error instanceof Error ? error.message : String(error),
       requestId
     });
+    // É45 P5 (F9) — miroir du marquage « Rendu réel indisponible » : un
+    // échec de l'analyse statique doit être visible dans la réponse, sinon
+    // la critique partielle est indistinguable d'une analyse complète.
+    findings.push({
+      severity: 'LOW',
+      source: 'DESIGN',
+      title: 'Analyse statique indisponible',
+      detail: `L'analyse DOM déterministe n'a pas pu s'exécuter (${error instanceof Error ? error.message : String(error)}) : la critique repose uniquement sur le rendu réel et la structure du HTML.`
+    });
   }
 
   // 3. Findings de cohérence design (règles simples du CDC V8 §8)
