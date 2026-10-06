@@ -11368,7 +11368,7 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
     // ==================== CONVERSATION VIVANTE v2 - CONFIRMATION EN CONTEXTE ====
     // Apres une modification, l'utilisateur valide ou corrige sur place
     // (S21 V8 Human Control : Accept / Reject - en un clic).
-    function appendChatMessage(role, content) {
+    function appendChatMessage(role, content, isPrebuiltHtml) {
 
       const history = document.getElementById('wsChatHistory');
       if (!history) return null;
@@ -11379,7 +11379,11 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
       // La distinction des rôles reste lisible par la couleur et l'alignement.
       if (role === 'user') {
         div.className = "py-1.5 pl-3 border-l-2 border-violet-500/50 text-white text-[13px] leading-relaxed animate-in fade-in duration-150 select-text";
-        if (typeof content === 'string' && (content.includes('<') || content.includes('&lt;') || content.includes('&gt;'))) {
+        // SEC-02 — le rendu HTML n'est autorisé QUE pour le contenu pré-construit
+        // par le Studio (texte utilisateur échappé à la source + balisage propre).
+        // L'ancien sniffing de contenu permettait à un texte brut contenant '<'
+        // de passer par innerHTML — jamais d'interprétation HTML sans le flag.
+        if (isPrebuiltHtml === true && typeof content === 'string') {
           div.innerHTML = content;
         } else {
           div.innerText = content;
