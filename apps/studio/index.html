@@ -1179,6 +1179,21 @@
               </div>
             </button>
 
+            <!-- É46 — Images (génération + galerie + insertion) -->
+            <button 
+              type="button"
+              onclick="handleToolMenuAction('images')" 
+              class="w-full text-left px-3 py-2 rounded-xl text-xs text-slate-200 hover:text-white hover:bg-[#161e3d] flex items-center space-x-2.5 transition group"
+            >
+              <div class="w-7 h-7 rounded-lg bg-violet-500/20 text-violet-400 flex items-center justify-center text-xs group-hover:scale-110 transition-transform">
+                <i class="fa-solid fa-image"></i>
+              </div>
+              <div>
+                <div class="font-bold text-white text-xs">Images</div>
+                <div class="text-[10px] text-slate-400">Générer, galerie et insertion</div>
+              </div>
+            </button>
+
             <!-- 2. Opportunités & Évolution Produit (AINT-014) -->
             <button 
               type="button"
@@ -1952,6 +1967,48 @@
           <!-- Revisions List Container (CORE-007) -->
           <div id="revisionsListContainer" class="flex-1 p-6 overflow-y-auto space-y-3 hidden">
             <!-- Dynamically injected revisions list -->
+          </div>
+        </div>
+
+        <!-- TAB: IMAGES (É46 — génération réelle POST /images/generate + galerie + insertion) -->
+        <div id="wsSubPanel-images" class="flex-1 w-full h-full rounded-3xl bg-[#080b15] border border-[#1a2035] overflow-hidden flex flex-col hidden shadow-2xl select-none font-sans">
+          <div class="h-14 bg-[#0a0e1c] border-b border-[#161c2e] px-6 flex items-center justify-between flex-shrink-0">
+            <div class="flex items-center space-x-3">
+              <div class="w-8 h-8 rounded-xl bg-violet-500/20 border border-violet-500/30 flex items-center justify-center text-violet-400">
+                <i class="fa-solid fa-image text-sm"></i>
+              </div>
+              <div>
+                <div class="flex items-center space-x-2">
+                  <h3 class="text-sm font-bold text-white">Images</h3>
+                  <span class="px-2 py-0.5 rounded-full bg-gradient-to-r from-violet-500/20 to-amber-500/20 text-violet-300 border border-violet-500/30 text-[10px] font-bold">Pollinations</span>
+                </div>
+                <p class="text-[11px] text-slate-400">Génération réelle, galerie des assets du projet, insertion dans index.html.</p>
+              </div>
+            </div>
+            <button onclick="requestWorkspaceSubTab('preview')" class="w-7 h-7 rounded-lg bg-[#14192b] hover:bg-[#1f2642] text-slate-400 hover:text-white flex items-center justify-center text-xs transition active:scale-95 border border-[#1e2642]" title="Fermer le panneau Images">
+              <i class="fa-solid fa-xmark"></i>
+            </button>
+          </div>
+          <div class="flex-1 overflow-y-auto p-6 space-y-4">
+            <div class="flex items-center space-x-2">
+              <input id="imagesPromptInput" type="text" placeholder="Décrivez l'image à générer (5 caractères minimum)…" class="flex-1 bg-[#060812] border border-[#1e2642] focus:border-amber-500/40 text-slate-200 text-xs rounded-xl px-3 py-2.5 outline-none" onkeydown="if(event.key==='Enter'){event.preventDefault();generateStudioImage();}" />
+              <button id="btnImagesGenerate" onclick="generateStudioImage()" class="px-4 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 text-xs font-bold flex items-center space-x-1.5 shadow-lg shadow-amber-500/20 transition active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+                <i class="fa-solid fa-wand-magic-sparkles text-xs" id="iconImagesGenerate"></i>
+                <span id="btnImagesGenerateLabel">Générer</span>
+              </button>
+            </div>
+            <div id="imagesStatus" class="hidden text-xs rounded-xl px-3 py-2"></div>
+            <div>
+              <div class="flex items-center justify-between pb-2">
+                <div class="text-[10px] uppercase tracking-wide text-slate-500 font-bold">Assets du projet</div>
+                <button onclick="loadImagesPanel()" class="text-[10px] text-slate-400 hover:text-amber-400 transition"><i class="fa-solid fa-rotate text-[9px]"></i> Rafraîchir</button>
+              </div>
+              <div id="imagesGallery" class="grid grid-cols-2 md:grid-cols-3 gap-3"><div class="text-slate-500 text-xs italic">Chargement…</div></div>
+            </div>
+            <div id="imagesPreviewBox" class="hidden">
+              <div class="text-[10px] uppercase tracking-wide text-slate-500 font-bold pb-1">Dernière image générée</div>
+              <img id="imagesPreviewImg" class="max-h-64 rounded-xl border border-[#1e2642]" alt="aperçu de l'image générée" />
+            </div>
           </div>
         </div>
 
@@ -5980,7 +6037,8 @@ npx serve .
       const curTab = !document.getElementById('wsSubPanel-code')?.classList.contains('hidden') ? 'code' :
                     !document.getElementById('wsSubPanel-terminal')?.classList.contains('hidden') ? 'terminal' :
                     !document.getElementById('wsSubPanel-history')?.classList.contains('hidden') ? 'history' :
-                    !document.getElementById('wsSubPanel-audit')?.classList.contains('hidden') ? 'audit' : 'preview';
+                    !document.getElementById('wsSubPanel-audit')?.classList.contains('hidden') ? 'audit' :
+                    !document.getElementById('wsSubPanel-images')?.classList.contains('hidden') ? 'images' : 'preview';
       setWorkspaceSubTab(curTab);
     }
 
@@ -6037,6 +6095,7 @@ npx serve .
       const pFeat = document.getElementById('wsSubPanel-features');
       const pFeed = document.getElementById('wsSubPanel-feedback');
       const pStrat = document.getElementById('wsSubPanel-strategy');
+      const pImages = document.getElementById('wsSubPanel-images');
 
       const bPrev = document.getElementById('btnWsTab-preview');
       const bCode = document.getElementById('btnWsTab-code');
@@ -6054,6 +6113,7 @@ npx serve .
       if (pFeat) pFeat.classList.add('hidden');
       if (pFeed) pFeed.classList.add('hidden');
       if (pStrat) pStrat.classList.add('hidden');
+      if (pImages) pImages.classList.add('hidden');
 
       const inactiveBtnClass = isStudioLightMode 
         ? 'px-3 py-1 rounded-full text-xs font-semibold text-slate-600 hover:text-slate-950 hover:bg-slate-100 transition-all flex items-center space-x-1.5'
@@ -6103,6 +6163,9 @@ npx serve .
       } else if (tab === 'strategy') {
         if (pStrat) pStrat.classList.remove('hidden');
         runStrategyAnalysis();
+      } else if (tab === 'images') {
+        if (pImages) pImages.classList.remove('hidden');
+        loadImagesPanel();
       }
     }
 
@@ -7594,6 +7657,172 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
     // ÉTAPE 42 — Design Harmony : lecture PURE de GET /design (rapport réel
     // produit par DesignHarmonyService). Aucun verdict calculé côté Studio :
     // seuls les champs réellement retournés sont affichés.
+    // ==================== É46 — PANNEAU IMAGES ====================
+    let imagesPanelBusy = false;
+    // Même règle que le serveur (images.ts) : aucun nom non validé ne devient une URL.
+    const IMAGE_ASSET_NAME_RE = /^[a-z0-9-]+\.(jpg|jpeg|png|webp)$/;
+
+    function currentImagesProjectId() {
+      const proj = userProjects.find(p => p.id === activeProjectId);
+      return (proj && proj.serverProjectId) || null;
+    }
+
+    function assetImageUrl(pid, name) {
+      if (!IMAGE_ASSET_NAME_RE.test(String(name || ''))) return null;
+      return '/api/v1/projects/' + pid + '/images/' + encodeURIComponent(name);
+    }
+
+    function showImagesStatus(kind, message) {
+      const el = document.getElementById('imagesStatus');
+      if (!el) return;
+      const style = kind === 'error'
+        ? 'bg-rose-950/60 border border-rose-500/40 text-rose-300'
+        : kind === 'success'
+          ? 'bg-emerald-950/60 border border-emerald-500/40 text-emerald-300'
+          : 'bg-[#12172a] border border-[#1e2642] text-slate-300';
+      el.className = 'text-xs rounded-xl px-3 py-2 ' + style;
+      el.textContent = message;
+      el.classList.remove('hidden');
+    }
+
+    function hideImagesStatus() {
+      const el = document.getElementById('imagesStatus');
+      if (el) el.classList.add('hidden');
+    }
+
+    async function loadImagesPanel() {
+      const gallery = document.getElementById('imagesGallery');
+      if (!gallery) return;
+      const pid = currentImagesProjectId();
+      const btn = document.getElementById('btnImagesGenerate');
+      if (btn) btn.disabled = imagesPanelBusy || !pid;
+      if (!pid) {
+        gallery.innerHTML = '<div class="text-slate-500 text-xs italic">Aucun projet serveur actif — ouvrez ou générez un projet.</div>';
+        return;
+      }
+      gallery.innerHTML = '<div class="text-slate-500 text-xs">Chargement de la galerie (GET /images)…</div>';
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 30000);
+        const res = await fetch('/api/v1/projects/' + pid + '/images', { headers: studioApiHeaders(), signal: controller.signal });
+        clearTimeout(timer);
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          showImagesStatus('error', 'Impossible de charger la galerie (' + res.status + ') : ' + (err.message || 'erreur inconnue'));
+          gallery.innerHTML = '<div class="text-slate-500 text-xs italic">Galerie indisponible.</div>';
+          return;
+        }
+        const data = await res.json();
+        const assets = Array.isArray(data.assets) ? data.assets : [];
+        if (assets.length === 0) {
+          gallery.innerHTML = '<div class="text-slate-500 text-xs italic">Aucune image pour ce projet — générez la première.</div>';
+          return;
+        }
+        gallery.innerHTML = assets.map(function (a) {
+          const url = assetImageUrl(pid, a.name);
+          if (!url) return '';
+          return '<div class="rounded-xl border border-[#1e2642] bg-[#060812] p-2 space-y-2">'
+            + '<img src="' + agentsPanelEscape(url) + '" alt="' + agentsPanelEscape(a.name) + '" class="w-full h-28 object-cover rounded-lg" />'
+            + '<div class="text-[10px] text-slate-400 truncate">' + agentsPanelEscape(a.name) + ' · ' + agentsPanelEscape(String(a.bytes || 0)) + ' o</div>'
+            + '<button onclick="insertStudioImage(\'' + a.name + '\')" class="w-full px-2 py-1.5 rounded-lg bg-[#12172a] hover:bg-[#1a223e] border border-[#1e2642] text-slate-300 hover:text-white text-[10px] font-bold transition">Insérer dans la page</button>'
+            + '</div>';
+        }).join('');
+      } catch (e) {
+        showImagesStatus('error', 'Galerie inaccessible : ' + String(e && e.message || e));
+        gallery.innerHTML = '<div class="text-slate-500 text-xs italic">Galerie indisponible.</div>';
+      }
+    }
+
+    async function generateStudioImage() {
+      if (imagesPanelBusy) return; // anti double-submit
+      const pid = currentImagesProjectId();
+      const input = document.getElementById('imagesPromptInput');
+      const btn = document.getElementById('btnImagesGenerate');
+      const prompt = ((input && input.value) || '').trim();
+      if (!pid) { showImagesStatus('error', 'Aucun projet serveur actif.'); return; }
+      if (prompt.length < 5) { showImagesStatus('error', "Décrivez l'image (5 caractères minimum)."); return; }
+      imagesPanelBusy = true;
+      hideImagesStatus();
+      if (btn) btn.disabled = true;
+      const label = document.getElementById('btnImagesGenerateLabel');
+      const icon = document.getElementById('iconImagesGenerate');
+      const oldLabel = label ? label.textContent : null;
+      const oldIcon = icon ? icon.className : null;
+      if (label) label.textContent = 'Génération…';
+      if (icon) icon.className = 'fa-solid fa-spinner fa-spin text-xs';
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 120000); // > timeout provider (90 s)
+        const res = await fetch('/api/v1/projects/' + pid + '/images/generate', {
+          method: 'POST',
+          headers: studioApiHeaders(),
+          body: JSON.stringify({ prompt: prompt }),
+          signal: controller.signal
+        });
+        clearTimeout(timer);
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          if (res.status === 429) showImagesStatus('error', 'Générateur occupé (429) — réessayez dans quelques secondes.');
+          else if (res.status === 403) showImagesStatus('error', 'Droits insuffisants (403) pour générer une image.');
+          else showImagesStatus('error', 'Génération impossible (' + res.status + ') : ' + (err.message || 'erreur inconnue'));
+          return;
+        }
+        const data = await res.json();
+        const previewBox = document.getElementById('imagesPreviewBox');
+        const previewImg = document.getElementById('imagesPreviewImg');
+        if (previewBox && previewImg) {
+          previewImg.src = data.url; // URL construite par le serveur — utilisée telle quelle
+          previewBox.classList.remove('hidden');
+        }
+        showImagesStatus('success', 'Image générée (' + (data.provider || 'provider') + ', ' + (data.bytes || 0) + ' octets). Insérez-la depuis la galerie.');
+        await loadImagesPanel();
+      } catch (e) {
+        showImagesStatus('error', (e && e.name === 'AbortError')
+          ? 'Délai dépassé (120 s) — la génération a été abandonnée.'
+          : 'Génération impossible : ' + String(e && e.message || e));
+      } finally {
+        imagesPanelBusy = false;
+        if (btn) btn.disabled = !currentImagesProjectId();
+        if (label && oldLabel !== null) label.textContent = oldLabel;
+        if (icon && oldIcon !== null) icon.className = oldIcon;
+      }
+    }
+
+    async function insertStudioImage(rawName) {
+      const pid = currentImagesProjectId();
+      const name = String(rawName || '');
+      if (!pid) { showImagesStatus('error', 'Aucun projet serveur actif.'); return; }
+      const url = assetImageUrl(pid, name);
+      if (!url) { showImagesStatus('error', "Nom d'asset invalide : " + name); return; }
+      try {
+        const getRes = await fetch('/api/v1/projects/' + pid + '/files/content?path=index.html', { headers: studioApiHeaders() });
+        if (!getRes.ok) { showImagesStatus('error', 'Lecture de index.html impossible (' + getRes.status + ').'); return; }
+        const data = await getRes.json();
+        const html = (data.file && data.file.content) || '';
+        if (html.indexOf('"' + url + '"') !== -1) { showImagesStatus('error', 'Cette image est déjà insérée dans la page.'); return; }
+        const tag = '<figure class="vibe-asset-image"><img src="' + url + '" alt="' + name + '" /></figure>';
+        let updated;
+        if (/<\/body>/i.test(html)) updated = html.replace(/<\/body>/i, tag + '\n</body>');
+        else updated = html + '\n' + tag;
+        const putRes = await fetch('/api/v1/projects/' + pid + '/files/content', {
+          method: 'PUT',
+          headers: studioApiHeaders(),
+          body: JSON.stringify({ path: 'index.html', content: updated })
+        });
+        if (!putRes.ok) {
+          const err = await putRes.json().catch(() => ({}));
+          showImagesStatus('error', 'Sauvegarde impossible (' + putRes.status + ') : ' + (err.message || 'erreur inconnue'));
+          return;
+        }
+        currentAppHtml = updated;
+        renderWorkspaceIframe(currentAppHtml);
+        showImagesStatus('success', 'Image insérée dans index.html — aperçu rafraîchi.');
+        requestWorkspaceSubTab('preview');
+      } catch (e) {
+        showImagesStatus('error', 'Insertion impossible : ' + String(e && e.message || e));
+      }
+    }
+
     async function loadDesignHarmony() {
       const proj = userProjects.find(p => p.id === activeProjectId);
       const pid = proj && proj.serverProjectId;
@@ -12018,6 +12247,8 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
 
       if (action === 'audit') {
         requestWorkspaceSubTab('audit');
+      } else if (action === 'images') {
+        requestWorkspaceSubTab('images');
       } else if (action === 'features') {
         requestWorkspaceSubTab('features');
       } else if (action === 'feedback') {
