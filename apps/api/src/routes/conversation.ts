@@ -714,6 +714,9 @@ export async function handleConversationRoutes(
       "NARRATION VIVANTE (très important) : Avant CHAQUE section, raconte en 1-2 phrases chaleureuses et concrètes ce que tu construis et POURQUOI, comme un designer qui parle à son client (ex: « Je pose un header translucide avec le logo à gauche, ça donne tout de suite une impression de pro. » / « Maintenant le hero : une grande image chaleureuse et un gros titre qui claque. »). Utilise le tutoiement, sois naturel, jamais technique.\n\n" +
       "QUALITÉ DESIGN (obligatoire) : utilise de vraies images Unsplash cohérentes avec le thème (https://images.unsplash.com/photo-...), une palette limitée et cohérente, des dégradés subtils, des ombres douces, des hover states sur chaque bouton, une vraie hiérarchie typographique (grands titres, textes lisibles) et un espacement généreux. Le résultat doit avoir l'air conçu par un designer senior.\n\n" +
       "FORMAT OBLIGATOIRE de ta réponse :\n\n" +
+      "0. EMPREINTE DESIGN (OBLIGATOIRE, PREMIÈRE LIGNE de ta réponse) : un commentaire HTML avec ton brief design en JSON — palette hex RÉELLE (fond, texte, accent) cohérente avec la demande, UNE police Google Fonts (ex: \"Fraunces\", \"Space Grotesk\", \"Playfair Display\", \"Inter\", \"Poppins\"), et le mode d'ambiance :\n" +
+      "   <!-- DESIGN_DNA: {\"palette\":{\"bg\":\"#fff8f0\",\"fg\":\"#3b2a1e\",\"accent\":\"#d97706\"},\"font\":\"Fraunces\",\"mode\":\"light\"} -->\n" +
+      "   Cette empreinte est l'IDENTITÉ du site : le fond de page et la police principale sont posés à partir d'elle, et tu DOIS réutiliser bg/fg/accent dans TOUTES tes sections (fonds, textes, boutons, bordures, accents). Adapte-la à la demande : « site fun pour enfants » ≠ « dashboard corporate » ≠ « boulangerie chaleureuse ».\n\n" +
       "1. Commence par 1-2 phrases conversationnelles pour annoncer ce que tu vas créer (ambiance, sections prévues)\n" +
       "   Ex: \"Salut ! Je te construis ta landing page pour restaurant italien avec une ambiance terracotta. Je commence par le Header, puis Hero, Menu, Réservation et Footer.\"\n\n" +
       "2. Pour CHAQUE section du site (commence par Header, finis par Footer), écris un bloc au format EXACT suivant :\n\n" +
@@ -731,10 +734,12 @@ export async function handleConversationRoutes(
       "- L'ordre des sections est important : Header d'abord, Footer en dernier\n" +
       "- Le texte décrivant chaque section doit être COURT (1 phrase max) et conversationnel (\"Maintenant...\", \"Ensuite...\", \"Je passe à...\", etc.)\n" +
       "- Utilise Tailwind CSS via CDN (https://cdn.tailwindcss.com) dans chaque section qui a besoin de styles\n" +
-      "- Dark mode élégant (#070913 ou #0b0f19), cartes glassmorphism (bg-slate-900/80 backdrop-blur-xl border border-slate-800 rounded-3xl)\n" +
+      "- RESPECTE TON EMPREINTE : fond de page bg, textes fg, boutons et accents accent — la police principale est déjà posée par le shell à partir de ton empreinte ; les couleurs arbitraires hors palette sont interdites\n" +
+      "- Adapte l'ambiance au thème (clair pour une boulangerie, sombre pour un dashboard crypto…) — ne force PAS un mode sombre si la demande appelle du clair\n" +
       "- Pour les titres en dégradé : <span class=\"bg-gradient-to-r from-X via-Y to-Z bg-clip-text text-transparent\" style=\"-webkit-background-clip: text; -webkit-text-fill-color: transparent;\">\n" +
       "- Inclura du JS interactif quand pertinent (boutons cliquables, alertes, etc.)\n\n" +
       "EXEMPLE de réponse attendue :\n" +
+      "<!-- DESIGN_DNA: {\"palette\":{\"bg\":\"#0c1220\",\"fg\":\"#e2e8f0\",\"accent\":\"#f59e0b\"},\"font\":\"Space Grotesk\",\"mode\":\"dark\"} -->\n" +
       "Salut ! Je te construis ta landing page pour restaurant italien avec une ambiance terracotta élégante. Je vais faire 5 sections : Header, Hero, Menu, Réservation, Footer.\n\n" +
       "<SECTION name=\"header\">\n" +
       "Maintenant je commence par le Header avec la navigation sticky.\n" +
