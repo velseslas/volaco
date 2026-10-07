@@ -221,18 +221,64 @@ export function buildPageContext(currentHtml: string): string {
   return '\n\nCONTEXTE RÉEL DE LA PAGE ACTUELLE (parle de ces éléments avec tes mots, tutoiement) :\n' + parts.join('\n');
 }
 
-export function buildStudioShell(sectionsHtml: string): string {
+/**
+ * É52 — empreinte design optionnelle d'un projet : quand le LLM fournit un
+ * bloc <DESIGN_DNA> en tête de sa réponse, le shell s'adapte (police Google
+ * Fonts, fond, couleur du texte, mode clair/sombre). SANS dna, le shell est
+ * identique octet pour octet à l'ancien (non-régression stricte).
+ */
+export interface StudioDesignDna {
+  palette: { bg: string; fg: string; accent: string };
+  font: string;
+  mode?: 'light' | 'dark';
+}
+
+/**
+ * Extrait (et retire du texte) le bloc <DESIGN_DNA:{json}> émis par le LLM.
+ * - Le commentaire est TOUJOURS retiré (même tronqué/mal formé : jamais de
+ *   junk dans le HTML sauvegardé) ;
+ * - Bloc avec un JSON exploitable → dna parsée (le premier bloc gagne) ;
+ * - Bloc sans JSON exploitable → dna null (shell legacy).
+ */
+export function extractDesignDna(source: string): { dna: StudioDesignDna | null; cleaned: string } {
+  let dna: StudioDesignDna | null = null;
+  const cleaned = source.replace(/<!--\s*DESIGN_DNA:\s*([\s\S]*?)-->/g, (_match, body: string) => {
+    if (!dna) {
+      const jsonMatch = body.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        try {
+          const parsed = JSON.parse(jsonMatch[0]) as StudioDesignDna;
+          const p = parsed?.palette;
+          if (p && typeof p.bg === 'string' && typeof p.fg === 'string' && typeof p.accent === 'string' && typeof parsed.font === 'string' && parsed.font.trim().length > 0) {
+            dna = parsed;
+          }
+        } catch {
+          // JSON invalide : ignoré, le shell legacy s'applique
+        }
+      }
+    }
+    return '';
+  });
+  return { dna, cleaned };
+}
+
+export function buildStudioShell(sectionsHtml: string, dna?: StudioDesignDna): string {
+  const fontSlug = (dna?.font || 'Plus Jakarta Sans').trim().replace(/\s+/g, '+');
+  const fontCss = dna?.font || 'Plus Jakarta Sans';
+  const bg = dna?.palette.bg || '#070913';
+  const fg = dna?.palette.fg || '#f1f5f9';
+  const htmlClass = (dna?.mode === 'light' ? '' : 'dark ') + 'scroll-smooth';
   return `<!DOCTYPE html>
-<html lang="fr" class="dark scroll-smooth">
+<html lang="fr" class="${htmlClass}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>VibeCode Studio</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=${fontSlug}:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
   <style>
-    body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #070913; color: #f1f5f9; margin: 0; }
+    body { font-family: '${fontCss}', sans-serif; background-color: ${bg}; color: ${fg}; margin: 0; }
     @keyframes shimmer { 0% { background-position: -1000px 0; } 100% { background-position: 1000px 0; } }
     .vibe-skeleton { background: linear-gradient(90deg, rgba(30,41,59,.5) 0%, rgba(51,65,85,.8) 50%, rgba(30,41,59,.5) 100%); background-size: 1000px 100%; animation: shimmer 1.5s infinite linear; border-radius: 8px; }
     @keyframes stitchReveal { 0% { opacity: 0; transform: translateY(8px); filter: blur(4px); } 50% { opacity: 0.8; filter: blur(2px); } 100% { opacity: 1; transform: translateY(0); filter: blur(0); } }
@@ -311,7 +357,10 @@ async function regenerateFileForPlan(
     }
     // Cohérence avec le flux streaming : si l'IA renvoie des fragments, on les
     // enveloppe dans le shell complet avant sauvegarde et renvoi au client.
-    const finalHtml = /<!DOCTYPE|<html[\s>]/i.test(html) ? html : buildStudioShell(html);
+    // É52 — un éventuel bloc DNA résiduel est retiré du HTML sauvegardé.
+    const finalHtml = /<!DOCTYPE|<html[\s>]/i.test(html)
+      ? extractDesignDna(html).cleaned
+      : buildStudioShell(extractDesignDna(html).cleaned);
     fileStore.saveFile(tenantId, projectId, entryFile, finalHtml);
     return { updated: true, content: finalHtml };
   } catch (error) {
@@ -780,6 +829,8 @@ export async function handleConversationRoutes(
     let currentSectionHtml = '';
     let currentSectionText = '';
     let sectionIndex = 0;
+    // É52 — empreinte design capturée dans le préambule de la réponse LLM
+    let streamDesignDna: StudioDesignDna | null = null;
     // === ACCUMULATEUR DE SECTIONS CÔTÉ SERVEUR ===
     // Pour pouvoir sauvegarder le HTML final dans fileStore à la fin du stream,
     // le serveur doit accumuler les sections au fur et à mesure qu'elles arrivent.
@@ -822,9 +873,13 @@ export async function handleConversationRoutes(
         if (!inSection && openMatch && openMatch.index !== undefined) {
           // Le texte avant la section est du thinking/chat conversationnel
           const textBeforeSection = fullText.slice(0, openMatch.index);
+          // É52 — capture de l'empreinte design émise en préambule
+          // (commentaire HTML invisible dans le chat rendu)
+          const preambleDna = extractDesignDna(textBeforeSection);
+          if (preambleDna.dna && !streamDesignDna) streamDesignDna = preambleDna.dna;
           if (textBeforeSection.trim()) {
-            // Nettoie les marqueurs de section déjà émis
-            const cleanText = textBeforeSection.replace(/<SECTION[^>]*>/g, '').trim();
+            // Nettoie les marqueurs de section déjà émis + le bloc DNA
+            const cleanText = preambleDna.cleaned.replace(/<SECTION[^>]*>/g, '').trim();
             if (cleanText) {
               sendSSE({ type: 'chat', text: cleanText });
             }
@@ -1116,7 +1171,10 @@ export async function handleConversationRoutes(
       // pollués par les générations antérieures).
       assembledHtml = dedupeSectionBlocks(assembledHtml);
       if (assembledHtml.trim().length > 100 && !/<!DOCTYPE|<html[\s>]/i.test(assembledHtml)) {
-        assembledHtml = buildStudioShell(assembledHtml);
+        // É52 — DNA captée du préambule OU d'un bloc résiduel dans les sections
+        const assembledDna = extractDesignDna(assembledHtml);
+        assembledHtml = assembledDna.cleaned;
+        assembledHtml = buildStudioShell(assembledHtml, streamDesignDna ?? assembledDna.dna ?? undefined);
       }
 
       // LOT 3 — Compass : phase de validation avant la sauvegarde finale
