@@ -11,6 +11,8 @@ process.env.VOLACO_EXECUTION_TIMELINE = 'off';
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { releaseAiSlot, runtimeSnapshot, tryAcquireAiSlot } from '../../../packages/core/src/observability/runtime-metrics.js';
@@ -139,5 +141,59 @@ describe('P5 : concurrence en réel — 4 générations parallèles, borne 2', (
     assert.ok(data.runtime, 'runtime snapshot présent');
     assert.ok((data.runtime?.heapUsedMb ?? 0) > 0, 'mémoire process tracée');
     assert.equal(data.runtime?.maxConcurrentAi, 2, 'borne configurée exposée');
+  });
+
+  it('5. J-1 : chaque requête terminée libère EXACTEMENT un slot (pas de double-release close+finish)', async () => {
+    // Scénario de régression (borne 2, provider slow-p5 400 ms) :
+    //   A démarre à t=0 ; B à t=+250 ms (termine ~t=650 ms).
+    //   A termine ~t=410 ms → UNE libération ramène le compteur à 1 (B actif).
+    //   Avec le bug double-release (finish + close), le compteur tombait à 0
+    //   alors que B tournait encore → C ET D passaient (2 slots inventés).
+    const H5 = { 'Content-Type': 'application/json', 'x-tenant-id': 'tenant_p5_02', 'x-user-role': 'ENGINEER' };
+    const gen = (prompt: string) =>
+      fetch(`${baseUrl}/api/v1/projects/${projectId}/images/generate`, {
+        method: 'POST', headers: H5, body: JSON.stringify({ prompt })
+      });
+
+    const a = gen('J1 requête courte A');
+    await new Promise((r) => setTimeout(r, 250)); // décale B pour qu'il survive à A
+    const b = gen('J1 requête longue Bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+    const aRes = await a;
+    await aRes.text(); // consomme la réponse → res terminé côté serveur
+    // Déterminisme : on attend l'état observable exact « B seul actif »
+    // (activeAi === 1). Avec le bug double-release, cet état n'arrive jamais
+    // (le compteur passe directement à 0) → les assertions suivantes échouent.
+    let activeAi = -1;
+    for (let i = 0; i < 40; i++) {
+      const m = (await (await fetch(`${baseUrl}/api/v1/metrics`, { headers: H5 })).json()) as { runtime?: { activeAi?: number } };
+      activeAi = m.runtime?.activeAi ?? -1;
+      if (activeAi === 1) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.equal(activeAi, 1, 'état observable : exactement B actif (1 slot)');
+    const bStill = new Promise((r) => setTimeout(r, 100)).then(() => b);
+
+    // Le slot de B est encore occupé : parmi C/D/E/F, UNE SEULE doit passer
+    const cde = await Promise.all([gen('J1 Cc'), gen('J1 Dd'), gen('J1 Ee'), gen('J1 Ff')]);
+    const created = cde.filter((r) => r.status === 201).length;
+    const busy = cde.filter((r) => r.status === 503).length;
+    assert.equal(created, 1, `exactement 1 requête admise pendant B (bug double-release : 2 admises)`);
+    assert.equal(busy, 3, 'les 3 autres sont refusées 503 AI_BUSY');
+    await bStill;
+
+    // État restauré : après tout le monde, la borne redevient disponible
+    const after = await gen('J1 post-vérification');
+    assert.equal(after.status, 201, 'compteur exactement revenu à l état initial');
+  });
+
+  it('6. garde source : UNE seule libération terminale dans le câblage sémaphore', () => {
+    const src = readFileSync(resolve(process.cwd(), 'apps/api/src/server.ts'), 'utf8');
+    const blockStart = src.indexOf('const isAiHeavy');
+    assert.ok(blockStart > 0, 'câblage sémaphore présent');
+    const block = src.slice(blockStart, blockStart + 1400); // acquire + 503 + libération
+    const releases = (block.match(/releaseAiSlot\(\)/g) || []).length;
+    assert.equal(releases, 1, 'un seul appel releaseAiSlot dans le câblage (close uniquement)');
+    assert.doesNotMatch(block, /res\.on\('finish'[^)]*releaseAiSlot/, 'pas de double libération sur finish');
+    assert.match(block, /res\.on\('close', \(\) => releaseAiSlot\(\)\)/, 'libération terminale sur close');
   });
 });

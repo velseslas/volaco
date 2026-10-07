@@ -465,8 +465,12 @@ export function createApiServer(configOverride: Partial<AppConfig> = {}) {
         return;
       }
       if (isAiHeavy) {
+        // É48 P2 (J-1) — libération terminale UNIQUE sur 'close' : c'est le
+        // seul événement garanti d'une réponse (fin normale OU abort). Avant
+        // ce correctif, 'finish' + 'close' libéraient DEUX fois le même slot
+        // (acquire +1, release −2) — le clamp à 0 masquait la dérive et la
+        // borne de concurrence pouvait être dépassée sous charge.
         res.on('close', () => releaseAiSlot());
-        res.on('finish', () => releaseAiSlot());
       }
 
       logger.info(
