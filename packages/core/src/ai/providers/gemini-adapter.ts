@@ -79,6 +79,17 @@ export class GeminiProviderAdapter implements AIProviderAdapter {
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const startTime = Date.now();
 
+    // É48 P4 (J-6) — l'attempt est visible dès le démarrage de l'appel
+    // (crash/timeout/erreur → l'événement START reste tracé, coût 0).
+    aiUsageTracker.recordAttempt({
+      tenantId: request.tenantId,
+      projectId: request.projectId,
+      model,
+      provider: 'gemini',
+      requestId: request.requestId ?? 'req-unknown',
+      kind: 'START'
+    });
+
     try {
       const response = await this.fetchFn(endpoint, {
         method: 'POST',
@@ -138,7 +149,8 @@ export class GeminiProviderAdapter implements AIProviderAdapter {
         model,
         inputTokens,
         outputTokens,
-        request.requestId ?? 'req-unknown'
+        request.requestId ?? 'req-unknown',
+        'gemini'
       );
 
       return {
@@ -155,6 +167,17 @@ export class GeminiProviderAdapter implements AIProviderAdapter {
         rawResponse: data
       };
     } catch (err: unknown) {
+      // É48 P4 (J-6) — terminal ERROR unique : appel réel, usage inconnu, coût 0
+      const rawErr = err instanceof Error ? err.message : String(err);
+      aiUsageTracker.recordAttempt({
+        tenantId: request.tenantId,
+        projectId: request.projectId,
+        model,
+        provider: 'gemini',
+        requestId: request.requestId ?? 'req-unknown',
+        kind: 'ERROR',
+        error: rawErr.replace(/key=[a-zA-Z0-9_-]+/gi, 'key=***').slice(0, 300)
+      });
       if (err instanceof AIProviderError || err instanceof AIProviderAuthError) {
         throw err;
       }

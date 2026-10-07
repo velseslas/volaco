@@ -211,8 +211,10 @@ describe('AI Provider Abstraction & Multi-Provider Architecture Tests', () => {
       assert.equal(parsedBody.messages[parsedBody.messages.length - 1].content, 'Crée un CRM pour PME');
 
       // Verify usage tracker recorded the cost
+      // É48 P4 — 1 appel = 2 événements (START coût 0 + SUCCESS coût réel) ;
+      // les tokens/coût totaux ne comptent que le réel (230, inchangé).
       const summary = aiUsageTracker.getUsageSummary(tenantA, projectId);
-      assert.equal(summary.recordCount, 1);
+      assert.equal(summary.recordCount, 2);
       assert.equal(summary.totalTokens, 230);
     });
 

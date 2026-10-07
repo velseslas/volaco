@@ -103,6 +103,17 @@ export class MistralProviderAdapter implements AIProviderAdapter {
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       const startTime = Date.now();
 
+      // É48 P4 (J-6) — l'attempt est visible dès le démarrage de l'appel :
+      // crash/timeout/erreur → l'événement START reste tracé (coût 0).
+      aiUsageTracker.recordAttempt({
+        tenantId: request.tenantId,
+        projectId: request.projectId,
+        model,
+        provider: 'mistral',
+        requestId: request.requestId ?? 'req-unknown',
+        kind: 'START'
+      });
+
       try {
         const response = await this.fetchFn(endpoint, {
           method: 'POST',
@@ -176,7 +187,8 @@ export class MistralProviderAdapter implements AIProviderAdapter {
         model,
         inputTokens,
         outputTokens,
-        request.requestId ?? 'req-unknown'
+        request.requestId ?? 'req-unknown',
+        'mistral'
       );
 
       return {
@@ -194,6 +206,18 @@ export class MistralProviderAdapter implements AIProviderAdapter {
         ...(toolCalls ? { toolCalls } : {})
       };
     } catch (err: unknown) {
+      // É48 P4 (J-6) — terminal ERROR unique : l'appel a eu lieu mais n'a pas
+      // abouti → usage inconnu, coût 0 (jamais inventé), message sanitisé.
+      const rawErr = err instanceof Error ? err.message : String(err);
+      aiUsageTracker.recordAttempt({
+        tenantId: request.tenantId,
+        projectId: request.projectId,
+        model,
+        provider: 'mistral',
+        requestId: request.requestId ?? 'req-unknown',
+        kind: 'ERROR',
+        error: rawErr.replace(/Bearer\s+[a-zA-Z0-9_-]+/gi, 'Bearer ***').slice(0, 300)
+      });
       if (err instanceof AIProviderError || err instanceof AIProviderAuthError) {
         throw err;
       }
@@ -259,8 +283,21 @@ export class MistralProviderAdapter implements AIProviderAdapter {
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    // É48 P4 (J-6) — exactement un terminal par appel de stream : SUCCESS
+    // (complété, usage final non disponible → coût 0, J-6b différé), ERROR
+    // (échec) ou ABORTED (interrompu avant complétion). Jamais deux.
+    let streamTerminalEmitted = false;
 
     try {
+      aiUsageTracker.recordAttempt({
+        tenantId: request.tenantId,
+        projectId: request.projectId,
+        model,
+        provider: 'mistral',
+        requestId: request.requestId ?? 'req-unknown',
+        kind: 'START'
+      });
+
       const response = await this.fetchFn(endpoint, {
         method: 'POST',
         headers: {
@@ -315,6 +352,17 @@ export class MistralProviderAdapter implements AIProviderAdapter {
 
           const dataStr = trimmed.slice(5).trim();
           if (dataStr === '[DONE]') {
+            // É48 P4 — terminal SUCCESS du stream (usage final non disponible
+            // → coût 0 ; la récupération de l'usage final est différée J-6b)
+            aiUsageTracker.recordAttempt({
+              tenantId: request.tenantId,
+              projectId: request.projectId,
+              model,
+              provider: 'mistral',
+              requestId: request.requestId ?? 'req-unknown',
+              kind: 'SUCCESS'
+            });
+            streamTerminalEmitted = true;
             return; // Fin du stream
           }
 
@@ -334,7 +382,33 @@ export class MistralProviderAdapter implements AIProviderAdapter {
           }
         }
       }
+
+      // É48 P4 — terminal SUCCESS : le corps du stream s'est terminé sans
+      // [DONE] explicite (usage final non disponible → coût 0, J-6b différé)
+      if (!streamTerminalEmitted) {
+        aiUsageTracker.recordAttempt({
+          tenantId: request.tenantId,
+          projectId: request.projectId,
+          model,
+          provider: 'mistral',
+          requestId: request.requestId ?? 'req-unknown',
+          kind: 'SUCCESS'
+        });
+        streamTerminalEmitted = true;
+      }
     } catch (err: unknown) {
+      // É48 P4 — terminal ERROR unique pour le stream en échec
+      const rawErr = err instanceof Error ? err.message : String(err);
+      aiUsageTracker.recordAttempt({
+        tenantId: request.tenantId,
+        projectId: request.projectId,
+        model,
+        provider: 'mistral',
+        requestId: request.requestId ?? 'req-unknown',
+        kind: 'ERROR',
+        error: rawErr.replace(/Bearer\s+[a-zA-Z0-9_-]+/gi, 'Bearer ***').slice(0, 300)
+      });
+      streamTerminalEmitted = true;
       if (err instanceof AIProviderError || err instanceof AIProviderAuthError) {
         throw err;
       }
@@ -346,6 +420,19 @@ export class MistralProviderAdapter implements AIProviderAdapter {
       throw new AIProviderError(`Erreur de streaming Mistral: ${sanitized}`, 'mistral', 500, request.requestId);
     } finally {
       clearTimeout(timer);
+      // É48 P4 — le stream consommé partiellement (client déconnecté) est un
+      // appel réel incomplet : usage inconnu → terminal ABORTED, coût 0.
+      if (!streamTerminalEmitted) {
+        aiUsageTracker.recordAttempt({
+          tenantId: request.tenantId,
+          projectId: request.projectId,
+          model,
+          provider: 'mistral',
+          requestId: request.requestId ?? 'req-unknown',
+          kind: 'ABORTED',
+          error: 'stream interrompu avant complétion'
+        });
+      }
     }
   }
 }
