@@ -100,7 +100,17 @@ describe('P3 : MCP — serveurs stdio réels + client', () => {
     }
   });
 
-  it('5. browser_navigate + screenshot réels (Playwright)', async () => {
+  it('5. browser_navigate + screenshot réels (Playwright, loopback local)', async () => {
+    // SEC-02 : plus de data: — page servie en HTTP loopback (usage réel : previews).
+    const { createServer } = await import('node:http');
+    const { once } = await import('node:events');
+    const pageServer = createServer((_req, res) => {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.end('<html><head><title>MCP Browser</title></head><body><h1>MCP Browser</h1></body></html>');
+    });
+    pageServer.listen(0, '127.0.0.1');
+    await once(pageServer, 'listening');
+    const port = (pageServer.address() as { port: number }).port;
     const client = new McpStdioClient({
       command: process.execPath,
       args: [serverPath('browser-server.js')],
@@ -108,7 +118,7 @@ describe('P3 : MCP — serveurs stdio réels + client', () => {
     });
     try {
       await client.connect();
-      const nav = await client.callTool('browser_navigate', { url: 'data:text/html,<h1>MCP Browser</h1>' }, 30000);
+      const nav = await client.callTool('browser_navigate', { url: `http://127.0.0.1:${port}/` }, 30000);
       assert.match(nav, /Page chargée/);
       const shot = await client.callTool('browser_screenshot', {}, 30000);
       assert.match(shot, /^PNG:/);
@@ -116,8 +126,40 @@ describe('P3 : MCP — serveurs stdio réels + client', () => {
       // URL non autorisée → refus honnête
       await assert.rejects(
         () => client.callTool('browser_navigate', { url: 'file:///etc/passwd' }, 5000),
-        /seule une URL/
+        /seule une URL http/
       );
+    } finally {
+      client.close();
+      await new Promise<void>((resolve) => pageServer.close(() => resolve()));
+    }
+  });
+
+  it('6. SEC-02 : SSRF refusée AVANT Chromium (rapide, sans réseau)', async () => {
+    const client = new McpStdioClient({
+      command: process.execPath,
+      args: [serverPath('browser-server.js')],
+      timeoutMs: 30000
+    });
+    try {
+      await client.connect();
+      // Métadonnées cloud, RFC 1918, identifiants, data: — aucun ne doit
+      // lancer de navigateur (refus en quelques ms, pas de timeout).
+      for (const evil of [
+        'http://169.254.169.254/latest/meta-data/',
+        'http://10.0.0.1/',
+        'http://192.168.1.1/',
+        'http://user:secret@127.0.0.1:9/',
+        'data:text/html,<h1>piège</h1>',
+        'file:///etc/passwd'
+      ]) {
+        const started = Date.now();
+        await assert.rejects(
+          () => client.callTool('browser_navigate', { url: evil }, 15000),
+          /refusée|autorisée/,
+          `SSRF refusée pour ${evil}`
+        );
+        assert.ok(Date.now() - started < 10000, `refus rapide (grille, pas de navigateur) pour ${evil}`);
+      }
     } finally {
       client.close();
     }
