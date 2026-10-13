@@ -8,7 +8,10 @@
  * X-User-Role côté client n'est plus une autorité.
  */
 
-import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
+import { promisify } from 'node:util';
+
+const scryptAsync = promisify(scrypt);
 import { dataFilePath, readJsonFile, writeJsonFileSync } from '../persistence/json-disk-cache.js';
 import { ValidationError } from '../errors.js';
 
@@ -38,8 +41,9 @@ export class UserStore {
     writeJsonFileSync(this.filePath, this.users);
   }
 
-  private hashPassword(password: string, salt: string): string {
-    return scryptSync(password, salt, 64).toString('hex');
+  private async hashPassword(password: string, salt: string): Promise<string> {
+    const derived = (await scryptAsync(password, salt, 64)) as Buffer;
+    return derived.toString('hex');
   }
 
   public findByEmail(email: string): UserRecord | undefined {
@@ -47,7 +51,7 @@ export class UserStore {
     return Object.values(this.users).find((u) => u.email === normalized);
   }
 
-  public createUser(email: string, password: string, name?: string): UserRecord {
+  public async createUser(email: string, password: string, name?: string): Promise<UserRecord> {
     const normalized = (email || '').trim().toLowerCase();
     if (!normalized || !normalized.includes('@')) {
       throw new ValidationError('Un email valide est obligatoire');
@@ -69,7 +73,7 @@ export class UserStore {
       tenantId: 'ten-u' + randomBytes(6).toString('hex'),
       role: 'OWNER',
       passwordSalt: salt,
-      passwordHash: this.hashPassword(password, salt),
+      passwordHash: await this.hashPassword(password, salt),
       createdAt: new Date().toISOString()
     };
     this.users[id] = user;
@@ -77,10 +81,10 @@ export class UserStore {
     return user;
   }
 
-  public verifyCredentials(email: string, password: string): UserRecord | null {
+  public async verifyCredentials(email: string, password: string): Promise<UserRecord | null> {
     const user = this.findByEmail(email);
     if (!user) return null;
-    const candidate = this.hashPassword(password || '', user.passwordSalt);
+    const candidate = await this.hashPassword(password || '', user.passwordSalt);
     const expected = Buffer.from(user.passwordHash, 'hex');
     const given = Buffer.from(candidate, 'hex');
     if (expected.length !== given.length || !timingSafeEqual(expected, given)) return null;

@@ -87,7 +87,7 @@ export async function handleAuthRoutes(
   // POST /api/v1/auth/signup
   if (pathname === '/api/v1/auth/signup') {
     try {
-      const user = userStore.createUser(body.email || '', body.password || '', body.name);
+      const user = await userStore.createUser(body.email || '', body.password || '', body.name);
       const token = signToken(user);
       sendJson(res, 201, { token, user: publicUser(user), requestId });
     } catch (error) {
@@ -115,7 +115,7 @@ export async function handleAuthRoutes(
       }));
       return true;
     }
-    const user = userStore.verifyCredentials(email, body.password || '');
+    const user = await userStore.verifyCredentials(email, body.password || '');
     if (!user) {
       recordLoginFailure(req, email);
       sendJson(res, 401, { message: 'Email ou mot de passe incorrect.', requestId });
