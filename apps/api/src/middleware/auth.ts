@@ -70,7 +70,9 @@ export function extractRequestContext(req: IncomingMessage, config?: AppConfig, 
         requestId
       );
     }
-    logger.warn('Requete sans Bearer - en-tetes legacy (mode dev)', {
+    // n°4 : bruit de routine (1 appel par requête en dev), pas un avertissement
+    // — niveau info pour suivre le chemin async du logger, contenu inchangé.
+    logger.info('Requete sans Bearer - en-tetes legacy (mode dev)', {
       component: 'auth', env: config.env || 'development', path: req.url
     });
   }

@@ -10,8 +10,24 @@ export interface LogEntry {
   context?: Record<string, unknown>;
 }
 
+const LOG_QUEUE_MAX = 5_000;
+
+function logSyncEnabled(): boolean {
+  return process.env.VOLACO_LOG_SYNC === '1';
+}
+
 export class StructuredLogger {
   private defaultContext: Record<string, unknown>;
+  // n°4 — JOURNALISATION HORS CHEMIN CRITIQUE : info/debug (1 à 2 par
+  // requête, dont le `logger.info` systématique du serveur) sont coalescés
+  // en UNE écriture par tick (setImmediate) au lieu d'un write synchrone
+  // chacun. warn/error restent synchrones : un diagnostic ne doit jamais se
+  // perdre dans une queue (crash, refusal d'accès). Ordre relatif info/warn
+  // non garanti — l'horodatage de chaque entrée fait foi. Repli opérateur :
+  // VOLACO_LOG_SYNC=1 restaure l'écriture synchrone historique.
+  private queue: string[] = [];
+  private flushScheduled = false;
+  private dropped = 0;
 
   constructor(defaultContext: Record<string, unknown> = {}) {
     this.defaultContext = defaultContext;
@@ -27,6 +43,19 @@ export class StructuredLogger {
     };
   }
 
+  /** Vide la queue (no-op si vide). Exposé pour les tests et l'arrêt propre. */
+  public flush(): void {
+    if (this.queue.length === 0 && this.dropped === 0) return;
+    const batch = this.queue;
+    this.queue = [];
+    this.flushScheduled = false;
+    if (this.dropped > 0) {
+      batch.push(JSON.stringify(this.createEntry('info', `journal : ${this.dropped} entrée(s) écartée(s) (queue saturée)`)));
+      this.dropped = 0;
+    }
+    console.log(batch.join('\n'));
+  }
+
   public log(level: LogLevel, message: string, context?: Record<string, unknown>, requestId?: string): LogEntry {
     const entry = this.createEntry(level, message, context, requestId);
     const json = JSON.stringify(entry);
@@ -34,8 +63,18 @@ export class StructuredLogger {
       console.error(json);
     } else if (level === 'warn') {
       console.warn(json);
-    } else {
+    } else if (logSyncEnabled()) {
       console.log(json);
+    } else {
+      if (this.queue.length >= LOG_QUEUE_MAX) {
+        this.queue.shift();
+        this.dropped += 1;
+      }
+      this.queue.push(json);
+      if (!this.flushScheduled) {
+        this.flushScheduled = true;
+        setImmediate(() => this.flush());
+      }
     }
     return entry;
   }
