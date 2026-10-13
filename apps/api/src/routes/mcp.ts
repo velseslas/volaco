@@ -15,7 +15,9 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 import { assertPermission } from '../../../../packages/core/src/identity/permissions.js';
-import { ValidationError } from '../../../../packages/core/src/errors.js';
+import { NotFoundError, ValidationError } from '../../../../packages/core/src/errors.js';
+import { projectStore } from '../../../../packages/core/src/identity/project.js';
+import { isSafeProjectId } from '../../../../packages/core/src/app-pipeline.js';
 import { McpStdioClient } from '../../../../packages/core/src/mcp/client.js';
 import type { RequestContext } from '../middleware/auth.js';
 
@@ -99,7 +101,19 @@ export async function handleMcpRoutes(
     // args du serveur project : tenant + projet (le projet doit exister)
     const args = [...def.args];
     if (def.id === 'project') {
-      args.unshift(context.tenantId, String(body.projectId ?? 'default-project'));
+      // SEC-01 — l'identifiant client devenait un segment de chemin du
+      // processus enfant (`..` → lecture/écriture hors workspace, dont .env).
+      // Forme stricte + résolution par le registre (404 indiscernable si
+      // inconnu ou d'un autre tenant : pas d'oracle d'existence).
+      const rawId = String(body.projectId ?? 'default-project');
+      if (!isSafeProjectId(rawId)) {
+        throw new ValidationError('Identifiant de projet invalide', undefined, requestId);
+      }
+      const known = projectStore.getProject(context.tenantId, rawId);
+      if (!known) {
+        throw new NotFoundError(`Projet ${rawId}`, requestId);
+      }
+      args.unshift(context.tenantId, rawId);
     }
 
     const client = new McpStdioClient({

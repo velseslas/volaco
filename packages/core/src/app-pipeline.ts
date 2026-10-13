@@ -20,9 +20,24 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import * as vite from 'vite';
-import react from '@vitejs/plugin-react';
-import tailwindcss from '@tailwindcss/vite';
+import { ValidationError } from './errors.js';
+
+// ----------------------------------------------------------------------------
+// PERF : Vite + plugins React/Tailwind chargés PARESSEUSEMENT. Leur import
+// statique coûtait ~6,5 s au démarrage de CHAQUE process (tests, serveur)
+// alors que buildApp() n'est appelé qu'à la génération réelle d'une app.
+// Import dynamique mis en cache : un seul chargement par process.
+// ----------------------------------------------------------------------------
+type ViteBundle = [typeof import('vite'), typeof import('@vitejs/plugin-react'), typeof import('@tailwindcss/vite')];
+let viteBundlePromise: Promise<ViteBundle> | undefined;
+function loadViteBundle(): Promise<ViteBundle> {
+  viteBundlePromise ??= Promise.all([
+    import('vite'),
+    import('@vitejs/plugin-react'),
+    import('@tailwindcss/vite')
+  ]) as Promise<ViteBundle>;
+  return viteBundlePromise;
+}
 
 const here = dirname(fileURLToPath(import.meta.url));
 // dist/packages/core/src → racine du dépôt (4 niveaux)
@@ -31,8 +46,27 @@ const templateDir = join(repoRoot, 'server', 'templates', 'react-app');
 const workspaceRoot = join(repoRoot, 'workspace');
 const rootNodeModules = join(repoRoot, 'node_modules');
 
+const PROJECT_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** Forme sûre d'identifiant de projet (réutilisé par les routes). */
+export function isSafeProjectId(id: unknown): id is string {
+  return typeof id === 'string' && PROJECT_ID_PATTERN.test(id);
+}
+
 export function workspaceDir(projectId: string): string {
-  return join(workspaceRoot, projectId);
+  // SEC-01 — un identifiant client ne doit jamais choisir un dossier hors
+  // workspace : `projectId = ".."` déplaçait la racine vers un ancêtre et
+  // ouvrait lecture/écriture arbitraire (via MCP notamment). Double verrou :
+  // forme stricte PUIS confinement résolu (ceinture + bretelles, protège tous
+  // les appelants même si la validation route est contournée un jour).
+  if (!isSafeProjectId(projectId)) {
+    throw new ValidationError('Identifiant de projet invalide');
+  }
+  const dir = resolve(workspaceRoot, projectId);
+  if (dir !== workspaceRoot && !dir.startsWith(workspaceRoot + sep)) {
+    throw new ValidationError('Identifiant de projet hors workspace');
+  }
+  return dir;
 }
 
 /** Copie le template dans le workspace (reset = site frais). */
@@ -178,12 +212,13 @@ export async function buildApp(projectId: string): Promise<AppBuildResult> {
   const buildId = 'b' + startedAt.toString(36) + Math.random().toString(36).slice(2, 6);
   const errors: string[] = [];
   try {
+    const [vite, reactPlugin, tailwindPlugin] = await loadViteBundle();
     await vite.build({
       root: ws,
       configFile: false,
       logLevel: 'silent',
       base: './',
-      plugins: [react(), tailwindcss()],
+      plugins: [reactPlugin.default(), tailwindPlugin.default()],
       resolve: {
         alias: [
           { find: /^react\/jsx-runtime$/, replacement: join(rootNodeModules, 'react', 'jsx-runtime.js') },
