@@ -266,6 +266,12 @@ function setCorsHeaders(req: IncomingMessage, res: ServerResponse, config: AppCo
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_API_MAX = 600;   // requêtes /api génériques / minute / IP
 const RATE_LIMIT_AI_MAX = 60;     // appels proxy IA / minute / IP (quota Mistral)
+// n°5 — le statique/santé (/health, /, /preview-builder/*, assets…) n'était
+// PAS limité : la surface la plus facile à saturer était ouverte (§5 bench).
+// Bucket séparé à 2 000/min/IP (~33/s : 200× un chargement de page, 30× sous
+// la capacité mesurée) — un flood mono-IP est contenu, sans toucher au
+// budget API/IA. Plafond anti-abus, pas anti-DDoS (LB/WAF requis au-delà).
+const RATE_LIMIT_STATIC_MAX = 2_000;
 
 const rateBuckets = new Map<string, { count: number; windowStart: number }>();
 
@@ -275,10 +281,10 @@ const rateBuckets = new Map<string, { count: number; windowStart: number }>();
  * fuite mémoire face à des IPs usurpées.
  */
 function checkRateLimit(req: IncomingMessage, pathname: string): boolean {
-  const isAiRoute = pathname.startsWith('/api/v1/ai/');
+  const category = pathname.startsWith('/api/v1/ai/') ? 'ai' : pathname.startsWith('/api') ? 'api' : 'static';
   const ip = req.socket.remoteAddress || 'unknown';
-  const key = `${ip}:${isAiRoute ? 'ai' : 'api'}`;
-  const max = isAiRoute ? RATE_LIMIT_AI_MAX : RATE_LIMIT_API_MAX;
+  const key = `${ip}:${category}`;
+  const max = category === 'ai' ? RATE_LIMIT_AI_MAX : category === 'api' ? RATE_LIMIT_API_MAX : RATE_LIMIT_STATIC_MAX;
   const now = Date.now();
 
   const bucket = rateBuckets.get(key);
@@ -413,6 +419,24 @@ export function createApiServer(configOverride: Partial<AppConfig> = {}) {
     const pathname = parsedUrl.pathname;
 
     try {
+      // n°5 — le rate limiting passe AVANT tout (y compris les endpoints
+      // publics 0bis) : sinon /health restait une surface de flood ouverte.
+      // 2 000/min/IP laissent toute supervision normale respirer.
+      if (!checkRateLimit(req, pathname)) {
+        res.statusCode = 429;
+        res.setHeader('Retry-After', '60');
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({
+          error: {
+            code: 'RATE_LIMITED',
+            message: 'Trop de requêtes — réessayez dans une minute.',
+            statusCode: 429,
+            requestId
+          }
+        }));
+        return;
+      }
+
       // 0bis. Endpoints d'observation volontairement publics (monitoring,
       // lanceur) : traités AVANT le contrôle d'accès, qui s'applique à tout
       // le reste.
@@ -502,23 +526,6 @@ export function createApiServer(configOverride: Partial<AppConfig> = {}) {
         { method: req.method, path: pathname, tenantId: context.tenantId, role: context.role },
         requestId
       );
-
-      // Rate limiting minimal en mémoire (anti-martèlement / anti-DoS simple).
-      // Le proxy IA a une limite plus stricte : chaque appel consomme le quota
-      // de la clé Mistral du serveur.
-      if (pathname.startsWith('/api') && !checkRateLimit(req, pathname)) {
-        res.statusCode = 429;
-        res.setHeader('Retry-After', '60');
-        res.end(JSON.stringify({
-          error: {
-            code: 'RATE_LIMITED',
-            message: 'Trop de requêtes — réessayez dans une minute.',
-            statusCode: 429,
-            requestId
-          }
-        }));
-        return;
-      }
 
       // 0. Distribution Statique du Workspace Studio et de ses Ressources
       // (n°3 : servie depuis le cache mémoire + ETag/304 + gzip — le disque
