@@ -79,4 +79,22 @@ describe('ÉTAPE 3 : persistance SQLite', () => {
     assert.ok(summary.recordCount >= 1, 'L\'usage IA doit survivre à une nouvelle instance');
     assert.ok(summary.totalTokens >= 150);
   });
+
+  it('5. audit batché : rafale coalescée, mémoire exacte, flush() rend durable', () => {
+    // Seuils inatteignables sauf l'ancre du 1er record : 25 records =>
+    // 1 seule écriture physique (l'ancre), les 24 autres coalescés.
+    const batched = new AuditStore({ persist: true, flushMs: 3_600_000, flushEvery: 1_000 });
+    for (let i = 0; i < 25; i++) {
+      batched.record({
+        tenantId: 'ten-batch', userId: 'test', action: 'BATCH_TEST_' + i,
+        resourceType: 'TEST', resourceId: 'r' + i, status: 'SUCCESS', requestId: 'req-batch'
+      });
+    }
+    assert.equal(batched.query('ten-batch').length, 25, 'la mémoire voit les 25 records aussitôt');
+    const beforeFlush = new AuditStore({ persist: true }).query('ten-batch');
+    assert.equal(beforeFlush.length, 1, 'seule l\'ancre du 1er record est sur disque (24 coalescés)');
+    batched.flush();
+    const afterFlush = new AuditStore({ persist: true }).query('ten-batch');
+    assert.equal(afterFlush.length, 25, 'flush() rend les 25 records durables');
+  });
 });
