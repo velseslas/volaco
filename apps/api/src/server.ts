@@ -1,9 +1,9 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { serveStaticFile } from './static-cache.js';
 import { loadConfig, type AppConfig } from '../../../packages/core/src/config.js';
 import { logger, generateRequestId } from '../../../packages/core/src/logger.js';
-import { AppError, NotFoundError } from '../../../packages/core/src/errors.js';
+import { AppError, NotFoundError, UnauthorizedError } from '../../../packages/core/src/errors.js';
 import { metricsCollector } from '../../../packages/core/src/observability/metrics.js';
 import { releaseAiSlot, tryAcquireAiSlot } from '../../../packages/core/src/observability/runtime-metrics.js';
 import { auditStore } from '../../../packages/core/src/observability/audit.js';
@@ -440,6 +440,29 @@ export function createApiServer(configOverride: Partial<AppConfig> = {}) {
       // répondaient sans authentification. Peut lever UnauthorizedError (401)
       // en production sans token valide, d'où sa place dans le try.
       const context = extractRequestContext(req, config, requestId);
+
+      // P0 — REFUS PAR DÉFAUT (défense en profondeur).
+      // En mode strict ou en production, toute route /api non publique exige un
+      // contexte réellement authentifié. Ce garde-fou est volontairement
+      // INDÉPENDANT de la présence d'une clé API : auparavant, l'application du
+      // 401 en production dépendait entièrement du bloc `if (config.apiKey)` du
+      // middleware — une clé absente faisait donc retomber l'API sur le repli
+      // d'en-têtes non signés (x-tenant-id / x-user-role), c'est-à-dire sur une
+      // identité choisie librement par le client.
+      // Il s'appuie sur `pathname` (URL normalisée par new URL), jamais sur
+      // `req.url` brut — même raison que dans le middleware.
+      {
+        const guardedMode = config.env === 'production' || process.env.VOLACO_STRICT_AUTH === '1';
+        const isPublicApiPath = pathname.startsWith(`${config.apiPrefix}/auth/`)
+          || pathname === `${config.apiPrefix}/health`
+          || pathname === `${config.apiPrefix}/status`;
+        if (guardedMode && pathname.startsWith('/api') && !isPublicApiPath && context.authenticated !== true) {
+          throw new UnauthorizedError(
+            'Authentification requise : fournissez un jeton Bearer valide (JWT utilisateur ou clé API).',
+            requestId
+          );
+        }
+      }
       // P5 — SEMAPHORE DE CONCURRENCE IA : les opérations lourdes (LLM,
       // builds, images, orchestrations multi-agents) sont bornées
       // (VOLACO_MAX_CONCURRENT_AI, défaut 3). Au-delà : 503 + Retry-After —
@@ -448,7 +471,8 @@ export function createApiServer(configOverride: Partial<AppConfig> = {}) {
         /\/app\/(generate|edit|apply-edits)$/.test(pathname) ||
         /\/images\/generate$/.test(pathname) ||
         /\/orchestrate$/.test(pathname) ||
-        /\/stream$/.test(pathname)
+        /\/stream$/.test(pathname) ||
+        /\/ai\/chat\/completions$/.test(pathname) // P0-PROD : proxy IA soumis au sémaphore
       );
       if (isAiHeavy && !tryAcquireAiSlot()) {
         res.statusCode = 503;
@@ -497,47 +521,32 @@ export function createApiServer(configOverride: Partial<AppConfig> = {}) {
       }
 
       // 0. Distribution Statique du Workspace Studio et de ses Ressources
+      // (n°3 : servie depuis le cache mémoire + ETag/304 + gzip — le disque
+      // n'est relu qu'au changement du fichier, détecté par mtime).
       if (req.method === 'GET') {
         if (pathname === '/' || pathname === '/index.html' || pathname === '/volaco_studio.html' || pathname === '/shell' || pathname === '/studio') {
-          const candidatePaths = [
-            join(process.cwd(), 'apps/studio/index.html')
-          ];
-          for (const p of candidatePaths) {
-            if (existsSync(p)) {
-              const html = readFileSync(p, 'utf8');
-              // Le Studio évolue à chaque correctif : jamais de cache navigateur
-              // (sinon l'usager reste sur une page périmée après un restart).
-              res.setHeader('Cache-Control', 'no-cache');
-              res.setHeader('Content-Type', 'text/html; charset=utf-8');
-              res.statusCode = 200;
-              res.end(html);
-              return;
-            }
+          // Le Studio évolue à chaque correctif : jamais de cache navigateur
+          // (sinon l'usager reste sur une page périmée après un restart) —
+          // `no-cache` impose la revalidation, et l'ETag la rend gratuite (304).
+          if (serveStaticFile(req, res, join(process.cwd(), 'apps/studio/index.html'), 'text/html; charset=utf-8', true)) {
+            return;
           }
         }
         // Fichiers statiques annexes du Studio (html2canvas, client.js, etc.)
         const staticStudioFile = pathname.replace(/^\//, '');
         if (staticStudioFile && !staticStudioFile.includes('..') && !pathname.startsWith('/api')) {
-          const candidateAssetPaths = [
-            join(process.cwd(), 'apps/studio', staticStudioFile)
-          ];
-          for (const ap of candidateAssetPaths) {
-            if (existsSync(ap) && statSync(ap).isFile()) {
-              const ext = staticStudioFile.split('.').pop()?.toLowerCase();
-              const mimeMap: Record<string, string> = {
-                'js': 'application/javascript; charset=utf-8',
-                'css': 'text/css; charset=utf-8',
-                'html': 'text/html; charset=utf-8',
-                'json': 'application/json; charset=utf-8',
-                'png': 'image/png',
-                'jpg': 'image/jpeg',
-                'svg': 'image/svg+xml'
-              };
-              res.setHeader('Content-Type', mimeMap[ext || ''] || 'application/octet-stream');
-              res.statusCode = 200;
-              res.end(readFileSync(ap));
-              return;
-            }
+          const ext = staticStudioFile.split('.').pop()?.toLowerCase();
+          const mimeMap: Record<string, string> = {
+            'js': 'application/javascript; charset=utf-8',
+            'css': 'text/css; charset=utf-8',
+            'html': 'text/html; charset=utf-8',
+            'json': 'application/json; charset=utf-8',
+            'png': 'image/png',
+            'jpg': 'image/jpeg',
+            'svg': 'image/svg+xml'
+          };
+          if (serveStaticFile(req, res, join(process.cwd(), 'apps/studio', staticStudioFile), mimeMap[ext || ''] || 'application/octet-stream', true)) {
+            return;
           }
         }
       }
@@ -605,7 +614,13 @@ if (isMain) {
   });
 
   const { server, config } = createApiServer();
-  server.listen(config.port, () => {
+  // SÉCURITÉ : sans adresse d'écoute explicite, Node écoute sur TOUTES les
+  // interfaces (0.0.0.0 / ::) — un outil de développement devenait joignable
+  // depuis le réseau local, alors que la console annonçait 127.0.0.1.
+  // Défaut fermé : boucle locale. Pour exposer volontairement le service :
+  //   $env:VOLACO_BIND_HOST='0.0.0.0'   (à n'utiliser qu'avec l'authentification active)
+  const bindHost = process.env.VOLACO_BIND_HOST || '127.0.0.1';
+  server.listen(config.port, bindHost, () => {
     console.log(`==================================================`);
     console.log(`ðŸš€ VIBECODE STUDIO CORE DÃ‰MARRÃ‰ SUR LE PORT ${config.port}`);
     console.log(`ðŸ–¥ï¸  Interface Studio : http://127.0.0.1:${config.port}/`);

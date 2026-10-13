@@ -10,9 +10,9 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { serveStaticFile } from '../static-cache.js';
 import type { RequestContext } from '../middleware/auth.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -34,62 +34,59 @@ const aiEditJsPath = join(repoRoot, 'dist', 'packages', 'core', 'src', 'preview-
 // E40 — extraction des sections d'un HTML restauré (historique)
 const sectionParseJsPath = join(repoRoot, 'dist', 'packages', 'core', 'src', 'preview-builder', 'section-parse.js');
 
-function serveFile(res: ServerResponse, filePath: string, contentType: string, notFound: string): boolean {
-  if (!existsSync(filePath)) {
-    res.statusCode = 404;
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.end(notFound);
-    return true;
-  }
-  res.statusCode = 200;
-  res.setHeader('Content-Type', contentType);
-  res.setHeader('Cache-Control', 'no-cache'); // E47 — code vivant : toujours revalidé
-  res.end(readFileSync(filePath, 'utf8'));
+function serveFile(req: IncomingMessage, res: ServerResponse, filePath: string, contentType: string, notFound: string): boolean {
+  // n°3 : cache mémoire + ETag/304 + gzip (le disque n'est relu qu'au
+  // changement du fichier). Repli 404 historique conservé si absent.
+  if (serveStaticFile(req, res, filePath, contentType, true)) return true;
+  res.statusCode = 404;
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.end(notFound);
   return true;
 }
 
 export async function handlePreviewBuilderRoutes(
-  _req: IncomingMessage,
+  req: IncomingMessage,
   res: ServerResponse,
   pathname: string,
   _context: RequestContext,
   _requestId: string
 ): Promise<boolean> {
   if (pathname === '/preview-builder') {
-    return serveFile(res, demoPagePath, 'text/html; charset=utf-8', 'preview-builder.html introuvable');
+    return serveFile(req, res, demoPagePath, 'text/html; charset=utf-8', 'preview-builder.html introuvable');
   }
   if (pathname === '/preview-builder/app.js') {
-    return serveFile(res, appJsPath, 'text/javascript; charset=utf-8', 'App Preview Builder non compilée');
+    return serveFile(req, res, appJsPath, 'text/javascript; charset=utf-8', 'App Preview Builder non compilée');
   }
   if (pathname === '/preview-builder/engine.js') {
-    return serveFile(res, engineJsPath, 'text/javascript; charset=utf-8', 'Moteur Preview Builder non compilé (npm run build)');
+    return serveFile(req, res, engineJsPath, 'text/javascript; charset=utf-8', 'Moteur Preview Builder non compilé (npm run build)');
   }
   if (pathname === '/preview-builder/renderer.js') {
-    return serveFile(res, rendererJsPath, 'text/javascript; charset=utf-8', 'Renderer Preview Builder non compilé (npm run build)');
+    return serveFile(req, res, rendererJsPath, 'text/javascript; charset=utf-8', 'Renderer Preview Builder non compilé (npm run build)');
   }
   if (pathname === '/preview-builder/layout.js') {
-    return serveFile(res, layoutJsPath, 'text/javascript; charset=utf-8', 'Layout Preview Builder non compilé (npm run build)');
+    return serveFile(req, res, layoutJsPath, 'text/javascript; charset=utf-8', 'Layout Preview Builder non compilé (npm run build)');
   }
   if (pathname === '/preview-builder/visuals.js') {
-    return serveFile(res, visualsJsPath, 'text/javascript; charset=utf-8', 'Visuals Preview Builder non compilés (npm run build)');
+    return serveFile(req, res, visualsJsPath, 'text/javascript; charset=utf-8', 'Visuals Preview Builder non compilés (npm run build)');
   }
   if (pathname === '/preview-builder/mocks.js') {
-    return serveFile(res, mocksJsPath, 'text/javascript; charset=utf-8', 'Mocks Preview Builder non compilés (npm run build)');
+    return serveFile(req, res, mocksJsPath, 'text/javascript; charset=utf-8', 'Mocks Preview Builder non compilés (npm run build)');
   }
   if (pathname === '/preview-builder/adapter.js') {
-    return serveFile(res, adapterJsPath, 'text/javascript; charset=utf-8', 'Adaptateur Preview Builder non compilé (npm run build)');
+    return serveFile(req, res, adapterJsPath, 'text/javascript; charset=utf-8', 'Adaptateur Preview Builder non compilé (npm run build)');
   }
   if (pathname === '/preview-builder/flags.js') {
-    return serveFile(res, flagsJsPath, 'text/javascript; charset=utf-8', 'Flags Preview Builder non compilés (npm run build)');
+    return serveFile(req, res, flagsJsPath, 'text/javascript; charset=utf-8', 'Flags Preview Builder non compilés (npm run build)');
   }
   if (pathname === '/preview-builder/editing.js') {
-    return serveFile(res, editingJsPath, 'text/javascript; charset=utf-8', 'Editing Preview Builder non compilé (npm run build)');
+    return serveFile(req, res, editingJsPath, 'text/javascript; charset=utf-8', 'Editing Preview Builder non compilé (npm run build)');
   }
   if (pathname === '/preview-builder/ai-edit.js') {
-    return serveFile(res, aiEditJsPath, 'text/javascript; charset=utf-8', 'AI Edit Preview Builder non compilé (npm run build)');
+    return serveFile(req, res, aiEditJsPath, 'text/javascript; charset=utf-8', 'AI Edit Preview Builder non compilé (npm run build)');
   }
   if (pathname === '/preview-builder/section-parse.js') {
-    return serveFile(res, sectionParseJsPath, 'text/javascript; charset=utf-8', 'Section Parse Preview Builder non compilé (npm run build)');
+    return serveFile(req, res, sectionParseJsPath, 'text/javascript; charset=utf-8', 'Section Parse Preview Builder non compilé (npm run build)');
   }
   return false;
 }
+
