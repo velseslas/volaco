@@ -5,7 +5,7 @@ import { loadConfig, type AppConfig } from '../../../packages/core/src/config.js
 import { logger, generateRequestId } from '../../../packages/core/src/logger.js';
 import { AppError, NotFoundError, UnauthorizedError } from '../../../packages/core/src/errors.js';
 import { metricsCollector } from '../../../packages/core/src/observability/metrics.js';
-import { releaseAiSlot, tryAcquireAiSlot } from '../../../packages/core/src/observability/runtime-metrics.js';
+import { releaseAiSlot, releaseRenderSlot, tryAcquireAiSlot, tryAcquireRenderSlot } from '../../../packages/core/src/observability/runtime-metrics.js';
 import { auditStore } from '../../../packages/core/src/observability/audit.js';
 import { getHealthResponse } from './routes/health.js';
 import { extractRequestContext } from './middleware/auth.js';
@@ -304,6 +304,32 @@ function checkRateLimit(req: IncomingMessage, pathname: string): boolean {
   return bucket.count <= max;
 }
 
+/**
+ * P0-masse — garde du compteur Chromium (utilisé par le câblage sémaphore
+ * ci-dessous). Retourne true si le slot est acquis (libération sur 'close'),
+ * false après avoir répondu 503 RENDER_BUSY. `releaseAi` rend le slot IA
+ * déjà acquis quand le rendu est refusé (pas de fuite sur /repair).
+ */
+function acquireRenderSlotOrBusy(res: ServerResponse, requestId: string, releaseAi: boolean): boolean {
+  if (!tryAcquireRenderSlot()) {
+    if (releaseAi) releaseAiSlot();
+    res.statusCode = 503;
+    res.setHeader('Retry-After', '15');
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.end(JSON.stringify({
+      error: {
+        code: 'RENDER_BUSY',
+        message: 'Le moteur de rendu est saturé — réessayez dans quelques instants.',
+        statusCode: 503,
+        requestId
+      }
+    }));
+    return false;
+  }
+  res.on('close', () => releaseRenderSlot());
+  return true;
+}
+
 // --- Mini-routeur : table de routes API déclarative --------------------------
 // ÉTAPE 2 : remplace la longue chaîne if-return. L'ordre des entrées est une
 // priorité STRICTE (la première qui répond true termine la requête). Pour
@@ -493,6 +519,10 @@ export function createApiServer(configOverride: Partial<AppConfig> = {}) {
       // builds, images, orchestrations multi-agents) sont bornées
       // (VOLACO_MAX_CONCURRENT_AI, défaut 3). Au-delà : 503 + Retry-After —
       // jamais de surcharge du process.
+      // P0-masse — /repair fait des appels LLM : même slot IA (sinon
+      // contournement). Son slot partage le close unique (garde P5 : une
+      // seule libération terminale).
+      const isRepair = req.method === 'POST' && /\/repair$/.test(pathname);
       const isAiHeavy = req.method === 'POST' && (
         /\/app\/(generate|edit|apply-edits)$/.test(pathname) ||
         /\/images\/generate$/.test(pathname) ||
@@ -500,7 +530,8 @@ export function createApiServer(configOverride: Partial<AppConfig> = {}) {
         /\/stream$/.test(pathname) ||
         /\/ai\/chat\/completions$/.test(pathname) // P0-PROD : proxy IA soumis au sémaphore
       );
-      if (isAiHeavy && !tryAcquireAiSlot()) {
+      const aiAcquired = isAiHeavy || isRepair;
+      if (aiAcquired && !tryAcquireAiSlot()) {
         res.statusCode = 503;
         res.setHeader('Retry-After', '15');
         res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -514,13 +545,21 @@ export function createApiServer(configOverride: Partial<AppConfig> = {}) {
         }));
         return;
       }
-      if (isAiHeavy) {
+      if (aiAcquired) {
         // É48 P2 (J-1) — libération terminale UNIQUE sur 'close' : c'est le
         // seul événement garanti d'une réponse (fin normale OU abort). Avant
         // ce correctif, 'finish' + 'close' libéraient DEUX fois le même slot
         // (acquire +1, release −2) — le clamp à 0 masquait la dérive et la
         // borne de concurrence pouvait être dépassée sous charge.
         res.on('close', () => releaseAiSlot());
+      }
+      // P0-masse — RENDUS CHROMIUM BORNÉS : /render/preview (1 navigateur)
+      // et /repair (jusqu'à 3 rendus) contournaient tout plafond. Compteur
+      // séparé (VOLACO_MAX_CONCURRENT_RENDER, défaut 2) : saturer les
+      // navigateurs ne bloque pas les tokens, et inversement. /repair tient
+      // les DEUX slots (acquis : IA d'abord, rendu ensuite).
+      if (req.method === 'POST' && (/\/render\/preview$/.test(pathname) || isRepair)) {
+        if (!acquireRenderSlotOrBusy(res, requestId, isRepair && !isAiHeavy)) return;
       }
 
       logger.info(

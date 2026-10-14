@@ -12,6 +12,14 @@ let activeAi = 0;
 let peakAi = 0;
 let totalAiStarted = 0;
 
+// P0-masse — RENDUS CHROMIUM BORNÉS : /render/preview (1 navigateur) et
+// /repair (jusqu'à 3 rendus + LLM) contournaient le sémaphore IA. Compteur
+// SÉPARÉ (tokens ≠ navigateurs : saturer l'un ne bloque pas l'autre).
+// VOLACO_MAX_CONCURRENT_RENDER (défaut 2 : ~1 Go pire cas).
+let activeRender = 0;
+let peakRender = 0;
+let totalRenderStarted = 0;
+
 /**
  * Semaphore d'entrée pour les opérations IA lourdes (génération HTML,
  * projets React, éditions, images). Retourne false si la limite de
@@ -31,6 +39,23 @@ export function releaseAiSlot(): void {
   if (activeAi > 0) activeAi -= 1;
 }
 
+export function maxConcurrentRender(): number {
+  return parseInt(process.env.VOLACO_MAX_CONCURRENT_RENDER || '2', 10) || 2;
+}
+
+export function tryAcquireRenderSlot(): boolean {
+  const max = maxConcurrentRender();
+  if (activeRender >= max) return false;
+  activeRender += 1;
+  totalRenderStarted += 1;
+  if (activeRender > peakRender) peakRender = activeRender;
+  return true;
+}
+
+export function releaseRenderSlot(): void {
+  if (activeRender > 0) activeRender -= 1;
+}
+
 export interface RuntimeSnapshot {
   uptimeSeconds: number;
   heapUsedMb: number;
@@ -39,6 +64,10 @@ export interface RuntimeSnapshot {
   peakAi: number;
   totalAiStarted: number;
   maxConcurrentAi: number;
+  activeRender: number;
+  peakRender: number;
+  totalRenderStarted: number;
+  maxConcurrentRender: number;
 }
 
 export function runtimeSnapshot(): RuntimeSnapshot {
@@ -51,6 +80,10 @@ export function runtimeSnapshot(): RuntimeSnapshot {
     activeAi,
     peakAi,
     totalAiStarted,
-    maxConcurrentAi: max
+    maxConcurrentAi: max,
+    activeRender,
+    peakRender,
+    totalRenderStarted,
+    maxConcurrentRender: maxConcurrentRender()
   };
 }
