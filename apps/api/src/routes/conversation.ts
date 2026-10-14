@@ -262,18 +262,61 @@ export function extractDesignDna(source: string): { dna: StudioDesignDna | null;
   return { dna, cleaned };
 }
 
-export function buildStudioShell(sectionsHtml: string, dna?: StudioDesignDna): string {
+/**
+ * Titre de page fourni par le LLM (`<!-- PAGE_TITLE: … -->`, même motif que
+ * DESIGN_DNA) : le premier bloc gagne, assaini (sans balises, 70 car. max),
+ * repli « VibeCode Studio ». Le shell posait un titre générique fixe (SEO nul).
+ */
+export function extractPageTitle(source: string): { title: string | null; cleaned: string } {
+  let title: string | null = null;
+  const cleaned = source.replace(/<!--\s*PAGE_TITLE:\s*([\s\S]*?)-->/g, (_match, body: string) => {
+    if (title === null) {
+      const text = String(body ?? '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 70);
+      if (text.length > 0) title = text;
+    }
+    return '';
+  });
+  return { title, cleaned };
+}
+
+export function escapeHtmlText(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/**
+ * Repli anti-images-cassées (E46 côté Builder, ici pour le HTML servi) :
+ * chaque <img> http(s) sans gestionnaire d'erreur en reçoit un — en cas
+ * d'échec de chargement chez le visiteur, bascule vers un placeholder
+ * déterministe au lieu de l'icône cassée. Compteur = seed stable.
+ */
+export function addImageFallbacks(html: string): string {
+  let index = 0;
+  // Tag complet même avec `>` dans un attribut quoté (alt="a > b").
+  const IMG_TAG = /<img\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi;
+  return html.replace(IMG_TAG, (tag: string) => {
+    if (/\bonerror\s*=/i.test(tag)) return tag;
+    const srcMatch = /\bsrc\s*=\s*"([^"]*)"/i.exec(tag) || /\bsrc\s*=\s*'([^']*)'/i.exec(tag);
+    const src = srcMatch ? srcMatch[1] : '';
+    if (!src || !/^https?:\/\//i.test(src)) return tag;
+    index += 1;
+    const fallback = `this.onerror=null;this.src='https://picsum.photos/seed/vibe-${index}/800/520'`;
+    return tag.replace(/\/?>$/, (end: string) => ` onerror="${fallback}"${end}`);
+  });
+}
+
+export function buildStudioShell(sectionsHtml: string, dna?: StudioDesignDna, title?: string): string {
   const fontSlug = (dna?.font || 'Plus Jakarta Sans').trim().replace(/\s+/g, '+');
   const fontCss = dna?.font || 'Plus Jakarta Sans';
   const bg = dna?.palette.bg || '#070913';
   const fg = dna?.palette.fg || '#f1f5f9';
   const htmlClass = (dna?.mode === 'light' ? '' : 'dark ') + 'scroll-smooth';
+  const pageTitle = title && title.trim().length > 0 ? escapeHtmlText(title.trim().slice(0, 70)) : 'VibeCode Studio';
   return `<!DOCTYPE html>
 <html lang="fr" class="${htmlClass}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>VibeCode Studio</title>
+  <title>${pageTitle}</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <link href="https://fonts.googleapis.com/css2?family=${fontSlug}:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
@@ -372,6 +415,90 @@ async function regenerateFileForPlan(
       error: message
     });
     return { updated: false, error: message };
+  }
+}
+
+/**
+ * CLOTURE-LLM — synthèse de fin rédigée (2 à 3 phrases) + suggestions
+ * contextuelles. Un seul appel court, émis APRÈS la frame « done » (le preview
+ * n'attend pas). Toute erreur (timeout, JSON invalide, fournisseur absent)
+ * retourne null : le texte déterministe reste alors affiché.
+ */
+export interface ClosingFacts {
+  request: string;
+  mode: 'create' | 'modify';
+  sections: Array<{ name: string; mode: string }>;
+  gateScore: number | null;
+  findings: string[];
+}
+
+const CLOSING_SYSTEM_PROMPT =
+  "Tu es le Lead Engineer IA de VibeCode Studio. Tu viens de terminer un travail sur le site de l'utilisateur et tu lui parles en français, avec un ton chaleureux et concret.\n" +
+  'Réponds UNIQUEMENT avec un objet JSON valide, sans aucun texte autour : {"summary": "...", "suggestions": ["...", "...", "..."]}\n' +
+  "- summary : 2 à 3 phrases. Dis ce que tu as fait et ce que ça change pour le site. Si les constats de qualité révèlent un vrai point faible, signale-le honnêtement en une phrase. N'écris AUCUN chiffre (sections, lignes, score) : ils sont déjà affichés ailleurs.\n" +
+  "- suggestions : exactement 3 actions courtes (3 à 7 mots), à l'impératif, spécifiques à CE site et à CETTE demande, que tu peux exécuter immédiatement. Aucun doublon avec ce qui vient d'être fait.";
+
+export function buildClosingUserPrompt(facts: ClosingFacts): string {
+  const lines: string[] = [];
+  lines.push("Demande de l'utilisateur : « " + facts.request.replace(/\s+/g, ' ').trim().slice(0, 400) + ' »');
+  lines.push('Travail effectué : ' + (facts.mode === 'modify' ? "modification d'un site existant" : "création d'un nouveau site"));
+  if (facts.sections.length) {
+    lines.push('Sections touchées : ' + facts.sections.map((s) => s.name + ' (' + s.mode + ')').join(', '));
+  }
+  if (facts.gateScore !== null) lines.push('Contrôle qualité du rendu : ' + facts.gateScore + '/100');
+  if (facts.findings.length) lines.push('Constats : ' + facts.findings.join(' ; '));
+  return lines.join('\n');
+}
+
+export function parseClosingJson(raw: string): { summary: string; suggestions: string[] } | null {
+  if (typeof raw !== 'string') return null;
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  if (start < 0 || end <= start) return null;
+  let data: unknown;
+  try {
+    data = JSON.parse(raw.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+  if (!data || typeof data !== 'object') return null;
+  const rec = data as Record<string, unknown>;
+  const summary = typeof rec['summary'] === 'string' ? (rec['summary'] as string).replace(/\s+/g, ' ').trim() : '';
+  if (summary.length < 20 || summary.length > 700) return null;
+  const seen = new Set<string>();
+  const suggestions: string[] = [];
+  const rawList = rec['suggestions'];
+  if (Array.isArray(rawList)) {
+    for (const item of rawList) {
+      if (typeof item !== 'string') continue;
+      const s = item.replace(/\s+/g, ' ').trim();
+      if (s.length < 3 || s.length > 70 || seen.has(s.toLowerCase())) continue;
+      seen.add(s.toLowerCase());
+      suggestions.push(s);
+      if (suggestions.length === 3) break;
+    }
+  }
+  return { summary, suggestions };
+}
+
+export async function generateClosing(
+  ask: (systemPrompt: string, userPrompt: string) => Promise<string>,
+  facts: ClosingFacts,
+  timeoutMs = 8000
+): Promise<{ summary: string; suggestions: string[] } | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const raw = await Promise.race([
+      ask(CLOSING_SYSTEM_PROMPT, buildClosingUserPrompt(facts)),
+      new Promise<string>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('closing timeout')), timeoutMs);
+      })
+    ]);
+    return parseClosingJson(raw);
+  } catch {
+    return null;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -613,6 +740,17 @@ export async function handleConversationRoutes(
     const recordOnly = (event: RecordableEvent): void => {
       if (recorder) executionStore.appendEvent(executionId, event);
     };
+    // P2-SIGNAUX — frame SSE nommée : ligne `event:` (standard SSE, ignorée
+    // par les parseurs qui ne lisent que `data:`) + JSON `data:` portant le
+    // même nom en `type` (compatible parseur Studio actuel, qui ignore les
+    // types inconnus). Le handshake reste lisible même sans `data:`.
+    const emitNamed = (name: string, payload: Record<string, unknown>): void => {
+      if (clientGone) return;
+      try {
+        res.write(`event: ${name}\n`);
+      } catch { /* socket déjà fermé */ }
+      emit({ type: name, ...payload });
+    };
 
     emit({ type: 'start', isModification }, {
       type: 'EXECUTION_STARTED',
@@ -643,6 +781,116 @@ export async function handleConversationRoutes(
     // repli regex intégré) remplace la regex 6 catégories. L'intention
     // détermine le plan affiché et les phrases du LLM.
     const realIntent = await classifyIntent(body.message || '', undefined, context.tenantId, projectId);
+    // P2-SIGNAUX — tue le blanc aveugle : l'intention classifiée est annoncée
+    // aussitôt (avant plan, fournisseur et génération).
+    emitNamed('on_intent_classified', {
+      category: realIntent.category,
+      confidence: realIntent.confidence,
+      label: 'Analyse de la demande terminée...'
+    });
+    // FIX-QUESTION — une question appelle une réponse, pas une construction.
+    // Avant : /stream générait TOUJOURS une page, même pour "explique-moi...".
+    // Barrière anti-régression : les demandes de construction polies
+    // ("peux-tu ajouter...") contiennent des verbes de build et restent sur
+    // le chemin génération ; un isModification explicite du client prime aussi.
+    // La réponse part en frames `chat` (affichées dans la conversation), pas
+    // en `token` (qui alimente le preview) ; aucun fichier n'est touché.
+    const BUILD_VERBS = /créer|crée|ajoute|ajouter|modifie|modifier|change|changer|supprime|supprimer|génère|générer|construis|construire|enlève|enlever|create|add|update|delete|generate|build|fix|corrige|corriges/i;
+    const wantsAnswerOnly = (realIntent.category === 'QUESTION' || realIntent.category === 'EXPLAIN')
+      && body.isModification !== true
+      && !BUILD_VERBS.test(body.message || '');
+    if (wantsAnswerOnly) {
+      const questionStart = Date.now();
+      const qPreferredProviderId = process.env.MISTRAL_API_KEY ? 'mistral' : process.env.GEMINI_API_KEY ? 'gemini' : undefined;
+      const qAdapter = aiProviderRegistry.resolve(qPreferredProviderId ? { preferredProviderId: qPreferredProviderId } : {});
+      if (!qAdapter || !('generateStream' in qAdapter)) {
+        const providerError = "Aucun fournisseur IA streaming disponible (Mistral requis).";
+        emit({ type: 'error', error: providerError });
+        if (recorder) executionStore.failExecution(executionId, providerError);
+        activeCancelFlags.delete(executionId);
+        res.end();
+        return true;
+      }
+      const pageExcerpt = currentHtml && currentHtml.trim().length > 0
+        ? currentHtml.slice(0, 4000)
+        : '(projet vide, aucun fichier)';
+      let answer = '';
+      // P2-SIGNAUX — même garde anti-freeze que le chemin build.
+      const qWaitStart = Date.now();
+      let qFirstTokenSeen = false;
+      const qWaitTicker = setInterval(() => {
+        if (!qFirstTokenSeen && !clientGone) {
+          emitNamed('on_provider_waiting', { elapsedMs: Date.now() - qWaitStart });
+        }
+      }, 2000);
+      try {
+        // @ts-expect-error — generateStream existe sur MistralProviderAdapter
+        const answerStream = qAdapter.generateStream(
+          {
+            tenantId: context.tenantId,
+            projectId,
+            prompt: `Question de l'utilisateur : ${body.message}\n\nContexte du projet (extrait index.html) :\n${pageExcerpt}\n\nRéponds directement et de façon concise. Ne génère AUCUN code HTML sauf si l'utilisateur le demande explicitement.`,
+            systemPrompt: `Tu es l'assistant conversationnel de VibeCode Studio. Tu réponds en français, de façon concise et utile.`,
+            temperature: 0.4,
+            maxTokens: 2048,
+            timeoutMs: 60000,
+            requestId
+          },
+          aiProviderRegistry.getTenantCredentials(context.tenantId, qAdapter.descriptor.providerId)
+        );
+        for await (const chunk of answerStream) {
+          if (clientGone || cancelFlag.cancelled) break;
+          qFirstTokenSeen = true;
+          answer += chunk;
+          emit({ type: 'chat', text: chunk });
+        }
+      } catch (answerError) {
+        clearInterval(qWaitTicker);
+        const message = answerError instanceof Error ? answerError.message : String(answerError);
+        emit({ type: 'error', error: message.slice(0, 300) });
+        if (recorder) executionStore.failExecution(executionId, message.slice(0, 300));
+        activeCancelFlags.delete(executionId);
+        res.end();
+        return true;
+      }
+      if (!clientGone) {
+        if (cancelFlag.cancelled) {
+          emit({ type: 'cancelled' });
+        } else {
+          try {
+            await conversationIntelligenceService.recordStreamTurn({
+              tenantId: context.tenantId,
+              projectId,
+              sessionId,
+              userMessage: body.message || '',
+              assistantMessage: answer,
+              intent: realIntent,
+              durationMs: Date.now() - questionStart,
+              requestId
+            });
+          } catch (recordError) {
+            logger.warn('Tour question non enregistré (mémoire inchangée)', {
+              component: 'conversation-route-stream',
+              tenantId: context.tenantId,
+              projectId,
+              error: recordError instanceof Error ? recordError.message : String(recordError)
+            });
+          }
+          emit({ type: 'compass', state: 'COMPLETED' });
+          // P3-QUESTION — événement dédié de réponse pure : le Studio peut
+          // l'intercepter pour afficher un badge "réponse seule" au lieu des
+          // cartes de build. Le texte complet transite déjà par les frames
+          // `chat` ; aucun fichier n'est touché sur ce chemin (pas de
+          // saveFile, pas de diff, pas de gate Chromium).
+          emitNamed('on_question_answered', { text: answer });
+          emit({ type: 'done', updated: false });
+        }
+      }
+      clearInterval(qWaitTicker);
+      activeCancelFlags.delete(executionId);
+      res.end();
+      return true;
+    }
     const plan = planGenerator.generatePlan({ intent: realIntent });
     emit({ type: 'plan', plan }, {
       type: 'PLAN_CREATED',
@@ -651,12 +899,18 @@ export async function handleConversationRoutes(
       title: `Plan créé — ${plan.steps.length} étape(s)`,
       detail: { planId: plan.planId, steps: plan.steps.length }
     });
+    // P2-SIGNAUX — plan progressif : une frame par étape (index/total/titre)
+    // au lieu d'un seul bloc statique. La frame `plan` complète est
+    // conservée (carte de plan du Studio en dépend — non-régression).
+    plan.steps.forEach((step, i) => {
+      emitNamed('on_plan_step', { index: i + 1, total: plan.steps.length, step: step.title });
+    });
     // Conversation vivante — narration aux transitions réelles (§14 CDC) :
     // l'IA raconte ce qu'elle fait au moment où elle le fait.
     if (isModification) {
-      emit({ type: 'chat', text: `Je modifie ta page en gardant le reste intact : ${plan.steps.length} étape(s). Je m'y mets tout de suite !` });
+      emit({ type: 'chat', text: `Je modifie ta page en gardant le reste intact : ${plan.steps.length} étape(s). Je m'y mets tout de suite !`, scripted: true });
     } else {
-      emit({ type: 'chat', text: `Voici mon plan : ${plan.steps.length} étapes. Je construis ça sous tes yeux, section par section !` });
+      emit({ type: 'chat', text: `Voici mon plan : ${plan.steps.length} étapes. Je construis ça sous tes yeux, section par section !`, scripted: true });
     }
     if (body.planFirst && !body.confirmedPlan) {
       emit({ type: 'compass', state: 'WAITING_CONFIRMATION' }, {
@@ -667,6 +921,30 @@ export async function handleConversationRoutes(
         detail: { state: 'WAITING_CONFIRMATION' }
       });
       if (recorder) executionStore.setStatus(executionId, 'WAITING_USER');
+      // FIX-PLANFIRST — persiste le plan en session AVANT de rendre la main :
+      // sans cela, POST /confirm rejette le planId ("introuvable ou non
+      // actif") et le bouton Approuver ne peut jamais aboutir. En cas
+      // d'échec, on dégrade vers le comportement historique (plan affiché
+      // mais non confirmable) plutôt que de casser le stream.
+      try {
+        conversationIntelligenceService.stagePlanForConfirmation({
+          tenantId: context.tenantId,
+          projectId,
+          sessionId,
+          userMessage: body.message || '',
+          intent: realIntent,
+          plan,
+          userRole: context.role,
+          requestId
+        });
+      } catch (stageError) {
+        logger.warn('Plan planFirst non persisté en session (confirm impossible)', {
+          component: 'conversation-route-stream',
+          tenantId: context.tenantId,
+          projectId,
+          error: stageError instanceof Error ? stageError.message : String(stageError)
+        });
+      }
       emit({ type: 'done', awaitingConfirmation: true });
       // Sortie anticipée : le finally du stream LLM ne passe pas ici —
       // le drapeau d'annulation doit partir avec l'exécution inactive.
@@ -717,6 +995,8 @@ export async function handleConversationRoutes(
       "0. EMPREINTE DESIGN (OBLIGATOIRE, PREMIÈRE LIGNE de ta réponse) : un commentaire HTML avec ton brief design en JSON — palette hex RÉELLE (fond, texte, accent) cohérente avec la demande, UNE police Google Fonts (ex: \"Fraunces\", \"Space Grotesk\", \"Playfair Display\", \"Inter\", \"Poppins\"), et le mode d'ambiance :\n" +
       "   <!-- DESIGN_DNA: {\"palette\":{\"bg\":\"#fff8f0\",\"fg\":\"#3b2a1e\",\"accent\":\"#d97706\"},\"font\":\"Fraunces\",\"mode\":\"light\"} -->\n" +
       "   Cette empreinte est l'IDENTITÉ du site : le fond de page et la police principale sont posés à partir d'elle, et tu DOIS réutiliser bg/fg/accent dans TOUTES tes sections (fonds, textes, boutons, bordures, accents). Adapte-la à la demande : « site fun pour enfants » ≠ « dashboard corporate » ≠ « boulangerie chaleureuse ».\n\n" +
+      "0b. TITRE (OBLIGATOIRE, avec l'empreinte) : le vrai nom du commerce/site, jamais \"VibeCode Studio\" :\n" +
+      "   <!-- PAGE_TITLE: Bella Italia — Pizzeria artisanale -->\n\n" +
       "1. Commence par 1-2 phrases conversationnelles pour annoncer ce que tu vas créer (ambiance, sections prévues)\n" +
       "   Ex: \"Salut ! Je te construis ta landing page pour restaurant italien avec une ambiance terracotta. Je commence par le Header, puis Hero, Menu, Réservation et Footer.\"\n\n" +
       "2. Pour CHAQUE section du site (commence par Header, finis par Footer), écris un bloc au format EXACT suivant :\n\n" +
@@ -852,7 +1132,19 @@ export async function handleConversationRoutes(
       try { res.write(': ping\n\n'); } catch { /* socket déjà fermé */ }
     }, heartbeatMs) : null;
 
+    // P2-SIGNAUX — signal d'activité si le provider met plus de 2 s à
+    // répondre (résolution + premier token) : l'UI reste vivante au lieu
+    // de figer le spinner. Stopé au premier chunk (voir boucle) et en finally.
+    // (Déclarés hors try : finally ne voit pas l'intérieur du bloc try.)
+    const llmWaitStart = Date.now();
+    let firstTokenSeen = false;
+    let providerWaitTicker: ReturnType<typeof setInterval> | null = null;
     try {
+      providerWaitTicker = setInterval(() => {
+        if (!firstTokenSeen && !clientGone) {
+          emitNamed('on_provider_waiting', { elapsedMs: Date.now() - llmWaitStart });
+        }
+      }, 2000);
       // @ts-expect-error — generateStream existe sur MistralProviderAdapter
       const stream = adapter.generateStream(
         {
@@ -870,6 +1162,7 @@ export async function handleConversationRoutes(
 
       for await (const chunk of stream) {
         if (clientGone || cancelFlag.cancelled) break;
+        firstTokenSeen = true;
         fullText += chunk;
 
         // Détecte l'ouverture d'une nouvelle section <SECTION name="...">
@@ -1175,17 +1468,25 @@ export async function handleConversationRoutes(
       // occurrence de chaque data-section gagne (assainit les fichiers
       // pollués par les générations antérieures).
       assembledHtml = dedupeSectionBlocks(assembledHtml);
+      // Images : repli anti-casse (même politique que le canvas Builder E46) —
+      // toute <img> http(s) sans onerror bascule vers un placeholder fiable
+      // si elle meurt DANS le navigateur du visiteur (zéro latence serveur,
+      // zéro faux positif réseau : seul l'échec réel déclenche).
+      assembledHtml = addImageFallbacks(assembledHtml);
       if (assembledHtml.trim().length > 100 && !/<!DOCTYPE|<html[\s>]/i.test(assembledHtml)) {
         // É52 — DNA captée du préambule OU d'un bloc résiduel dans les sections
         const assembledDna = extractDesignDna(assembledHtml);
         assembledHtml = assembledDna.cleaned;
-        assembledHtml = buildStudioShell(assembledHtml, streamDesignDna ?? assembledDna.dna ?? undefined);
+        // Titre réel du commerce (marqueur PAGE_TITLE), jamais générique.
+        const assembledTitle = extractPageTitle(assembledHtml);
+        assembledHtml = assembledTitle.cleaned;
+        assembledHtml = buildStudioShell(assembledHtml, streamDesignDna ?? assembledDna.dna ?? undefined, assembledTitle.title ?? undefined);
       }
 
       // LOT 3 — Compass : phase de validation avant la sauvegarde finale
       if (recorder) executionStore.transitionPhase(executionId, 'VALIDATE');
       emit({ type: 'compass', state: 'VALIDATING' });
-      emit({ type: 'chat', text: 'Je vérifie le rendu réel…' });
+      emit({ type: 'chat', text: 'Je vérifie le rendu réel…', scripted: true });
 
       // Sauvegarde dans fileStore pour que la prochaine demande trouve le HTML
       let savedRevisionId: string | undefined;
@@ -1359,14 +1660,70 @@ export async function handleConversationRoutes(
         });
       }
 
+      // P4-FINITION — prise de parole de clôture (déterministe : faits réels,
+      // 1-2 phrases) + suggestions d'actions rapides (chips du Studio).
+      // Compteur = sections ANNONCÉES à l'UI (sectionIndex, incrémenté à
+      // chaque section_start), pas serverSections : en cas de chunk unique
+      // ouverture+fermeture, l'accumulateur de sauvegarde peut rester vide
+      // alors que l'utilisateur a vu la section se construire.
+      const closedCount = sectionIndex;
+      const closingMessage = `C'est en place : ${closedCount} section${closedCount > 1 ? 's' : ''} ${isModificationMode ? 'mise(s) à jour' : 'créée(s)'}${gateResult ? ` — qualité ${gateResult.score}/100` : ''}. Dis-moi ce que tu veux ajuster !`;
+      const quickSuggestions = [
+        'Changer la palette de couleurs',
+        'Ajouter une section avis clients',
+        'Améliorer le responsive mobile'
+      ];
+
       emit({
         type: 'done',
         updated: true,
         html: assembledHtml,
         thinking: fullText.replace(/<SECTION[^>]*>[\s\S]*?<\/SECTION>/g, '').trim(),
         synthesis: { text: synthesisText },
+        closingPending: true,
+        closingMessage,
+        suggestions: quickSuggestions,
         ...(gateResult ? { gate: gateResult } : {})
       });
+
+      // CLOTURE-LLM — synthèse rédigée + suggestions contextuelles, en frame
+      // séparée après « done » (repli : textes déterministes ci-dessus).
+      if (!clientGone && !cancelFlag.cancelled) {
+        let closingText = closingMessage;
+        let closingChips = quickSuggestions;
+        const llmClosing = await generateClosing(
+          (closingSystem, closingUser) => adapter.generate(
+            {
+              tenantId: context.tenantId,
+              projectId,
+              prompt: closingUser,
+              systemPrompt: closingSystem,
+              temperature: 0.4,
+              maxTokens: 400,
+              timeoutMs: 8000,
+              requestId
+            },
+            aiProviderRegistry.getTenantCredentials(context.tenantId, adapter.descriptor.providerId)
+          ).then((r) => r.text),
+          {
+            request: body.message || '',
+            mode: isModificationMode ? 'modify' : 'create',
+            sections: serverSections.map((s) => ({ name: s.name, mode: s.mode })),
+            gateScore: gateResult ? gateResult.score : null,
+            findings: gateResult ? gateResult.findings.slice(0, 3).map((f) => f.title) : []
+          }
+        );
+        if (llmClosing) {
+          closingText = llmClosing.summary;
+          if (llmClosing.suggestions.length >= 2) closingChips = llmClosing.suggestions;
+        }
+        emit({
+          type: 'closing',
+          closingMessage: closingText,
+          suggestions: closingChips,
+          source: llmClosing ? 'llm' : 'fallback'
+        });
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       // CDC §39 — séparation log technique / message utilisateur : une erreur
@@ -1384,6 +1741,7 @@ export async function handleConversationRoutes(
       emit({ type: 'error', error: friendly });
     } finally {
       if (heartbeat) clearInterval(heartbeat);
+      if (providerWaitTicker) clearInterval(providerWaitTicker);
       activeCancelFlags.delete(executionId);
       res.end();
     }

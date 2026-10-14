@@ -12,7 +12,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildStudioShell } from '../src/routes/conversation.js';
+import { addImageFallbacks, buildStudioShell, extractPageTitle } from '../src/routes/conversation.js';
 
 describe('conversation : shell HTML complet', () => {
   const fragments = '<div data-section="header"><header>Menu</header></div>\n<div data-section="hero"><section><h1>Bienvenue</h1></section></div>';
@@ -39,5 +39,38 @@ describe('conversation : shell HTML complet', () => {
     // Même regex que le client (handler done) et que le serveur (garde) :
     assert.ok(/<!DOCTYPE|<html[\s>]/i.test(doc), 'Un document shell-wrappé doit être détecté comme complet');
     assert.ok(!/<!DOCTYPE|<html[\s>]/i.test(fragments), 'Des fragments bruts ne doivent PAS être détectés comme un document complet');
+  });
+
+  it('4. titre réel du commerce (PAGE_TITLE), jamais générique, échappé', () => {
+    assert.match(buildStudioShell(fragments), /<title>VibeCode Studio<\/title>/, 'défaut conservé sans marqueur');
+    const withTitle = buildStudioShell(fragments, undefined, 'Bella Italia — Pizzeria');
+    assert.match(withTitle, /<title>Bella Italia — Pizzeria<\/title>/, 'le vrai nom est posé');
+    const evil = buildStudioShell(fragments, undefined, '<script>alert(1)</script>');
+    assert.ok(!evil.includes('<script>alert'), 'balises neutralisées');
+    assert.match(evil, /&lt;script&gt;/, 'échappement HTML');
+  });
+
+  it('5. extractPageTitle : premier bloc gagne, nettoyé du HTML', () => {
+    const src = '<!-- PAGE_TITLE: Ma Boulangerie --><div>...</div><!-- PAGE_TITLE: Second -->';
+    const { title, cleaned } = extractPageTitle(src);
+    assert.equal(title, 'Ma Boulangerie');
+    assert.ok(!cleaned.includes('PAGE_TITLE'), 'marqueur retiré');
+    assert.deepEqual(extractPageTitle('<div>sans marqueur</div>').title, null);
+    assert.deepEqual(extractPageTitle('<!-- PAGE_TITLE: <b>X</b> -->').title, 'X', 'balises retirées');
+  });
+
+  it('6. addImageFallbacks : onerror ajouté aux http(s) sans gestionnaire, le reste intact', () => {
+    const html = '<p>ok</p>'
+      + '<img src="https://images.unsplash.com/photo-1" alt="pizza">'
+      + '<img src="https://x.test/a.png" alt="a > b">'
+      + '<img src="https://y.test/b.png" onerror="custom()">';
+    const out = addImageFallbacks(html);
+    assert.ok(out.includes('<p>ok</p>'), 'non-images intactes');
+    const withFallback = (out.match(/onerror="this\.onerror=null/g) || []).length;
+    assert.equal(withFallback, 2, 'exactement les 2 http(s) sans onerror équipées');
+    assert.ok(out.includes('onerror="custom()"'), 'gestionnaire existant conservé');
+    assert.ok(out.includes('alt="a > b"'), '`>` dans alt préservé (tag non corrompu)');
+    assert.ok(out.includes('picsum.photos/seed/vibe-1') && out.includes('picsum.photos/seed/vibe-2'), 'seeds stables');
+    assert.equal(addImageFallbacks('<img src="data:image/png;base64,xx">'), '<img src="data:image/png;base64,xx">', 'data: ignoré');
   });
 });
