@@ -6514,7 +6514,8 @@ function renderWorkspaceIframe(htmlCode) {
           if (st.ok) {
             const stData = await st.json();
             if (stData.format === 'react-vite' && stData.hasBundle) {
-              window.open('/preview-bundle/' + encodeURIComponent(pid) + '/', '_blank');
+              // PV-01 : onglet cagé côté serveur (CSP sandbox + COOP) + opener coupé.
+              window.open('/preview-bundle/' + encodeURIComponent(pid) + '/', '_blank', 'noopener');
               return;
             }
           }
@@ -6531,9 +6532,30 @@ function renderWorkspaceIframe(htmlCode) {
           }
         }
       } catch (e) { /* repli silencieux sur currentAppHtml */ }
+      // PV-01 — fini le popout blob: (il héritait de l'origine du Studio :
+      // le JS généré lisait localStorage = JWT + clé IA). Le HTML transite
+      // par l'aperçu isolé serveur (origine opaque) ; en cas d'échec,
+      // téléchargement (origine fichier, jamais celle du Studio).
+      try {
+        const pid2 = (typeof userProjects !== 'undefined' && (userProjects.find(p => p.id === activeProjectId) || {}).serverProjectId) || undefined;
+        const pr = await fetch('/api/v1/preview/standalone', {
+          method: 'POST',
+          headers: studioApiHeaders(),
+          body: JSON.stringify({ ...(pid2 ? { projectId: pid2 } : {}), html })
+        });
+        if (pr.ok) {
+          const pdata = await pr.json();
+          if (pdata && pdata.url) { window.open(pdata.url, '_blank', 'noopener'); return; }
+        }
+      } catch (e) { /* repli téléchargement ci-dessous */ }
       const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
       const url = URL.createObjectURL(blob);
-      window.open(url, '_blank');
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'apercu-volaco.html';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 15000);
     }
 

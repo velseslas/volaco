@@ -402,6 +402,14 @@ export async function handleAppGeneratorRoutes(
     // cross-origin : CORS ouvert sur le bundle, l'isolation reste assurée
     // par le sandbox (pas de allow-same-origin → pas d'accès aux API).
     res.setHeader('Access-Control-Allow-Origin', '*');
+    // PV-01 — cage du popout : le bundle ouvert EN ONGLET héritait de
+    // l'origine du Studio (localStorage = JWT + clé IA lisibles par le JS
+    // généré). `sandbox allow-scripts` impose une origine OPAQUE même en
+    // top-level : scripts OK, stockage/API avec identifiants morts. COOP
+    // coupe window.opener. L'iframe intégrée (déjà opaque) est inchangée.
+    res.setHeader('Content-Security-Policy', 'sandbox allow-scripts');
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Content-Type', MIME[extname(file).toLowerCase()] || 'application/octet-stream');
     res.setHeader('X-Frame-Options', 'SAMEORIGIN');
     res.end(readFileSync(file));

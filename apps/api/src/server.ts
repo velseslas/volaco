@@ -16,6 +16,7 @@ import { handleDashboardRoutes } from './routes/dashboard.js';
 import { handleFilesRoutes } from './routes/files.js';
 import { handleTerminalRoutes } from './routes/terminal.js';
 import { handlePreviewBuilderRoutes } from './routes/preview-builder.js';
+import { handlePreviewStandaloneRoutes } from './routes/preview-standalone.js';
 import { handleAppGeneratorRoutes } from './routes/app-generator.js';
 import { handleAppEditRoutes } from './routes/app-edit.js';
 import { handleMcpRoutes } from './routes/mcp.js';
@@ -378,6 +379,7 @@ const API_ROUTES: readonly RouteEntry[] = [
   { name: 'terminal (CORE-005)', handler: handleTerminalRoutes },
   { name: 'executions (Transparency)', handler: handleExecutionRoutes },
   { name: 'preview-builder (NOUVEAU preview)', handler: handlePreviewBuilderRoutes },
+  { name: 'preview-standalone (PV-01 — aperçu HTML cagé)', handler: handlePreviewStandaloneRoutes },
   { name: 'app-generator (P1/P2 — React réel)', handler: handleAppGeneratorRoutes },
   { name: 'app-edit (P3 — édition IA par fichiers)', handler: handleAppEditRoutes },
   { name: 'mcp (P3 — Model Context Protocol)', handler: handleMcpRoutes },
