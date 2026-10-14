@@ -284,6 +284,38 @@ export function escapeHtmlText(text: string): string {
 }
 
 /**
+ * ORDRE CANONIQUE des sections : le LLM émet parfois dans le désordre
+ * (footer 2e constaté en production, rév. #54) et le serveur sauvegardait
+ * tel quel. Tri stable : header/nav d'abord, hero ensuite, contenu, puis
+ * contact/réservation, footer TOUJOURS dernier. Noms inconnus : rang 50
+ * (ordre relatif conservé). Une ancre explicite valide (after=) prime
+ * toujours sur ce rang (intention explicite > convention).
+ */
+const RANK_FIRST = ['header', 'nav', 'navbar'];
+const RANK_HERO = ['hero'];
+const RANK_LAST = ['footer'];
+const RANK_CLOSING = ['contact', 'reservation', 'booking', 'rendez-vous', 'testimonial', 'temoignage', 'avis', 'pricing', 'tarif', 'formule'];
+
+export function sectionRank(name: string): number {
+  const n = (name || '').toLowerCase();
+  if (RANK_FIRST.some((k) => n.includes(k))) return 0;
+  if (RANK_HERO.some((k) => n.includes(k))) return 10;
+  if (RANK_LAST.some((k) => n.includes(k))) return 100;
+  if (RANK_CLOSING.some((k) => n.includes(k))) return 30;
+  return 20;
+}
+
+export function canonicalSectionOrder<T extends { name: string }>(sections: readonly T[]): T[] {
+  return sections
+    .map((sec, index) => ({ sec, index }))
+    .sort((a, b) => {
+      const rank = sectionRank(a.sec.name) - sectionRank(b.sec.name);
+      return rank !== 0 ? rank : a.index - b.index;
+    })
+    .map((entry) => entry.sec);
+}
+
+/**
  * Titre de REPLI quand le LLM omet PAGE_TITLE (constaté en prod : instruction
  * parfois ignorée). Déterministe : premier H1 textuel, sinon premier H2,
  * balises internes retirées, 70 car. max. Null si rien d'exploitable.
@@ -1465,9 +1497,10 @@ export async function handleConversationRoutes(
         }
         assembledHtml = modifiedHtml;
       } else {
-        // Mode création : assemble simplement les sections dans l'ordre.
+        // Mode création : assemble dans l'ORDRE CANONIQUE (le LLM émet
+        // parfois footer en 2e — le fichier suivait aveuglément).
         // T4 — en création, tout est ajout : delta réel par section.
-        for (const sec of serverSections) {
+        for (const sec of canonicalSectionOrder(serverSections)) {
           if (sec.html) {
             assembledHtml += `<div class="vibe-stitched" data-section="${sec.name}">${sec.html}</div>\n`;
             sectionDiffs.push({ name: sec.name, mode: sec.mode || 'create', applied: true, added: countLineDelta('', sec.html).added, removed: 0 });
