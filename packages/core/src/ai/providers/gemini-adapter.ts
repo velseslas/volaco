@@ -77,6 +77,14 @@ export class GeminiProviderAdapter implements AIProviderAdapter {
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    // P0-masse n°3 — abandon client : coupe l'appel réseau en cours.
+    if (request.signal?.aborted) {
+      clearTimeout(timer);
+      const aborted = new Error('Appel Gemini interrompu : client abandonné.');
+      aborted.name = 'AbortError';
+      throw aborted;
+    }
+    request.signal?.addEventListener('abort', () => controller.abort(), { once: true });
     const startTime = Date.now();
 
     // É48 P4 (J-6) — l'attempt est visible dès le démarrage de l'appel

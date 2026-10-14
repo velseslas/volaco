@@ -182,18 +182,24 @@ function assertProjectInScope(tenantId: string, projectId: string, requestId: st
   }
 }
 
-function startSSE(req: IncomingMessage, res: ServerResponse): { send: (data: Record<string, unknown>) => void } {
+function startSSE(req: IncomingMessage, res: ServerResponse): { send: (data: Record<string, unknown>) => void; signal: AbortSignal } {
   res.statusCode = 200;
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   let clientGone = false;
-  req.on('close', () => { clientGone = true; });
+  // P0-masse n°3 — l'abandon client coupe AUSSI les boucles LLM (signal).
+  // É48 P2 : en SSE c'est `res close` (pas `req close`) qui signale
+  // fiablement la déconnexion — on écoute les deux.
+  const aborter = new AbortController();
+  const markGone = (): void => { clientGone = true; aborter.abort(); };
+  req.on('close', markGone);
+  res.on('close', () => { if (!res.writableEnded) markGone(); });
   const send = (data: Record<string, unknown>): void => {
     if (clientGone) return;
     res.write(`data: ${JSON.stringify(data)}\n\n`);
   };
-  return { send };
+  return { send, signal: aborter.signal };
 }
 
 export async function handleAppEditRoutes(
@@ -221,7 +227,7 @@ export async function handleAppEditRoutes(
       throw new ValidationError('Le champ "instruction" est obligatoire', undefined, requestId);
     }
 
-    const { send } = startSSE(req, res);
+    const { send, signal } = startSSE(req, res);
     const adapter = aiProviderRegistry.resolve({ preferredProviderId: process.env.MISTRAL_API_KEY ? 'mistral' : undefined });
     if (!adapter) {
       send({ type: 'error', error: 'Aucun fournisseur IA disponible (Mistral requis).' });
@@ -246,7 +252,7 @@ export async function handleAppEditRoutes(
           requestId
         },
         editTools(),
-        { handlers: editHandlers(projectId, proposals), maxIterations: 10, maxToolResultLength: 12000 },
+        { handlers: editHandlers(projectId, proposals), maxIterations: 10, maxToolResultLength: 12000, signal },
         credentials
       );
       send({ type: 'proposals', edits: proposals, iterations: result.iterations, finalText: result.text });
@@ -277,7 +283,7 @@ export async function handleAppEditRoutes(
       throw new ValidationError('Le champ "edits" est obligatoire (au moins une modification)', undefined, requestId);
     }
 
-    const { send } = startSSE(req, res);
+    const { send, signal } = startSSE(req, res);
     try {
       ensureWorkspace(projectId);
       const changedFiles: Record<string, string> = {};
@@ -336,7 +342,7 @@ export async function handleAppEditRoutes(
       // le build, les erreurs de compilation repartent à l'IA qui corrige
       // DIRECTEMENT (l'utilisateur a déjà confirmé l'intention fonctionnelle).
       let repairRounds = 0;
-      while (!build.ok && repairRounds < 2) {
+      while (!build.ok && repairRounds < 2 && !signal.aborted) {
         repairRounds += 1;
         send({ type: 'repair', round: repairRounds });
         const adapter = aiProviderRegistry.resolve({ preferredProviderId: process.env.MISTRAL_API_KEY ? 'mistral' : undefined });
@@ -379,7 +385,8 @@ export async function handleAppEditRoutes(
               }
             },
             maxIterations: 8,
-            maxToolResultLength: 6000
+            maxToolResultLength: 6000,
+            signal
           },
           credentials
         );

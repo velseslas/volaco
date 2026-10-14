@@ -101,6 +101,14 @@ export class MistralProviderAdapter implements AIProviderAdapter {
 
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
+      // P0-masse n°3 — abandon client : coupe l'appel réseau en cours.
+      if (request.signal?.aborted) {
+        clearTimeout(timer);
+        const aborted = new Error('Appel Mistral interrompu : client abandonné.');
+        aborted.name = 'AbortError';
+        throw aborted;
+      }
+      request.signal?.addEventListener('abort', () => controller.abort(), { once: true });
       const startTime = Date.now();
 
       // É48 P4 (J-6) — l'attempt est visible dès le démarrage de l'appel :
@@ -287,6 +295,11 @@ export class MistralProviderAdapter implements AIProviderAdapter {
     // (complété, usage final non disponible → coût 0, J-6b différé), ERROR
     // (échec) ou ABORTED (interrompu avant complétion). Jamais deux.
     let streamTerminalEmitted = false;
+    // J-6b — usage final réel transmis par Mistral dans le dernier chunk du
+    // stream (`usage: {prompt_tokens, completion_tokens, total_tokens}`).
+    // Absent la plupart du temps : on ne l'invente jamais (ni estimation,
+    // ni zéro factuel — voir le terminal SUCCESS ci-dessous).
+    let streamUsage: { promptTokens: number; completionTokens: number } | null = null;
 
     try {
       aiUsageTracker.recordAttempt({
@@ -297,6 +310,34 @@ export class MistralProviderAdapter implements AIProviderAdapter {
         requestId: request.requestId ?? 'req-unknown',
         kind: 'START'
       });
+
+      // J-6b — terminal SUCCESS unique du stream. Si Mistral a transmis
+      // l'usage final réel, il est enregistré avec son coût réel
+      // (recordUsage). Sinon, on conserve l'event 0-coût historique
+      // (usage inconnu — jamais converti en zéro factuel, jamais estimé).
+      const recordStreamTerminalSuccess = (): void => {
+        if (streamUsage) {
+          aiUsageTracker.recordUsage(
+            request.tenantId,
+            request.projectId,
+            model,
+            streamUsage.promptTokens,
+            streamUsage.completionTokens,
+            request.requestId ?? 'req-unknown',
+            'mistral'
+          );
+        } else {
+          aiUsageTracker.recordAttempt({
+            tenantId: request.tenantId,
+            projectId: request.projectId,
+            model,
+            provider: 'mistral',
+            requestId: request.requestId ?? 'req-unknown',
+            kind: 'SUCCESS'
+          });
+        }
+        streamTerminalEmitted = true;
+      };
 
       const response = await this.fetchFn(endpoint, {
         method: 'POST',
@@ -352,17 +393,9 @@ export class MistralProviderAdapter implements AIProviderAdapter {
 
           const dataStr = trimmed.slice(5).trim();
           if (dataStr === '[DONE]') {
-            // É48 P4 — terminal SUCCESS du stream (usage final non disponible
-            // → coût 0 ; la récupération de l'usage final est différée J-6b)
-            aiUsageTracker.recordAttempt({
-              tenantId: request.tenantId,
-              projectId: request.projectId,
-              model,
-              provider: 'mistral',
-              requestId: request.requestId ?? 'req-unknown',
-              kind: 'SUCCESS'
-            });
-            streamTerminalEmitted = true;
+            // É48 P4 — terminal SUCCESS du stream (J-6b : usage réel si
+            // transmis, sinon event 0-coût historique).
+            recordStreamTerminalSuccess();
             return; // Fin du stream
           }
 
@@ -372,10 +405,27 @@ export class MistralProviderAdapter implements AIProviderAdapter {
                 delta?: { content?: string };
                 finish_reason?: string | null;
               }>;
+              usage?: {
+                prompt_tokens?: unknown;
+                completion_tokens?: unknown;
+                total_tokens?: unknown;
+              };
             };
             const delta = chunk.choices?.[0]?.delta?.content;
             if (delta && delta.length > 0) {
               yield delta;
+            }
+            // J-6b — capture l'usage final réel quand Mistral le transmet
+            // dans un chunk (dernier chunk avant [DONE]). Validation
+            // stricte : nombres finis ≥ 0, sinon ignoré (jamais inventé).
+            const u = chunk.usage;
+            if (u && typeof u === 'object') {
+              const p = u.prompt_tokens;
+              const c = u.completion_tokens;
+              if (typeof p === 'number' && typeof c === 'number' &&
+                  Number.isFinite(p) && Number.isFinite(c) && p >= 0 && c >= 0) {
+                streamUsage = { promptTokens: Math.floor(p), completionTokens: Math.floor(c) };
+              }
             }
           } catch {
             // Ligne non-JSON ou partielle, on ignore
@@ -384,17 +434,9 @@ export class MistralProviderAdapter implements AIProviderAdapter {
       }
 
       // É48 P4 — terminal SUCCESS : le corps du stream s'est terminé sans
-      // [DONE] explicite (usage final non disponible → coût 0, J-6b différé)
+      // [DONE] explicite (J-6b : usage réel si transmis, sinon 0-coût).
       if (!streamTerminalEmitted) {
-        aiUsageTracker.recordAttempt({
-          tenantId: request.tenantId,
-          projectId: request.projectId,
-          model,
-          provider: 'mistral',
-          requestId: request.requestId ?? 'req-unknown',
-          kind: 'SUCCESS'
-        });
-        streamTerminalEmitted = true;
+        recordStreamTerminalSuccess();
       }
     } catch (err: unknown) {
       // É48 P4 — terminal ERROR unique pour le stream en échec

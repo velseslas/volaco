@@ -14,7 +14,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { runToolLoop, parseToolArguments } from '../../src/ai/tool-loop.js';
+import { runToolLoop, parseToolArguments, ToolLoopAbortedError } from '../../src/ai/tool-loop.js';
 import type {
   AIProviderAdapter,
   AIProviderGenerateRequest,
@@ -262,6 +262,61 @@ describe('ÉTAPE 33 : boucle d exécution d outils (runToolLoop)', () => {
     const toolMsg = secondCall?.messages?.find((m) => m.role === 'tool') as AIProviderMessage;
     assert.equal(toolMsg.toolCallId, 'call-x');
     assert.equal(toolMsg.name, 'read_file');
+  });
+});
+
+describe('P0-masse n°3 : abandon client (AbortSignal)', () => {
+  it('signal déjà annulé : zéro appel modèle, ToolLoopAbortedError', async () => {
+    const adapter = new ScriptedAdapter([{ text: 'Jamais.' }]);
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(
+      runToolLoop(adapter, baseRequest(), [TOOL_READ], {
+        handlers: { read_file: () => 'contenu' },
+        signal: controller.signal
+      }),
+      (err: unknown) => err instanceof ToolLoopAbortedError
+    );
+    assert.equal(adapter.requests.length, 0, 'aucun appel facturé après abandon');
+  });
+
+  it('abandon en cours de boucle : arrêt au tour suivant, 1 seul appel', async () => {
+    const controller = new AbortController();
+    const adapter = new ScriptedAdapter([
+      { text: '', toolCalls: [toolCall({})] },
+      { text: '', toolCalls: [toolCall({})] },
+      { text: 'Jamais.' }
+    ]);
+    await assert.rejects(
+      runToolLoop(adapter, baseRequest(), [TOOL_READ], {
+        handlers: {
+          read_file: () => {
+            controller.abort(); // le client part pendant le 1er outil
+            return 'contenu';
+          }
+        },
+        signal: controller.signal
+      }),
+      (err: unknown) => err instanceof ToolLoopAbortedError
+    );
+    assert.equal(adapter.requests.length, 1, 'le 2e appel modèle n’a pas lieu');
+  });
+
+  it('signal transmis à l’adaptateur (coupe réseau en cours)', async () => {
+    const adapter = new ScriptedAdapter([{ text: 'OK.' }]);
+    const controller = new AbortController();
+    await runToolLoop(adapter, baseRequest(), [TOOL_READ], {
+      handlers: {},
+      signal: controller.signal
+    });
+    assert.equal(adapter.requests[0]?.signal, controller.signal, 'l’adaptateur reçoit le signal');
+  });
+
+  it('sans signal : comportement inchangé (aucune régression)', async () => {
+    const adapter = new ScriptedAdapter([{ text: 'Réponse.' }]);
+    const result = await runToolLoop(adapter, baseRequest(), [TOOL_READ], { handlers: {} });
+    assert.equal(result.text, 'Réponse.');
+    assert.equal(adapter.requests[0]?.signal, undefined, 'pas de signal fantôme');
   });
 });
 

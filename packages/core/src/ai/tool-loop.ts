@@ -35,6 +35,21 @@ export interface ToolLoopOptions {
   readonly maxIterations?: number;
   /** Taille maximale d'un résultat d'outil renvoyé au modèle (défaut 8000 caractères). */
   readonly maxToolResultLength?: number;
+  /**
+   * P0-masse n°3 — abandon client (onglet fermé, bouton stop) : vérifié avant
+   * chaque appel modèle et transmis à l'adaptateur (interrompt le réseau en
+   * cours). Lève ToolLoopAbortedError — l'appelant route le silence (plus
+   * personne n'écoute) plutôt qu'une erreur.
+   */
+  readonly signal?: AbortSignal | undefined;
+}
+
+/** La boucle s'est arrêtée sur abandon client — pas une erreur métier. */
+export class ToolLoopAbortedError extends Error {
+  constructor() {
+    super('Boucle d’outils interrompue : le client a abandonné (déconnexion ou stop).');
+    this.name = 'ToolLoopAbortedError';
+  }
 }
 
 export interface ToolLoopTraceEntry {
@@ -122,11 +137,17 @@ export async function runToolLoop(
   let modelId = '';
 
   for (let iteration = 1; iteration <= maxIterations; iteration++) {
+    // P0-masse n°3 — client parti entre deux tours : on s'arrête AVANT de
+    // facturer un nouvel appel (le signal voyage aussi vers l'adaptateur
+    // pour couper l'appel réseau éventuellement en cours).
+    if (options.signal?.aborted) {
+      throw new ToolLoopAbortedError();
+    }
     const isLastIteration = iteration === maxIterations;
     // Au dernier appel, les outils sont retirés : le modèle ne peut plus
     // en demander, il DOIT répondre en texte → la boucle termine toujours.
     const response = await adapter.generate(
-      { ...request, messages, tools: isLastIteration ? undefined : tools },
+      { ...request, messages, tools: isLastIteration ? undefined : tools, ...(options.signal ? { signal: options.signal } : {}) },
       credentials
     );
 

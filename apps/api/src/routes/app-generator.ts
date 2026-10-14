@@ -283,7 +283,14 @@ export async function handleAppGeneratorRoutes(
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
     let clientGone = false;
-    req.on('close', () => { clientGone = true; });
+    // P0-masse n°3 — l'abandon client (onglet fermé) coupe AUSSI les boucles
+    // LLM (sinon crédit brûlé pour personne) via le signal ci-dessous.
+    // É48 P2 : en SSE c'est `res close` (pas `req close`) qui signale
+    // fiablement la déconnexion — on écoute les deux.
+    const aborter = new AbortController();
+    const markGone = (): void => { clientGone = true; aborter.abort(); };
+    req.on('close', markGone);
+    res.on('close', () => { if (!res.writableEnded) markGone(); });
     const send = (data: Record<string, unknown>): void => {
       if (clientGone) return;
       res.write(`data: ${JSON.stringify(data)}\n\n`);
@@ -318,7 +325,7 @@ export async function handleAppGeneratorRoutes(
           requestId
         },
         toolsFor(context.tenantId, projectId, send),
-        { handlers: handlersFor(context.tenantId, projectId, send), maxIterations: 12, maxToolResultLength: 2000 },
+        { handlers: handlersFor(context.tenantId, projectId, send), maxIterations: 12, maxToolResultLength: 2000, signal: aborter.signal },
         credentials
       );
       send({ type: 'generation-done', iterations: gen.iterations, toolCalls: gen.trace.length });
@@ -346,7 +353,7 @@ export async function handleAppGeneratorRoutes(
             requestId
           },
           toolsFor(context.tenantId, projectId, send),
-          { handlers: handlersFor(context.tenantId, projectId, send), maxIterations: 8, maxToolResultLength: 2000 },
+          { handlers: handlersFor(context.tenantId, projectId, send), maxIterations: 8, maxToolResultLength: 2000, signal: aborter.signal },
           credentials
         );
         build = await buildApp(projectId);

@@ -64,6 +64,11 @@ export interface AIProviderGenerateRequest {
   readonly requestId?: string | undefined;
   readonly tools?: readonly AIProviderTool[] | undefined;
   /**
+   * P0-masse n°3 — abandon client : quand il est fourni et annulé, l'adaptateur
+   * DOIT interrompre l'appel réseau en cours (crédit non brûlé pour personne).
+   */
+  readonly signal?: AbortSignal | undefined;
+  /**
    * É33 — Historique de conversation multi-tours (tool-calling).
    * Quand il est fourni, il remplace la construction systemPrompt+prompt ;
    * sinon le comportement mono-tour existant reste inchangé.
