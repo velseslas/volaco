@@ -68,4 +68,15 @@ describe('SEC-01 : projectId MCP validé (traversée fermée)', () => {
     const res = await fetch(`${baseUrl}/api/v1/mcp/servers`, { headers: H });
     assert.equal(res.status, 200);
   });
+
+  it('5. SEC-12 : corps > 1 Mo refusé 413 (plus d’accumulateur sans borne)', async () => {
+    const res = await fetch(`${baseUrl}/api/v1/mcp/call`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ server: 'project', tool: 'fs_read', projectId: 'x', args: { blob: 'A'.repeat(1_100_000) } })
+    });
+    assert.equal(res.status, 413);
+    const data = (await res.json()) as { error?: { code?: string } };
+    assert.equal(data.error?.code, 'PAYLOAD_TOO_LARGE');
+  });
 });

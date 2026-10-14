@@ -19,6 +19,7 @@ import { NotFoundError, ValidationError } from '../../../../packages/core/src/er
 import { projectStore } from '../../../../packages/core/src/identity/project.js';
 import { isSafeProjectId } from '../../../../packages/core/src/app-pipeline.js';
 import { McpStdioClient } from '../../../../packages/core/src/mcp/client.js';
+import { readBody } from '../middleware/body.js';
 import type { RequestContext } from '../middleware/auth.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -78,11 +79,9 @@ export async function handleMcpRoutes(
   // 2. POST /api/v1/mcp/call : appelle un outil sur un serveur
   if (pathname === '/api/v1/mcp/call' && req.method === 'POST') {
     assertPermission(context.role, 'PROJECT_UPDATE', requestId);
-    const bodyText = await new Promise<string>((resolve) => {
-      let data = '';
-      req.on('data', (c) => { data += c; });
-      req.on('end', () => resolve(data));
-    });
+    // SEC-12 — corps borné à 1 Mo comme partout ailleurs (l'accumulateur
+    // maison acceptait un POST de taille illimitée → DoS mémoire).
+    const bodyText = await readBody(req);
     let body: { server?: string; tool?: string; args?: Record<string, unknown>; projectId?: string; timeoutMs?: number };
     try {
       body = bodyText ? (JSON.parse(bodyText) as typeof body) : {};
