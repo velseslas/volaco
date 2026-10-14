@@ -239,13 +239,26 @@ export class SSEBuildEventSource implements BuildEventSource {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
+      // PV-05 — fin de flux SANS événement terminal = aperçu bloqué sur
+      // « building ». On piste les événements terminaux moteur ; à la fin
+      // propre du transport sans aucun, on le DIT (l'hôte débloque son état).
+      let terminalSeen = false;
+      const tracked = (event: PreviewBuildEvent): void => {
+        if (event.kind === 'BUILD_COMPLETED' || event.kind === 'BUILD_FAILED' || event.kind === 'BUILD_CANCELLED') {
+          terminalSeen = true;
+        }
+        handler(event);
+      };
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
         buffer += typeof value === 'string' ? value : decoder.decode(value, { stream: true });
         const frames = buffer.split('\n\n');
         buffer = frames.pop() || '';
-        for (const frame of frames) consumeSseFrame(frame, handler, onError);
+        for (const frame of frames) consumeSseFrame(frame, tracked, onError);
+      }
+      if (!terminalSeen && !controller.signal.aborted) {
+        onError?.('Flux terminé sans événement final — la génération est restée en suspens, relancez-la.');
       }
     };
 

@@ -1368,7 +1368,15 @@
         headers: H
       }).subscribe(
         (event) => consume(event),
-        (m) => { if (v2Status) v2Status.textContent = 'Erreur: ' + m; }
+        (m) => {
+          if (v2Status) v2Status.textContent = 'Erreur: ' + m;
+          // PV-05 — le texte seul laissait le moteur en « building » (canvas
+          // fantôme) : on pousse l'échec DANS l'état pour le débloquer.
+          try {
+            state = applyBuildEvent(state, { kind: 'BUILD_FAILED', error: String(m || 'erreur inconnue'), timestamp: Date.now() });
+            renderCurrent();
+          } catch (e) { /* état déjà terminal : le texte suffit */ }
+        }
       );
       } finally {
         realGenerationStarting = false;

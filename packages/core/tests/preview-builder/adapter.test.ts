@@ -275,6 +275,59 @@ describe('P0-masse n°2 : file d’attente 503 + réessai auto', () => {
   });
 });
 
+describe('PV-05 : fin de flux sans terminal → signalé, pas de building fantôme', () => {
+  function streamOf(frames: string[]): Response {
+    const encoder = new TextEncoder();
+    let i = 0;
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      body: {
+        getReader: () => ({
+          read: async () => (i < frames.length ? { done: false, value: encoder.encode(frames[i++]!) } : { done: true, value: undefined })
+        })
+      }
+    } as unknown as Response;
+  }
+
+  it('18. transport coupé après start (sans done) → erreur explicite', async () => {
+    const received: string[] = [];
+    const errors: string[] = [];
+    const source = new SSEBuildEventSource({
+      url: 'sse://tronque',
+      fetchImpl: (async () => streamOf(['data: {"type":"start","timestamp":1}\n\n'])) as unknown as typeof fetch
+    });
+    await new Promise<void>((resolve) => {
+      source.subscribe((e) => received.push(e.kind), (m) => errors.push(m));
+      setTimeout(resolve, 500);
+    });
+    assert.deepEqual(received, ['BUILD_STARTED']);
+    assert.ok(errors.some((m) => m.includes('sans événement final')), 'le suspens est dit, pas tu');
+  });
+
+  it('19. flux complet (done) → aucun faux signal', async () => {
+    const received: string[] = [];
+    const errors: string[] = [];
+    const source = new SSEBuildEventSource({
+      url: 'sse://complet',
+      fetchImpl: (async () => streamOf([
+        'data: {"type":"start","timestamp":1}\n\n',
+        'data: {"type":"done","timestamp":2}\n\n'
+      ])) as unknown as typeof fetch
+    });
+    await new Promise<void>((resolve) => {
+      source.subscribe(
+        (e) => { received.push(e.kind); if (e.kind === 'BUILD_COMPLETED') resolve(); },
+        (m) => errors.push(m)
+      );
+      setTimeout(resolve, 1000);
+    });
+    assert.ok(received.includes('BUILD_COMPLETED'));
+    assert.ok(!errors.some((m) => m.includes('sans événement final')), 'pas de faux positif');
+  });
+});
+
 describe('ÉTAPE 08 : intégration SSE → Adapter → Engine == Mock → Engine', () => {
   it('14. les deux chemins arrivent au MÊME state final pour le même scénario', () => {
     // Scénario exprimé dans le VOCABULAIRE du générateur réel (contrat SSE)

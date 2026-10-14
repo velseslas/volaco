@@ -76,22 +76,21 @@ describe('ÉTAPE 09 : source réelle branchée au stream du Studio', () => {
     assert.ok(renderPreview(state).statusLabel.startsWith('error'));
   });
 
-  it('6. flux normal complet : fermeture du stream sans erreur transport', async () => {
+  it('6. PV-05 : planFirst (done ignoré) + fermeture → suspens SIGNALÉ, fini le fantôme silencieux', async () => {
     // planFirst sans confirmation : start → … → done(awaitingConfirmation)
-    // ignoré par l’adaptateur, puis le serveur FERME le stream → résolution
-    // propre, onError jamais appelé.
-    let errored = false;
-    let finished = false;
+    // ignoré par l’adaptateur (contrat moteur), puis le serveur FERME le
+    // stream. Avant : silence → moteur bloqué en « building ». Après : le
+    // suspens est dit explicitement (l’hôte débloque son état).
+    const box: { message: string | null } = { message: null };
     const source = new SSEBuildEventSource({
       url: `${baseUrl}/api/v1/projects/${projectId}/conversation/sessions/${sessionId}/stream`,
       headers: H, body: { message: 'Autre tour', isModification: false, planFirst: true }
     });
     await new Promise<void>((resolve) => {
-      source.subscribe(() => {}, () => { errored = true; resolve(); });
-      setTimeout(() => { finished = true; resolve(); }, 8000);
+      source.subscribe(() => {}, (m) => { box.message = m; resolve(); });
+      setTimeout(resolve, 8000);
     });
-    assert.equal(errored, false, 'fermeture normale : aucune erreur transport signalée');
-    assert.equal(finished, true);
+    assert.ok(box.message && box.message.includes('sans événement final'), 'le suspens est signalé, pas tu');
   });
 
   it('7. stop() relâche les ressources : aucun événement après abort, pas d’erreur', async () => {
