@@ -19,7 +19,7 @@ import { join } from 'node:path';
 import { assertPermission } from '../../../../packages/core/src/identity/permissions.js';
 import { NotFoundError, ValidationError } from '../../../../packages/core/src/errors.js';
 import { projectStore } from '../../../../packages/core/src/identity/project.js';
-import { isSafeProjectId } from '../../../../packages/core/src/app-pipeline.js';
+import { acquireProjectLock, isSafeProjectId } from '../../../../packages/core/src/app-pipeline.js';
 import { logger } from '../../../../packages/core/src/logger.js';
 import { aiProviderRegistry } from '../../../../packages/core/src/ai/providers/registry.js';
 import { runToolLoop } from '../../../../packages/core/src/ai/tool-loop.js';
@@ -283,6 +283,9 @@ export async function handleAppEditRoutes(
       throw new ValidationError('Le champ "edits" est obligatoire (au moins une modification)', undefined, requestId);
     }
 
+    // P1-masse — VERROU PAR PROJET (comme /app/generate) : acquis AVANT le
+    // SSE pour un 503 propre en cas de contention.
+    const releaseProject = await acquireProjectLock(projectId, { requestId });
     const { send, signal } = startSSE(req, res);
     try {
       ensureWorkspace(projectId);
@@ -399,6 +402,8 @@ export async function handleAppEditRoutes(
       const message = err instanceof Error ? err.message : String(err);
       send({ type: 'error', error: message.slice(0, 400) });
       logger.warn('Application d éditions en échec', { component: 'app-edit', projectId, error: message });
+    } finally {
+      releaseProject();
     }
     res.end();
     return true;

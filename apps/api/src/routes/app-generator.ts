@@ -19,7 +19,7 @@ import { extname, join, resolve, sep } from 'node:path';
 import { assertPermission } from '../../../../packages/core/src/identity/permissions.js';
 import { NotFoundError, ValidationError } from '../../../../packages/core/src/errors.js';
 import { projectStore } from '../../../../packages/core/src/identity/project.js';
-import { isSafeProjectId, workspaceDir } from '../../../../packages/core/src/app-pipeline.js';
+import { acquireProjectLock, isSafeProjectId, workspaceDir } from '../../../../packages/core/src/app-pipeline.js';
 import { logger } from '../../../../packages/core/src/logger.js';
 import { aiProviderRegistry } from '../../../../packages/core/src/ai/providers/registry.js';
 import { runToolLoop } from '../../../../packages/core/src/ai/tool-loop.js';
@@ -277,6 +277,11 @@ export async function handleAppGeneratorRoutes(
       throw new ValidationError('Le champ "prompt" est obligatoire', undefined, requestId);
     }
 
+    // P1-masse — VERROU PAR PROJET : tout le flux (reset, écritures IA,
+    // builds, réparations) est sérialisé par projet. Acquis AVANT le SSE
+    // (sinon 503 après des en-têtes 200 = client pendu).
+    const releaseProject = await acquireProjectLock(projectId, { requestId });
+
     // SSE
     res.statusCode = 200;
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -366,6 +371,8 @@ export async function handleAppGeneratorRoutes(
       const message = err instanceof Error ? err.message : String(err);
       send({ type: 'error', error: message.slice(0, 400) });
       logger.warn('Génération d\'app en échec', { component: 'app-generator', projectId, error: message });
+    } finally {
+      releaseProject();
     }
     res.end();
     return true;

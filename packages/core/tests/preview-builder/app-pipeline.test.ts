@@ -9,9 +9,10 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  acquireProjectLock,
   buildApp,
   ensureWorkspace,
   listAppFiles,
@@ -72,5 +73,58 @@ describe('P1/P2 : pipeline d applications React réelles', () => {
     writeAppFile(TEST_PROJECT, 'src/components/Temporaire.tsx', 'x');
     ensureWorkspace(TEST_PROJECT, true);
     assert.equal(existsSync(join(workspaceDir(TEST_PROJECT), 'src', 'components', 'Temporaire.tsx')), false, 'fichier temporaire parti');
+  });
+
+  it('6. P1-masse : verrou par projet — sections critiques sérialisées, projets distincts parallèles', async () => {
+    const order: string[] = [];
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const r1 = await acquireProjectLock('test-lock-01');
+    const p1 = (async () => { order.push('a-in'); await sleep(80); order.push('a-out'); r1(); })();
+    // Deuxième acquisition (même projet) : DOIT attendre la libération.
+    const r2promise = acquireProjectLock('test-lock-01', { timeoutMs: 5000 });
+    await sleep(20);
+    let r2done = false;
+    const p2 = r2promise.then((r2) => { r2done = true; order.push('b-in'); r2(); });
+    await sleep(30);
+    assert.equal(r2done, false, 'le 2e acquéreur attend (pas de passage en force)');
+    await Promise.all([p1, p2]);
+    assert.deepEqual(order, ['a-in', 'a-out', 'b-in'], 'ordre FIFO respecté');
+    // Projet distinct : aucune attente.
+    const r3 = await acquireProjectLock('test-lock-autre', { timeoutMs: 500 });
+    r3();
+  });
+
+  it('7. P1-masse : timeout du verrou → 503 PROJECT_BUSY, file intacte derrière', async () => {
+    const r1 = await acquireProjectLock('test-lock-02');
+    await assert.rejects(
+      acquireProjectLock('test-lock-02', { timeoutMs: 60 }),
+      (err: unknown) => err instanceof Error && (err as { statusCode?: number }).statusCode === 503,
+      'attente trop longue → 503, pas d’attente infinie'
+    );
+    r1();
+    // La file coule après libération (le timeout n’a rien cassé).
+    const r2 = await acquireProjectLock('test-lock-02', { timeoutMs: 1000 });
+    r2();
+  });
+
+  it('8. P1-masse : build raté ne vide PLUS le preview (bascule atomique)', async () => {
+    // État sain : build OK puis snapshot du bundle servi.
+    ensureWorkspace(TEST_PROJECT, true);
+    writeAppFile(TEST_PROJECT, 'src/App.tsx', 'export default function App() { return <div>Atomic OK</div>; }');
+    const good = await buildApp(TEST_PROJECT);
+    assert.equal(good.ok, true, 'préparation : ' + good.errors.join(' | '));
+    const ws = workspaceDir(TEST_PROJECT);
+    const before = readFileSync(join(ws, 'dist', 'index.html'), 'utf8');
+    assert.ok(before.includes('Atomic OK'));
+    // On casse une source puis on rebuild : échec SANS toucher au dist servi.
+    writeAppFile(TEST_PROJECT, 'src/App.tsx', 'ceci n’est pas du TSX ((((');
+    const bad = await buildApp(TEST_PROJECT);
+    assert.equal(bad.ok, false, 'le build cassé échoue honnêtement');
+    const after = readFileSync(join(ws, 'dist', 'index.html'), 'utf8');
+    assert.equal(after, before, 'l’ancien bundle reste servi tel quel (pas de 404)');
+    const leftovers = readdirSync(ws).filter((n: string) => n.startsWith('dist-next-') || n === 'dist-prev');
+    assert.deepEqual(leftovers, [], 'aucun répertoire temporaire résiduel');
+    // Remise en état pour les prochaines exécutions.
+    ensureWorkspace(TEST_PROJECT, true);
   });
 });

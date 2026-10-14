@@ -17,10 +17,10 @@
  *   jamais au-delà du workspace.
  */
 
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ValidationError } from './errors.js';
+import { AppError, ValidationError } from './errors.js';
 
 // ----------------------------------------------------------------------------
 // PERF : Vite + plugins React/Tailwind chargés PARESSEUSEMENT. Leur import
@@ -67,6 +67,64 @@ export function workspaceDir(projectId: string): string {
     throw new ValidationError('Identifiant de projet hors workspace');
   }
   return dir;
+}
+
+// ----------------------------------------------------------------------------
+// P1-masse — VERROU PAR PROJET : deux générations/éditions concurrentes sur
+// le MÊME projet s'écrasaient (reset + écritures + `emptyOutDir` entremêlés).
+// File FIFO par projet : même projet = sérialisé, projets distincts =
+// parallèles. Timeout 503 PROJECT_BUSY (5 min) : pas d'attente infinie si le
+// détenteur se bloque. NON réentrant (ne jamais acquérir 2× imbriqué).
+// ----------------------------------------------------------------------------
+const DEFAULT_PROJECT_LOCK_TIMEOUT_MS = 5 * 60 * 1000;
+const projectLockTails = new Map<string, Promise<void>>();
+
+export async function acquireProjectLock(
+  projectId: string,
+  options?: { timeoutMs?: number | undefined; requestId?: string | undefined }
+): Promise<() => void> {
+  const timeoutMs = options?.timeoutMs !== undefined && options.timeoutMs > 0
+    ? options.timeoutMs
+    : DEFAULT_PROJECT_LOCK_TIMEOUT_MS;
+  const previous = projectLockTails.get(projectId) ?? Promise.resolve();
+  let releaseGate!: () => void;
+  const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+  // Notre tour vient après le précédent (les gates ne rejettent jamais :
+  // pas de rejet non géré dans la chaîne).
+  const ours = previous.then(() => gate);
+  projectLockTails.set(projectId, ours);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      previous,
+      new Promise<void>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new AppError(
+            'Projet occupé par une autre génération — réessayez dans un instant.',
+            'PROJECT_BUSY',
+            503,
+            { projectId },
+            options?.requestId
+          ));
+        }, timeoutMs);
+      })
+    ]);
+  } catch (err) {
+    // Timeout : on se retire SANS bloquer les suivants (la gate est résolue,
+    // la file coule) puis on propage le 503.
+    releaseGate();
+    if (projectLockTails.get(projectId) === ours) projectLockTails.delete(projectId);
+    throw err;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    releaseGate();
+    if (projectLockTails.get(projectId) === ours) projectLockTails.delete(projectId);
+  };
 }
 
 /** Copie le template dans le workspace (reset = site frais). */
@@ -189,8 +247,8 @@ export interface AppBuildResult {
  * possible) charge alors l'app complète en un document — c'est ce qui
  * garantit l'exécution dans le preview quelle que soit l'isolation.
  */
-function inlineBundleIntoSingleFile(ws: string): void {
-  const dist = join(ws, 'dist');
+function inlineBundleIntoSingleFile(distDir: string): void {
+  const dist = distDir;
   let html = readFileSync(join(dist, 'index.html'), 'utf8');
   // <script type="module" crossorigin src="./assets/x.js"></script> → inline
   html = html.replace(/<script[^>]*src="\.?\/?([^"]+\.js)"[^>]*><\/script>/g, (_m, src: string) => {
@@ -211,6 +269,18 @@ export async function buildApp(projectId: string): Promise<AppBuildResult> {
   const startedAt = Date.now();
   const buildId = 'b' + startedAt.toString(36) + Math.random().toString(36).slice(2, 6);
   const errors: string[] = [];
+  // P1-masse — BASCULE ATOMIQUE : le build écrit dans `dist-next-<id>/`, et
+  // `dist/` n'est remplacé qu'en cas de succès (rename). Un build raté ne
+  // vide PLUS le preview (fini le 404 après `emptyOutDir`), et deux builds
+  // ne partagent plus le même dossier (avec le verrou par projet : étanche).
+  const distDir = join(ws, 'dist');
+  const nextDir = join(ws, `dist-next-${buildId}`);
+  const prevDir = join(ws, 'dist-prev');
+  const rmBestEffort = (dir: string): void => {
+    try {
+      if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+    } catch { /* nettoyage : jamais bloquant */ }
+  };
   try {
     const [vite, reactPlugin, tailwindPlugin] = await loadViteBundle();
     await vite.build({
@@ -228,7 +298,7 @@ export async function buildApp(projectId: string): Promise<AppBuildResult> {
         ]
       },
       build: {
-        outDir: 'dist',
+        outDir: `dist-next-${buildId}`,
         emptyOutDir: true,
         // un seul chunk : garanti par inlineDynamicImports → le bundle peut
         // être assemblé en un fichier HTML autonome (scripts inlinés).
@@ -241,13 +311,21 @@ export async function buildApp(projectId: string): Promise<AppBuildResult> {
   }
   if (errors.length === 0) {
     try {
-      inlineBundleIntoSingleFile(ws);
+      inlineBundleIntoSingleFile(nextDir);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       errors.push('assemblage single-file: ' + message.slice(0, 1000));
     }
   }
-  return { ok: errors.length === 0, durationMs: Date.now() - startedAt, errors, buildId };
+  if (errors.length > 0) {
+    rmBestEffort(nextDir); // échec : l'ancien dist/ reste servi tel quel
+    return { ok: false, durationMs: Date.now() - startedAt, errors, buildId };
+  }
+  rmBestEffort(prevDir);
+  if (existsSync(distDir)) renameSync(distDir, prevDir);
+  renameSync(nextDir, distDir);
+  rmBestEffort(prevDir); // pas de consommateur de rollback : pas de rétention disque
+  return { ok: true, durationMs: Date.now() - startedAt, errors, buildId };
 }
 
 export { repoRoot as appRepoRoot, templateDir as appTemplateDir };

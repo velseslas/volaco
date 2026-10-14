@@ -6,7 +6,8 @@
   | 'FORBIDDEN'
   | 'BAD_REQUEST'
   | 'PAYLOAD_TOO_LARGE'
-  | 'RATE_LIMITED';
+  | 'RATE_LIMITED'
+  | 'PROJECT_BUSY';
 
 export interface ErrorDetails {
   code: ErrorCode;
