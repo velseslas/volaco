@@ -66,6 +66,15 @@ describe('conversation : shell HTML complet', () => {
     assert.deepEqual(extractPageTitle('<!-- PAGE_TITLE: <b>X</b> -->').title, 'X', 'balises retirées');
   });
 
+  it('6b. garde source : images à mots-clés imposées, IDs de mémoire interdits', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const src = readFileSync(join(process.cwd(), 'apps/api/src/routes/conversation.ts'), 'utf8');
+    assert.ok(src.includes('loremflickr.com/1200/800/'), 'source à mots-clés imposée dans le prompt');
+    assert.ok(src.includes('INTERDIT de réciter des adresses Unsplash de mémoire'), 'IDs de mémoire interdits');
+    assert.ok(src.includes('?lock='), 'variation imposée par image');
+  });
+
   it('6. addImageFallbacks : onerror ajouté aux http(s) sans gestionnaire, le reste intact', () => {
     const html = '<p>ok</p>'
       + '<img src="https://images.unsplash.com/photo-1" alt="pizza">'
