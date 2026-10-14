@@ -187,6 +187,94 @@ describe('ÉTAPE 08 : Mock Source et SSE Source produisent le MÊME contrat', ()
   });
 });
 
+describe('P0-masse n°2 : file d’attente 503 + réessai auto', () => {
+  function busyResponse(code: string, retryAfter = '15'): Response {
+    return {
+      status: 503,
+      headers: { get: (name: string) => (name.toLowerCase() === 'retry-after' ? retryAfter : null) },
+      json: async () => ({ error: { code, message: 'occupé', statusCode: 503 } })
+    } as unknown as Response;
+  }
+
+  function okStreamResponse(): Response {
+    const encoder = new TextEncoder();
+    const frames = ['data: {"type":"start","timestamp":1}\n\n', 'data: {"type":"done","timestamp":2}\n\n'];
+    let i = 0;
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      body: {
+        getReader: () => ({
+          read: async () => (i < frames.length ? { done: false, value: encoder.encode(frames[i++]!) } : { done: true, value: undefined })
+        })
+      }
+    } as unknown as Response;
+  }
+
+  it('15. 503 AI_BUSY → message file d’attente + 1 réessai auto qui aboutit', async () => {
+    const calls: number[] = [];
+    const sleeps: number[] = [];
+    const fetchImpl = (async () => (calls.push(calls.length), calls.length === 1 ? busyResponse('AI_BUSY') : okStreamResponse())) as unknown as typeof fetch;
+    const received: string[] = [];
+    const errors: string[] = [];
+    const source = new SSEBuildEventSource({
+      url: 'sse://busy',
+      fetchImpl,
+      sleepImpl: async (ms: number) => { sleeps.push(ms); }
+    });
+    await new Promise<void>((resolve) => {
+      source.subscribe(
+        (e) => { received.push(e.kind); if (e.kind === 'BUILD_COMPLETED') resolve(); },
+        (m) => errors.push(m)
+      );
+      setTimeout(resolve, 2000);
+    });
+    assert.equal(calls.length, 2, 'exactement 1 tentative + 1 réessai');
+    assert.ok(errors.some((m) => m.includes('File IA saturée')), 'message file d’attente explicite, pas « SSE HTTP 503 »');
+    assert.ok(!errors.some((m) => m.includes('SSE HTTP 503')), 'aucun message brut');
+    assert.deepEqual(received, ['BUILD_STARTED', 'BUILD_COMPLETED'], 'le flux du réessai est consommé');
+    assert.deepEqual(sleeps, [15000], 'attente = Retry-After serveur (15 s)');
+  });
+
+  it('16. 503 persistant → erreur franche après le réessai (pas de boucle)', async () => {
+    let calls = 0;
+    const fetchImpl = (async () => { calls++; return busyResponse('RENDER_BUSY', '60'); }) as unknown as typeof fetch;
+    const errors: string[] = [];
+    const source = new SSEBuildEventSource({
+      url: 'sse://busy',
+      fetchImpl,
+      sleepImpl: async () => {}
+    });
+    await new Promise<void>((resolve) => {
+      source.subscribe(() => {}, (m) => { errors.push(m); if (!m.includes('nouvel essai')) resolve(); });
+      setTimeout(resolve, 2000);
+    });
+    assert.equal(calls, 2, 'pas plus de 2 tentatives (pas de boucle infinie)');
+    assert.ok(errors.some((m) => m.includes('Moteur de rendu saturé')), 'message RENDER_BUSY explicite');
+    assert.ok(errors.some((m) => m.includes('Toujours saturé')), 'erreur finale franche');
+  });
+
+  it('17. stop() pendant l’attente → aucun réessai (silence)', async () => {
+    let calls = 0;
+    const fetchImpl = (async () => { calls++; return busyResponse('AI_BUSY'); }) as unknown as typeof fetch;
+    const gate: { wake: (() => void) | null } = { wake: null };
+    const errors: string[] = [];
+    const source = new SSEBuildEventSource({
+      url: 'sse://busy',
+      fetchImpl,
+      sleepImpl: () => new Promise<void>((r) => { gate.wake = r; })
+    });
+    const handle = source.subscribe(() => {}, (m) => errors.push(m));
+    for (let i = 0; i < 100 && calls === 0; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(calls, 1);
+    handle.stop();
+    gate.wake?.();
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(calls, 1, 'aucun réessai après stop()');
+  });
+});
+
 describe('ÉTAPE 08 : intégration SSE → Adapter → Engine == Mock → Engine', () => {
   it('14. les deux chemins arrivent au MÊME state final pour le même scénario', () => {
     // Scénario exprimé dans le VOCABULAIRE du générateur réel (contrat SSE)

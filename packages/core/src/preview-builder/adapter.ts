@@ -166,6 +166,15 @@ export interface MockSSETransport {
  * parse les frames `data: {json}` et normalise via l'adaptateur.
  * Aucune dépendance : le transport est fourni par l'app hôte (navigateur).
  */
+const BUSY_RETRY_MAX_DEFAULT = 1;
+const BUSY_RETRY_WAIT_CAP_MS = 20_000;
+
+function busyMessage(code: string | undefined): string {
+  if (code === 'AI_BUSY') return 'File IA saturée — nouvel essai automatique…';
+  if (code === 'RENDER_BUSY') return 'Moteur de rendu saturé — nouvel essai automatique…';
+  return 'Serveur occupé (HTTP 503) — nouvel essai automatique…';
+}
+
 export class SSEBuildEventSource implements BuildEventSource {
   constructor(
     private readonly options: {
@@ -173,36 +182,77 @@ export class SSEBuildEventSource implements BuildEventSource {
       body?: unknown;
       headers?: Record<string, string>;
       fetchImpl?: typeof fetch;
+      /** Nombre de réessais auto sur 503 (défaut 1). */
+      maxRetries?: number | undefined;
+      /** Plafond d'attente avant réessai (défaut : min(Retry-After, 20 s)). */
+      retryDelayMs?: number | undefined;
+      /** Horloge injectable (tests). */
+      sleepImpl?: ((ms: number) => Promise<void>) | undefined;
     }
   ) {}
 
   public subscribe(handler: (event: PreviewBuildEvent) => void, onError?: (message: string) => void): BuildEventSourceHandle {
     const controller = new AbortController();
     const doFetch = this.options.fetchImpl ?? fetch;
-    doFetch(this.options.url, {
-      method: 'POST',
-      headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json', ...(this.options.headers || {}) },
-      body: JSON.stringify(this.options.body ?? {}),
-      signal: controller.signal
-    })
-      .then(async (res) => {
-        if (!res.ok || !res.body) throw new Error(`SSE HTTP ${res.status}`);
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += typeof value === 'string' ? value : decoder.decode(value, { stream: true });
-          const frames = buffer.split('\n\n');
-          buffer = frames.pop() || '';
-          for (const frame of frames) consumeSseFrame(frame, handler, onError);
-        }
-      })
-      .catch((err: unknown) => {
+    const sleep = this.options.sleepImpl ?? ((ms: number) => new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      controller.signal.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true });
+    }));
+    const maxRetries = this.options.maxRetries ?? BUSY_RETRY_MAX_DEFAULT;
+
+    const attempt = async (retryCount: number): Promise<void> => {
+      let res: Response;
+      try {
+        res = await doFetch(this.options.url, {
+          method: 'POST',
+          headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json', ...(this.options.headers || {}) },
+          body: JSON.stringify(this.options.body ?? {}),
+          signal: controller.signal
+        });
+      } catch (err: unknown) {
         if (controller.signal.aborted) return; // stop() volontaire
-        onError?.(err instanceof Error ? err.message : String(err));
-      });
+        throw err;
+      }
+      // P0-masse n°2 — FILE D'ATTENTE : le sémaphore serveur répond 503 avec
+      // Retry-After. Au lieu de « SSE HTTP 503 » brut : message explicite,
+      // UN réessai auto après le délai indiqué (plafonné), puis erreur franche.
+      if (res.status === 503) {
+        let code: string | undefined;
+        try {
+          const payload = (await res.json()) as { error?: { code?: string } };
+          code = payload?.error?.code;
+        } catch { /* corps illisible : message générique */ }
+        const retryAfterSec = Number(res.headers.get('retry-after'));
+        const waitMs = this.options.retryDelayMs
+          ?? Math.min(Number.isFinite(retryAfterSec) && retryAfterSec > 0 ? retryAfterSec * 1000 : BUSY_RETRY_WAIT_CAP_MS, BUSY_RETRY_WAIT_CAP_MS);
+        if (retryCount < maxRetries && !controller.signal.aborted) {
+          onError?.(`${busyMessage(code)} (nouvel essai dans ${Math.round(waitMs / 1000)} s)`);
+          await sleep(waitMs);
+          if (controller.signal.aborted) return; // stop() pendant l'attente
+          return attempt(retryCount + 1);
+        }
+        throw new Error(code === 'AI_BUSY' || code === 'RENDER_BUSY'
+          ? 'Toujours saturé après nouvel essai — réessaie dans une minute.'
+          : `SSE HTTP 503`);
+      }
+      if (!res.ok || !res.body) throw new Error(`SSE HTTP ${res.status}`);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += typeof value === 'string' ? value : decoder.decode(value, { stream: true });
+        const frames = buffer.split('\n\n');
+        buffer = frames.pop() || '';
+        for (const frame of frames) consumeSseFrame(frame, handler, onError);
+      }
+    };
+
+    attempt(0).catch((err: unknown) => {
+      if (controller.signal.aborted) return; // stop() volontaire
+      onError?.(err instanceof Error ? err.message : String(err));
+    });
     return { stop: () => controller.abort() };
   }
 }
