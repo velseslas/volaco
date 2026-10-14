@@ -12,7 +12,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { addImageFallbacks, buildStudioShell, extractPageTitle } from '../src/routes/conversation.js';
+import { addImageFallbacks, buildStudioShell, deriveFallbackTitle, extractPageTitle } from '../src/routes/conversation.js';
 
 describe('conversation : shell HTML complet', () => {
   const fragments = '<div data-section="header"><header>Menu</header></div>\n<div data-section="hero"><section><h1>Bienvenue</h1></section></div>';
@@ -48,6 +48,13 @@ describe('conversation : shell HTML complet', () => {
     const evil = buildStudioShell(fragments, undefined, '<script>alert(1)</script>');
     assert.ok(!evil.includes('<script>alert'), 'balises neutralisées');
     assert.match(evil, /&lt;script&gt;/, 'échappement HTML');
+  });
+
+  it('5b. deriveFallbackTitle : H1 puis H2, balises retirées, null si vide', () => {
+    assert.equal(deriveFallbackTitle('<section><h1>Pain frais, <span>Boulangerie</span></h1></section>'), 'Pain frais, Boulangerie');
+    assert.equal(deriveFallbackTitle('<section><h2>Nos formules</h2></section>'), 'Nos formules');
+    assert.equal(deriveFallbackTitle('<section><h1>AB</h1><h2>Formules et tarifs du Fournil</h2></section>'), 'Formules et tarifs du Fournil', 'H1 trop court → H2');
+    assert.equal(deriveFallbackTitle('<div>sans titre</div>'), null);
   });
 
   it('5. extractPageTitle : premier bloc gagne, nettoyé du HTML', () => {

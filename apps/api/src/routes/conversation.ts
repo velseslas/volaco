@@ -284,6 +284,21 @@ export function escapeHtmlText(text: string): string {
 }
 
 /**
+ * Titre de REPLI quand le LLM omet PAGE_TITLE (constaté en prod : instruction
+ * parfois ignorée). Déterministe : premier H1 textuel, sinon premier H2,
+ * balises internes retirées, 70 car. max. Null si rien d'exploitable.
+ */
+export function deriveFallbackTitle(html: string): string | null {
+  for (const tag of ['h1', 'h2']) {
+    const m = new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i').exec(html);
+    if (!m) continue;
+    const text = m[1]!.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 70).trim();
+    if (text.length >= 3) return text;
+  }
+  return null;
+}
+
+/**
  * Repli anti-images-cassées (E46 côté Builder, ici pour le HTML servi) :
  * chaque <img> http(s) sans gestionnaire d'erreur en reçoit un — en cas
  * d'échec de chargement chez le visiteur, bascule vers un placeholder
@@ -1478,10 +1493,12 @@ export async function handleConversationRoutes(
         // É52 — DNA captée du préambule OU d'un bloc résiduel dans les sections
         const assembledDna = extractDesignDna(assembledHtml);
         assembledHtml = assembledDna.cleaned;
-        // Titre réel du commerce (marqueur PAGE_TITLE), jamais générique.
+        // Titre réel du commerce (marqueur PAGE_TITLE, sinon repli H1/H2),
+        // jamais générique.
         const assembledTitle = extractPageTitle(assembledHtml);
         assembledHtml = assembledTitle.cleaned;
-        assembledHtml = buildStudioShell(assembledHtml, streamDesignDna ?? assembledDna.dna ?? undefined, assembledTitle.title ?? undefined);
+        const finalTitle = assembledTitle.title ?? deriveFallbackTitle(assembledHtml) ?? undefined;
+        assembledHtml = buildStudioShell(assembledHtml, streamDesignDna ?? assembledDna.dna ?? undefined, finalTitle);
       }
 
       // LOT 3 — Compass : phase de validation avant la sauvegarde finale
