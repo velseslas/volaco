@@ -17,7 +17,9 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { assertPermission } from '../../../../packages/core/src/identity/permissions.js';
-import { ValidationError } from '../../../../packages/core/src/errors.js';
+import { NotFoundError, ValidationError } from '../../../../packages/core/src/errors.js';
+import { projectStore } from '../../../../packages/core/src/identity/project.js';
+import { isSafeProjectId } from '../../../../packages/core/src/app-pipeline.js';
 import { logger } from '../../../../packages/core/src/logger.js';
 import { aiProviderRegistry } from '../../../../packages/core/src/ai/providers/registry.js';
 import { runToolLoop } from '../../../../packages/core/src/ai/tool-loop.js';
@@ -166,6 +168,20 @@ function validatePath(relPath: string): { ok: boolean; reason?: string } {
   return { ok: true };
 }
 
+/**
+ * PV-02 — le projet doit exister ET appartenir au locataire (404
+ * indiscernable sinon : pas d'oracle inter-locataires, pas de build ni
+ * d'édition IA sur le projet d'autrui).
+ */
+function assertProjectInScope(tenantId: string, projectId: string, requestId: string): void {
+  if (!isSafeProjectId(projectId)) {
+    throw new ValidationError('Identifiant de projet invalide', undefined, requestId);
+  }
+  if (!projectStore.getProject(tenantId, projectId)) {
+    throw new NotFoundError(`Projet ${projectId}`, requestId);
+  }
+}
+
 function startSSE(req: IncomingMessage, res: ServerResponse): { send: (data: Record<string, unknown>) => void } {
   res.statusCode = 200;
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -192,6 +208,7 @@ export async function handleAppEditRoutes(
   if (editMatch && req.method === 'POST') {
     const projectId = editMatch[1]!;
     assertPermission(context.role, 'PROJECT_UPDATE', requestId);
+    assertProjectInScope(context.tenantId, projectId, requestId);
     const bodyText = await readBody(req);
     let body: { instruction?: string };
     try {
@@ -247,6 +264,7 @@ export async function handleAppEditRoutes(
   if (applyMatch && req.method === 'POST') {
     const projectId = applyMatch[1]!;
     assertPermission(context.role, 'PROJECT_UPDATE', requestId);
+    assertProjectInScope(context.tenantId, projectId, requestId);
     const bodyText = await readBody(req);
     let body: { edits?: Array<{ action?: string; path?: string; find?: string; replace?: string; content?: string }> };
     try {
@@ -384,6 +402,7 @@ export async function handleAppEditRoutes(
   if (statusMatch && req.method === 'GET') {
     const projectId = statusMatch[1]!;
     assertPermission(context.role, 'PROJECT_READ', requestId);
+    assertProjectInScope(context.tenantId, projectId, requestId);
     const files = listAppFiles(projectId);
     const hasAppSources = files.some((f) => f.path.startsWith('src/'));
     const ws = ensureWorkspace(projectId);

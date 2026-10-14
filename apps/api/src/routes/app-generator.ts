@@ -15,9 +15,11 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { extname, join } from 'node:path';
+import { extname, join, resolve, sep } from 'node:path';
 import { assertPermission } from '../../../../packages/core/src/identity/permissions.js';
-import { ValidationError } from '../../../../packages/core/src/errors.js';
+import { NotFoundError, ValidationError } from '../../../../packages/core/src/errors.js';
+import { projectStore } from '../../../../packages/core/src/identity/project.js';
+import { isSafeProjectId, workspaceDir } from '../../../../packages/core/src/app-pipeline.js';
 import { logger } from '../../../../packages/core/src/logger.js';
 import { aiProviderRegistry } from '../../../../packages/core/src/ai/providers/registry.js';
 import { runToolLoop } from '../../../../packages/core/src/ai/tool-loop.js';
@@ -254,6 +256,14 @@ export async function handleAppGeneratorRoutes(
   if (genMatch && req.method === 'POST') {
     const projectId = genMatch[1]!;
     assertPermission(context.role, 'PROJECT_UPDATE', requestId);
+    // PV-02 — le projet doit exister ET appartenir au locataire (404
+    // indiscernable sinon : pas d'oracle inter-locataires).
+    if (!isSafeProjectId(projectId)) {
+      throw new ValidationError('Identifiant de projet invalide', undefined, requestId);
+    }
+    if (!projectStore.getProject(context.tenantId, projectId)) {
+      throw new NotFoundError(`Projet ${projectId}`, requestId);
+    }
 
     const bodyText = await readBody(req);
     let body: { prompt?: string };
@@ -357,12 +367,27 @@ export async function handleAppGeneratorRoutes(
   // 2. Service du bundle : GET /preview-bundle/:id/…
   const bundleMatch = pathname.match(/^\/preview-bundle\/([^/]+)(\/.*)?$/);
   if (bundleMatch && req.method === 'GET') {
-    const projectId = bundleMatch[1];
+    const rawId = bundleMatch[1]!;
     assertPermission(context.role, 'PROJECT_READ', requestId);
+    if (!isSafeProjectId(rawId)) {
+      throw new ValidationError('Identifiant de projet invalide', undefined, requestId);
+    }
+    // PV-02/PV-19 — lecture SEULE : jamais de matérialisation pour un
+    // inconnu (fini la copie template sur ids arbitraires sans jeton).
+    // Pas de contrôle de locataire ici : l'iframe preview navigue sans
+    // en-têtes (contexte défaut) ; les ids sont indevinables et la
+    // création est verrouillée — le résiduel est documenté, les URLs
+    // signées viendront ensuite.
+    const wsRoot = workspaceDir(rawId);
     const rel = bundleMatch[2] && bundleMatch[2] !== '/' ? bundleMatch[2].slice(1) : 'index.html';
-    const projectIdB = bundleMatch[1]!; // eslint-disable-line
-    const wsRoot = ensureWorkspace(projectIdB);
     let file = join(wsRoot, 'dist', rel);
+    // Confinement du fichier servi (ceinture : l'URL normalisée ne décode
+    // pas les `..`, mais on ne fait jamais confiance au chemin construit).
+    const resolvedFile = resolve(wsRoot, 'dist', rel);
+    if (resolvedFile !== join(wsRoot, 'dist') && !resolvedFile.startsWith(join(wsRoot, 'dist') + sep)) {
+      throw new NotFoundError(`Ressource ${rel}`, requestId);
+    }
+    file = resolvedFile;
     if (!existsSync(file) || statSync(file).isDirectory()) {
       file = join(wsRoot, 'dist', 'index.html'); // fallback SPA
     }
