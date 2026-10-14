@@ -187,10 +187,14 @@ async function renderChromiumPage(
   try {
     // Import dynamique : playwright-core est une dépendance optionnelle.
     const chromiumModule = await import('playwright-core');
+    // Sandbox par défaut (même motif que le serveur MCP navigateur) :
+    // le contenu rendu est du généré/non fiable. Repli explicite
+    // VOLACO_CHROMIUM_NO_SANDBOX=1 là où le sandbox ne s'initialise pas.
+    const noSandbox = process.env.VOLACO_CHROMIUM_NO_SANDBOX === '1';
     browser = await chromiumModule.chromium.launch({
       headless: true,
       ...(executablePath ? { executablePath } : {}),
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
+      ...(noSandbox ? { args: ['--no-sandbox', '--disable-setuid-sandbox'] } : {})
     });
 
     const page = await browser.newPage({ viewport });

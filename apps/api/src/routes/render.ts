@@ -19,6 +19,19 @@ import { auditStore } from '../../../../packages/core/src/observability/audit.js
 import { logger } from '../../../../packages/core/src/logger.js';
 import type { RequestContext } from '../middleware/auth.js';
 
+/**
+ * PV-07/SEC-06 — URL de rendu construite CÔTÉ SERVEUR : l'hôte ne vient
+ * JAMAIS de l'en-tête `Host` du client (SSRF : le serveur naviguait où on
+ * lui disait). Port réel du socket local, repli 3000. Retourne undefined si
+ * le chemin ne désigne pas un bundle preview.
+ */
+export function buildRenderStartUrl(hostHeader: string | string[] | undefined, urlPath: string | undefined, localPort: number | undefined): string | undefined {
+  void hostHeader;
+  if (!urlPath || !urlPath.startsWith('/preview-bundle/')) return undefined;
+  const port = typeof localPort === 'number' && Number.isFinite(localPort) && localPort > 0 ? localPort : 3000;
+  return `http://127.0.0.1:${port}${urlPath}`;
+}
+
 export async function handleRenderRoutes(
   req: IncomingMessage,
   res: ServerResponse,
@@ -54,9 +67,7 @@ export async function handleRenderRoutes(
     try {
       const bodyText = await readBody(req);
       const parsed = JSON.parse(bodyText || '{}') as { url?: string };
-      if (parsed.url && parsed.url.startsWith('/preview-bundle/')) {
-        startUrl = `http://${req.headers.host || '127.0.0.1:3000'}${parsed.url}`;
-      }
+      startUrl = buildRenderStartUrl(req.headers.host, parsed.url, req.socket.localPort);
     } catch { /* pas de body : rendu fichiers classique */ }
   }
 
