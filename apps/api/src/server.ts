@@ -53,6 +53,8 @@ import { AIProviderRegistryLLMAdapter } from '../../../packages/core/src/ai-nati
 import { DefaultReasoningProvider } from '../../../packages/core/src/ai-native/conversation-intelligence/provider/reasoning-provider.js';
 import { LLMReasoningProvider } from '../../../packages/core/src/ai-native/conversation-intelligence/provider/llm-reasoning-provider.js';
 import { fileStore } from '../../../packages/core/src/file-explorer/store.js';
+import { projectStore } from '../../../packages/core/src/identity/project.js';
+import { purgeOrphanWorkspaces } from '../../../packages/core/src/app-pipeline.js';
 import { FileStoreAdapter } from '../../../packages/core/src/ai-native/mutation-orchestrator/filesystem/adapter.js';
 import { CodeIntelligenceService } from '../../../packages/core/src/ai-native/understanding/service.js';
 import { ApplicationDNAService } from '../../../packages/core/src/ai-native/dna/service.js';
@@ -662,6 +664,25 @@ if (isMain) {
   });
 
   const { server, config } = createApiServer();
+  // MÉNAGE — purge les workspaces orphelins au démarrage (bornée, best
+  // effort : ne bloque jamais le boot). Avec le hook DELETE, plus aucun
+  // orphelin ne devrait apparaître ; ce balayage résorbe le stock existant.
+  try {
+    const known = new Set(projectStore.listAllIds());
+    const purged = purgeOrphanWorkspaces(known);
+    if (purged.removedDirs.length > 0 || purged.removedMarkers.length > 0) {
+      logger.info('Ménage des workspaces orphelins', {
+        component: 'server-bootstrap',
+        removedDirs: purged.removedDirs.length,
+        removedMarkers: purged.removedMarkers.length
+      });
+    }
+  } catch (err) {
+    logger.warn('Ménage des orphelins impossible', {
+      component: 'server-bootstrap',
+      error: err instanceof Error ? err.message : String(err)
+    });
+  }
   // SÉCURITÉ : sans adresse d'écoute explicite, Node écoute sur TOUTES les
   // interfaces (0.0.0.0 / ::) — un outil de développement devenait joignable
   // depuis le réseau local, alors que la console annonçait 127.0.0.1.

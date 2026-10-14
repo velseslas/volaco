@@ -17,7 +17,7 @@
  *   jamais au-delà du workspace.
  */
 
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AppError, ValidationError } from './errors.js';
@@ -125,6 +125,75 @@ export async function acquireProjectLock(
     releaseGate();
     if (projectLockTails.get(projectId) === ours) projectLockTails.delete(projectId);
   };
+}
+
+/**
+ * MÉNAGE — purge les workspaces orphelins (aucun projet du registre) et
+ * leurs marqueurs `<id>.format.json`. Ne touche qu'aux noms sûrs
+ * (`[A-Za-z0-9_-]+`), jamais aux fichiers projet, borné à 200 suppressions
+ * par appel. `root` injectable pour les tests (jamais le workspace réel).
+ */
+export function purgeOrphanWorkspaces(
+  knownProjectIds: ReadonlySet<string>,
+  root: string = workspaceRoot,
+  maxDeletions = 200
+): { removedDirs: string[]; removedMarkers: string[] } {
+  const removedDirs: string[] = [];
+  const removedMarkers: string[] = [];
+  let entries: string[];
+  try {
+    entries = readdirSync(root);
+  } catch {
+    return { removedDirs, removedMarkers };
+  }
+  let deletions = 0;
+  for (const name of entries) {
+    if (deletions >= maxDeletions) break;
+    // Marqueur de format orphelin : `<id>.format.json`.
+    const markerMatch = /^([A-Za-z0-9_-]{1,64})\.format\.json$/.exec(name);
+    if (markerMatch) {
+      if (!knownProjectIds.has(markerMatch[1]!)) {
+        try {
+          unlinkSync(join(root, name));
+          removedMarkers.push(name);
+          deletions += 1;
+        } catch { /* best effort */ }
+      }
+      continue;
+    }
+    // Dossier workspace orphelin (nom sûr uniquement).
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(name)) continue;
+    if (knownProjectIds.has(name)) continue;
+    let isDir = false;
+    try {
+      isDir = statSync(join(root, name)).isDirectory();
+    } catch { continue; }
+    if (!isDir) continue;
+    try {
+      rmSync(join(root, name), { recursive: true, force: true });
+      removedDirs.push(name);
+      deletions += 1;
+    } catch { /* best effort */ }
+  }
+  return { removedDirs, removedMarkers };
+}
+
+/** Supprime le workspace d'un projet (hook DELETE, best effort). */
+export function removeWorkspace(projectId: string): boolean {
+  let dir: string;
+  try {
+    dir = workspaceDir(projectId);
+  } catch {
+    return false;
+  }
+  try {
+    if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+    const marker = join(workspaceRoot, `${projectId}.format.json`);
+    if (existsSync(marker)) unlinkSync(marker);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Copie le template dans le workspace (reset = site frais). */

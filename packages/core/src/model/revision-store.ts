@@ -20,17 +20,28 @@ function reviveRevision(raw: ApplicationRevision): ApplicationRevision {
   };
 }
 
+const DEFAULT_REVISIONS_MAX_PER_PROJECT = 30;
+
+function resolveRevisionsMax(): number {
+  const raw = Number.parseInt(process.env.VOLACO_REVISIONS_MAX_PER_PROJECT || '', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_REVISIONS_MAX_PER_PROJECT;
+}
+
 export class RevisionStore {
   // Clef composite : tenantId:projectId -> revisions[]
   private revisions = new Map<string, ApplicationRevision[]>();
   private readonly filePath: string | undefined;
+  private readonly maxPerProject: number;
 
-  constructor(options?: { persist?: boolean }) {
+  constructor(options?: { persist?: boolean; maxPerProject?: number }) {
+    this.maxPerProject = options?.maxPerProject !== undefined && options.maxPerProject > 0
+      ? options.maxPerProject
+      : resolveRevisionsMax();
     if (options?.persist) {
       this.filePath = dataFilePath('revisions');
       const raw = readJsonFile<Record<string, ApplicationRevision[]>>(this.filePath, {});
       for (const [key, revisions] of Object.entries(raw)) {
-        this.revisions.set(key, revisions.map(reviveRevision));
+        this.revisions.set(key, revisions.map(reviveRevision).slice(-this.maxPerProject));
       }
     }
   }
@@ -84,7 +95,14 @@ export class RevisionStore {
     };
 
     existing.push(revision);
-    this.revisions.set(key, existing);
+    // Rétention : on ne garde que les N dernières (défaut 30). Sans plafond,
+    // chaque tour de stream ajoutait un snapshot complet (17,8 Mo mesurés).
+    // Les numéros ne sont jamais réutilisés ; un rollback vers une révision
+    // élaguée répond 404 honnête (pas de résurrection silencieuse).
+    const kept = existing.length > this.maxPerProject
+      ? existing.slice(existing.length - this.maxPerProject)
+      : existing;
+    this.revisions.set(key, kept);
     this.persist();
     return revision;
   }

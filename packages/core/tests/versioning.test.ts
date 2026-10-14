@@ -140,3 +140,25 @@ describe('CORE-007 : Versioning & Revisions Service Unit Tests', () => {
     );
   });
 });
+
+describe('MÉNAGE : rétention des révisions (plafond par projet)', () => {
+  it('au-delà du plafond, seules les N dernières survivent, numéros jamais réutilisés', () => {
+    const store = new RevisionStore({ maxPerProject: 3 });
+    const mk = (i: number) => store.createRevision('ten-menage', 'proj-menage', {
+      message: 'rev ' + i,
+      author: 'test',
+      files: { 'index.html': '<html>v' + i + '</html>' },
+      provenance: { source: 'USER', prompt: 'test' }
+    });
+    const r1 = mk(1); mk(2); mk(3); mk(4); mk(5);
+    const list = store.listRevisions('ten-menage', 'proj-menage');
+    assert.equal(list.length, 3, 'plafond respecté');
+    assert.deepEqual(list.map((r) => r.revisionNumber), [3, 4, 5], 'les plus récentes gardées');
+    // La toute première (r1) est élaguée : rollback honnête (null, pas de résurrection).
+    assert.equal(store.getRevision('ten-menage', 'proj-menage', r1.id), null);
+    assert.throws(() => store.rollbackTo('ten-menage', 'proj-menage', r1.id, 'test'), NotFoundError);
+    // Rollback vers une gardée fonctionne toujours.
+    const rb = store.rollbackTo('ten-menage', 'proj-menage', list[0]!.id, 'test');
+    assert.equal(rb.revisionNumber, 6, 'les numéros continuent (jamais réutilisés)');
+  });
+});

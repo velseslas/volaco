@@ -9,14 +9,16 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   acquireProjectLock,
   buildApp,
   ensureWorkspace,
   listAppFiles,
+  purgeOrphanWorkspaces,
   readAppFile,
+  removeWorkspace,
   setProjectFormat,
   getProjectFormat,
   workspaceDir,
@@ -126,5 +128,34 @@ describe('P1/P2 : pipeline d applications React réelles', () => {
     assert.deepEqual(leftovers, [], 'aucun répertoire temporaire résiduel');
     // Remise en état pour les prochaines exécutions.
     ensureWorkspace(TEST_PROJECT, true);
+  });
+
+  it('9. MÉNAGE : purge des workspaces orphelins (bac à sable isolé, jamais le réel)', async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join: joinPath } = await import('node:path');
+    const root = mkdtempSync(joinPath(tmpdir(), 'volaco-purge-'));
+    mkdirSync(joinPath(root, 'proj_garde'));
+    mkdirSync(joinPath(root, 'proj_orphelin'));
+    mkdirSync(joinPath(root, 'test-tiret_ok'));
+    writeFileSync(joinPath(root, 'proj_garde.format.json'), '{}');
+    writeFileSync(joinPath(root, 'proj_orphelin.format.json'), '{}');
+    writeFileSync(joinPath(root, 'weird.name'), 'x'); // nom non sûr : jamais touché
+    const out = purgeOrphanWorkspaces(new Set(['proj_garde']), root);
+    assert.deepEqual(out.removedDirs.sort(), ['proj_orphelin', 'test-tiret_ok'], 'tout inconnu au nom sûr part');
+    assert.deepEqual(out.removedMarkers, ['proj_orphelin.format.json']);
+    assert.ok(existsSync(joinPath(root, 'proj_garde')), 'le connu survit');
+    assert.ok(existsSync(joinPath(root, 'proj_garde.format.json')), 'son marqueur survit');
+    assert.ok(existsSync(joinPath(root, 'weird.name')), 'nom non sûr intouché');
+  });
+
+  it('10. MÉNAGE : removeWorkspace supprime dossier + marqueur (best effort)', () => {
+    ensureWorkspace('test-menage-ws-01', true);
+    mkdirSync(join(workspaceDir('test-menage-ws-01'), 'dist'), { recursive: true });
+    writeFileSync(join(workspaceDir('test-menage-ws-01'), 'dist', 'x.txt'), 'x');
+    assert.equal(removeWorkspace('test-menage-ws-01'), true);
+    assert.equal(existsSync(workspaceDir('test-menage-ws-01')), false);
+    assert.equal(removeWorkspace('test-menage-ws-01'), true, 're-suppression : toujours true, jamais d’erreur');
+    assert.equal(removeWorkspace('../evil'), false, 'traversée refusée');
   });
 });

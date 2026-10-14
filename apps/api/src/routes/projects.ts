@@ -1,5 +1,6 @@
 ﻿import type { IncomingMessage, ServerResponse } from 'node:http';
 import { projectStore } from '../../../../packages/core/src/identity/project.js';
+import { removeWorkspace } from '../../../../packages/core/src/app-pipeline.js';
 import { assertPermission } from '../../../../packages/core/src/identity/permissions.js';
 import { NotFoundError, ValidationError } from '../../../../packages/core/src/errors.js';
 import type { RequestContext } from '../middleware/auth.js';
@@ -74,6 +75,9 @@ export async function handleProjectsRoutes(
       if (!deleted) {
         throw new NotFoundError(`Projet ${id}`, requestId);
       }
+      // MÉNAGE — le workspace de build ne doit pas survivre au projet
+      // (orphelins = 214 Mo mesurés). Best effort : n'échoue jamais le DELETE.
+      removeWorkspace(id);
       res.statusCode = 200;
       res.end(JSON.stringify({ success: true, deletedId: id, requestId }));
       return true;

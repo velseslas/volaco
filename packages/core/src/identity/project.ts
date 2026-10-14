@@ -93,6 +93,11 @@ export class ProjectStore {
     return project;
   }
 
+  /** Tous les ids du registre (tous locataires) — ménage des orphelins. */
+  public listAllIds(): string[] {
+    return [...this.projects.keys()];
+  }
+
   public deleteProject(tenantId: string, id: string): boolean {
     const project = this.getProject(tenantId, id);
     if (!project) {
