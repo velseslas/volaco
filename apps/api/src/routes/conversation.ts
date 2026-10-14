@@ -997,6 +997,7 @@ export async function handleConversationRoutes(
       "   Cette empreinte est l'IDENTITÉ du site : le fond de page et la police principale sont posés à partir d'elle, et tu DOIS réutiliser bg/fg/accent dans TOUTES tes sections (fonds, textes, boutons, bordures, accents). Adapte-la à la demande : « site fun pour enfants » ≠ « dashboard corporate » ≠ « boulangerie chaleureuse ».\n\n" +
       "0b. TITRE (OBLIGATOIRE, avec l'empreinte) : le vrai nom du commerce/site, jamais \"VibeCode Studio\" :\n" +
       "   <!-- PAGE_TITLE: Bella Italia — Pizzeria artisanale -->\n\n" +
+      "0c. VARIÉTÉ DE MISE EN PAGE (anti-recette unique) : choisis UN gabarit selon le sujet et annonce-le d'un mot — « centré » (hero classique + sections empilées, pour corporate), « éditorial » (asymétrique, gros titre latéral, blocs décalés, pour fun/enfants/culture), « plein-bleed » (sections edge-to-edge, cartes larges, pour resto/portfolio). Même sujet + même gabarit deux fois de suite = INTERDIT.\n\n" +
       "1. Commence par 1-2 phrases conversationnelles pour annoncer ce que tu vas créer (ambiance, sections prévues)\n" +
       "   Ex: \"Salut ! Je te construis ta landing page pour restaurant italien avec une ambiance terracotta. Je commence par le Header, puis Hero, Menu, Réservation et Footer.\"\n\n" +
       "2. Pour CHAQUE section du site (commence par Header, finis par Footer), écris un bloc au format EXACT suivant :\n\n" +

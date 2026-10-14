@@ -161,6 +161,56 @@ export async function analyzeProjectVisual(
       detail: 'Des boutons existent dans le HTML mais aucun élément interactif n\'a été profilé (RULE-005 : états visibles requis).'
     });
   }
+  // Beauté acte 2 — le 100/100 doit vouloir dire quelque chose : titre
+  // générique, images mortes-nées, liens nulle part, viewport mobile absent.
+  // Tout est déterministe et sans réseau (même esprit que le reste).
+  const titleMatch = /<title>([^<]*)<\/title>/i.exec(htmlContent);
+  const titleText = titleMatch ? titleMatch[1]!.trim() : '';
+  if (titleText.length === 0 || titleText.toLowerCase() === 'vibecode studio') {
+    findings.push({
+      severity: 'LOW',
+      source: 'DESIGN',
+      title: 'Titre générique ou absent (SEO)',
+      detail: 'L’onglet affiche un nom générique au lieu du commerce — le marqueur PAGE_TITLE du générateur devrait le renseigner.'
+    });
+  }
+  const imgTags = [...htmlContent.matchAll(/<img\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi)].map((m) => m[0]);
+  const deadImgs = imgTags.filter((tag) => {
+    const src = /\bsrc\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i.exec(tag)?.[1] ?? '';
+    const cleaned = src.replace(/^["']|["']$/g, '').trim();
+    return cleaned.length === 0;
+  });
+  if (deadImgs.length > 0) {
+    findings.push({
+      severity: 'MEDIUM',
+      source: 'DESIGN',
+      title: `Image(s) sans source (${deadImgs.length})`,
+      detail: 'Des <img> sans src affichent une icône cassée à coup sûr — repli ou suppression requis.'
+    });
+  }
+  const deadLinks = [...htmlContent.matchAll(/<a\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi)]
+    .map((m) => m[0])
+    .filter((tag) => {
+      const href = /\bhref\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i.exec(tag)?.[1] ?? '';
+      const cleaned = href.replace(/^["']|["']$/g, '').trim().toLowerCase();
+      return cleaned.length === 0 || cleaned === '#';
+    });
+  if (deadLinks.length > 0) {
+    findings.push({
+      severity: 'LOW',
+      source: 'DESIGN',
+      title: `Lien(s) sans destination (${deadLinks.length})`,
+      detail: 'Des <a> sans href (ou href="#") sont des boutons morts pour le visiteur.'
+    });
+  }
+  if (!/<meta[^>]*name\s*=\s*["']?viewport["']?/i.test(htmlContent)) {
+    findings.push({
+      severity: 'LOW',
+      source: 'DESIGN',
+      title: 'Viewport mobile absent',
+      detail: 'Sans <meta name="viewport">, la page est illisible sur téléphone (la moitié du trafic).'
+    });
+  }
   if (!renderAvailable) {
     findings.push({
       severity: 'LOW',

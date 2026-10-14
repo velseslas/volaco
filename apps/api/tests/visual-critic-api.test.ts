@@ -100,6 +100,30 @@ describe('Lot 5 : Design Critic v1 (/visual/analyze)', () => {
     assert.equal(body2.score, body.score, 'Le score doit être déterministe (reproductible)');
   });
 
+  it('3b. beauté acte 2 : titre générique, image morte, lien mort et viewport manquant sont signalés', async () => {
+    const put = await fetch(`${baseUrl}/api/v1/projects/${projectId}/files/content`, {
+      method: 'PUT',
+      headers: H,
+      body: JSON.stringify({
+        path: 'index.html',
+        content: '<!DOCTYPE html><html><head><title>VibeCode Studio</title></head><body><img alt="cassée"><a href="#">clique</a><button>Go</button></body></html>'
+      })
+    });
+    assert.equal(put.status, 200);
+    const res = await fetch(`${baseUrl}/api/v1/projects/${projectId}/visual/analyze`, {
+      method: 'POST',
+      headers: H
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as CriticResponse;
+    const titles = body.findings.map((f) => f.title);
+    assert.ok(titles.some((t) => t.includes('Titre générique')), 'titre générique détecté');
+    assert.ok(titles.some((t) => t.includes('sans source')), 'image sans src détectée');
+    assert.ok(titles.some((t) => t.includes('sans destination')), 'lien mort détecté');
+    assert.ok(titles.some((t) => t.includes('Viewport')), 'viewport manquant détecté');
+    assert.ok(body.score < 100, 'le 100 systématique recule face aux vrais défauts');
+  });
+
   it('3. rendu réel indisponible => dégradation gracieuse documentée dans les findings', async () => {
     const res = await fetch(`${baseUrl}/api/v1/projects/${projectId}/visual/analyze`, {
       method: 'POST',
