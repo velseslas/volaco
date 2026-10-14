@@ -616,6 +616,23 @@
       border-color: #e2e8f0 !important;
     }
   </style>
+<script id="vibe-chat-epure-flag">try{if(localStorage.getItem('vibe_live_line')==='0')document.documentElement.classList.add('vl-off')}catch(e){}</script>
+<style id="vibe-chat-epure">
+/* VIBE_CHAT_EPURE — conversation épurée (désactivable : localStorage vibe_live_line = 0) */
+html:not(.vl-off) #chatPanel{border-color:rgba(148,163,184,.14)!important}
+html:not(.vl-off) #wsChatHistory{padding:20px 18px!important}
+html:not(.vl-off) #wsChatHistory>*+*{margin-top:22px!important}
+html:not(.vl-off) #wsChatHistory>div[class*="border-l-2"]{border:0!important;width:fit-content;max-width:86%;margin-left:auto!important;padding:9px 13px!important;background:rgba(167,139,250,.13);border-radius:16px 16px 4px 16px;color:#f1f5f9}
+html:not(.vl-off) #chatPanel form[onsubmit*="handleWorkspacePromptSubmit"]{background:rgba(255,255,255,.03)!important;border-color:rgba(148,163,184,.2)!important;border-radius:16px!important}
+html:not(.vl-off) #chatPanel form[onsubmit*="handleWorkspacePromptSubmit"]:focus-within{border-color:#a78bfa!important}
+html:not(.vl-off) #chatPanel form[onsubmit*="handleWorkspacePromptSubmit"] textarea{font-size:13px!important}
+html:not(.vl-off) #chatPanel form[onsubmit*="handleWorkspacePromptSubmit"] div[class*="text-[9px]"]{opacity:0;font-size:10.5px!important;transition:opacity .2s}
+html:not(.vl-off) #chatPanel form[onsubmit*="handleWorkspacePromptSubmit"]:focus-within div[class*="text-[9px]"]{opacity:1}
+html:not(.vl-off) #chatPanel form button:has(>i.fa-sparkles),html:not(.vl-off) #chatPanel form button:has(>i.fa-microphone){display:none}
+html:not(.vl-off) #chatPanel form #btnInspectorWand i{color:#94a3b8!important}
+html:not(.vl-off) #chatPanel form button[type="submit"]{background:#a78bfa!important;box-shadow:none!important;width:30px!important;height:30px!important}
+html:not(.vl-off) #chatPanel form button[type="submit"]:hover{background:#c4b5fd!important}
+</style>
 </head>
 <body class="h-screen w-screen flex flex-col overflow-hidden select-none">
 
@@ -1840,8 +1857,8 @@
           <div id="termCliShortcutsBar" class="bg-[#0b0f1e] border-b border-[#14192b] px-4 py-2 flex items-center space-x-2 overflow-x-auto text-xs flex-shrink-0">
             <span class="text-slate-500 text-[11px] font-sans mr-1">Raccourcis :</span>
             <button onclick="runQuickCommand('git status')" class="px-2.5 py-1 rounded-lg bg-[#141a2e] hover:bg-violet-900/40 text-violet-300 border border-violet-800/40 text-xs transition">git status</button>
-            <button onclick="runQuickCommand('pnpm test')" class="px-2.5 py-1 rounded-lg bg-[#141a2e] hover:bg-emerald-900/40 text-emerald-300 border border-emerald-800/40 text-xs transition">pnpm test</button>
-            <button onclick="runQuickCommand('pnpm build')" class="px-2.5 py-1 rounded-lg bg-[#141a2e] hover:bg-amber-900/40 text-amber-300 border border-amber-800/40 text-xs transition">pnpm build</button>
+            <button onclick="runQuickCommand('git log')" class="px-2.5 py-1 rounded-lg bg-[#141a2e] hover:bg-emerald-900/40 text-emerald-300 border border-emerald-800/40 text-xs transition">git log</button>
+            <button onclick="runQuickCommand('git branch')" class="px-2.5 py-1 rounded-lg bg-[#141a2e] hover:bg-amber-900/40 text-amber-300 border border-amber-800/40 text-xs transition">git branch</button>
             <button onclick="runQuickCommand('ls')" class="px-2.5 py-1 rounded-lg bg-[#141a2e] hover:bg-cyan-900/40 text-cyan-300 border border-cyan-800/40 text-xs transition">ls</button>
             <button onclick="runQuickCommand('node -v')" class="px-2.5 py-1 rounded-lg bg-[#141a2e] hover:bg-indigo-900/40 text-indigo-300 border border-indigo-800/40 text-xs transition">node -v</button>
             <button onclick="runQuickCommand('help')" class="px-2.5 py-1 rounded-lg bg-[#141a2e] hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs transition">help</button>
@@ -1889,7 +1906,7 @@
               id="terminalCommandInput" 
               type="text" 
               onkeydown="if(event.key==='Enter'){ submitTerminalCommand(); }"
-              placeholder="Entrez une commande (ex: git status, pnpm test, ls, cat package.json, logs)..." 
+              placeholder="Entrez une commande (ex: git status, git log, ls, cat package.json, logs)..." 
               class="flex-1 bg-transparent border-none text-xs text-slate-100 placeholder-slate-600 focus:outline-none font-mono"
             />
             <button onclick="submitTerminalCommand()" class="px-3 py-1 bg-violet-600 hover:bg-violet-500 text-white rounded-lg text-xs font-semibold font-sans transition">Exécuter</button>
@@ -3292,6 +3309,40 @@
         const statusEl = document.getElementById(msgId + '-status');
         const titleEl = document.getElementById(msgId)?.querySelector('.text-violet-400');
 
+        // P4-FINITION — accordéon unique des traces techniques : les conteneurs
+        // techniques du message (trace, activity, steps) sont déplacés DANS un
+        // <details> dès le démarrage du flux. Les rendus existants continuent
+        // de les retrouver par id/référence (déplacement DOM, pas recréation).
+        // Au `done` build : replié + résumé succès. Sans contenu (question) :
+        // supprimé pour ne laisser aucune coquille vide.
+        let buildAccordion = null;
+        let buildAccordionSummary = null;
+        let buildSectionCount = 0;
+        (function setupBuildAccordion() {
+          const traceBox = document.getElementById(msgId + '-trace');
+          const actBox = document.getElementById(msgId + '-activity');
+          const stepsBox = document.getElementById('agentSteps-' + msgId);
+          if (!traceBox && !actBox && !stepsBox) return;
+          const det = document.createElement('details');
+          det.className = 'build-trace-accordion';
+          det.setAttribute('open', '');
+          const sum = document.createElement('summary');
+          sum.style.cursor = 'pointer';
+          sum.style.fontSize = '11px';
+          sum.style.color = '#94a3b8';
+          sum.textContent = '⚙️ Construction en cours…';
+          const body = document.createElement('div');
+          const parent = (traceBox || actBox || stepsBox).parentNode;
+          det.appendChild(sum);
+          det.appendChild(body);
+          parent.insertBefore(det, traceBox || actBox || stepsBox);
+          if (traceBox) body.appendChild(traceBox);
+          if (actBox) body.appendChild(actBox);
+          if (stepsBox) body.appendChild(stepsBox);
+          buildAccordion = det;
+          buildAccordionSummary = sum;
+        })();
+
         // Ouvre la connexion SSE
         let serverDeletes = 0;
         let preSectionCount = 0;
@@ -4094,6 +4145,9 @@ ${sections}
               // LOT D — point d'alimentation UNIQUE de l'ActivityStream : toute
               // frame milestone porte sa vue normalisée `activity` (serveur).
               if (event.activity && activityFeed) activityFeed.append([event.activity]);
+              if (activityFeed && activityFeed.finishLive && (event.type === 'done' || event.type === 'error' || event.type === 'cancelled')) { try { activityFeed.finishLive(event.type, event); } catch (e) {} }
+              if (event.type === 'chat' && event.text && !event.scripted && activityFeed && activityFeed.say) { try { activityFeed.say(event.text); } catch (e) {} }
+              if (event.type === 'section_start' && activityFeed && activityFeed.say) { try { activityFeed.say(null); } catch (e) {} }
 
               if (event.type === 'start') {
                 if (statusEl) statusEl.textContent = 'Connexion au LLM...';
@@ -4119,6 +4173,9 @@ ${sections}
                 stitchFeed(event.token);
               } else if (event.type === 'section_start') {
                 tokenCount++;
+                // P4-FINITION — résumé animé de l'accordéon (compteur live).
+                buildSectionCount++;
+                if (buildAccordionSummary) buildAccordionSummary.textContent = '⚙️ Construction en cours… (' + buildSectionCount + ' section' + (buildSectionCount > 1 ? 's' : '') + ')';
                 if (statusEl) statusEl.innerHTML = `Construction de <strong>${event.name}</strong>...`;
                 if (titleEl) titleEl.innerHTML = '<i class="fa-solid fa-hammer text-sm"></i><span>Construction...</span>';
                 // Conversation vivante — focus : le preview défile sur la section
@@ -4361,8 +4418,75 @@ ${sections}
                         box.appendChild(line);
                       }
                     }
+                    // P4-FINITION — l'accordéon se replie : succès + détails.
+                    if (buildAccordion) {
+                      buildAccordion.open = false;
+                      if (buildAccordionSummary) buildAccordionSummary.textContent = '✓ Modifications appliquées avec succès — Voir les détails techniques ▾';
+                    }
+                    // P4-FINITION — clôture conversationnelle + chips d'actions
+                    // rapides (le clic injecte le texte et envoie aussitôt).
+                    (function renderClosingAndChips() {
+                      const host = document.getElementById(msgId);
+                      if (!host) return;
+                      if (event.closingPending) return;
+                      if (event.closingMessage) {
+                        const closing = document.createElement('div');
+                        closing.className = 'text-[12px] text-slate-200 mt-2 leading-relaxed';
+                        closing.textContent = String(event.closingMessage);
+                        host.appendChild(closing);
+                      }
+                      const sugg = Array.isArray(event.suggestions) ? event.suggestions.filter((s) => typeof s === 'string' && s.trim()) : [];
+                      if (!sugg.length) return;
+                      const row = document.createElement('div');
+                      row.className = 'flex flex-wrap gap-2 mt-2';
+                      sugg.slice(0, 3).forEach((s) => {
+                        const chip = document.createElement('button');
+                        chip.type = 'button';
+                        chip.className = 'px-3 py-1.5 rounded-full border border-violet-500/40 bg-violet-500/10 hover:bg-violet-500/20 text-violet-200 text-[11px] font-semibold transition active:scale-95';
+                        chip.textContent = s;
+                        chip.setAttribute('data-suggestion', s);
+                        chip.addEventListener('click', () => {
+                          const input = document.getElementById('wsPromptInput');
+                          if (input) {
+                            input.value = chip.getAttribute('data-suggestion') || '';
+                            input.focus();
+                          }
+                          try {
+                            handleWorkspacePromptSubmit({ preventDefault: function () {} });
+                          } catch (_) { /* le submit manuel reste possible */ }
+                        });
+                        row.appendChild(chip);
+                      });
+                      host.appendChild(row);
+                    })();
                   }
+                } else if (event.updated === false) {
+                  // P4-FINITION — sans contenu technique, pas de coquille vide :
+                  // l'accordéon du flux question est retiré (CONSTRUCTION garée).
+                  if (buildAccordion) {
+                    const accBody = buildAccordion.querySelector('div');
+                    if (!accBody || accBody.textContent.trim().length === 0) buildAccordion.remove();
+                    buildAccordion = null;
+                    buildAccordionSummary = null;
+                  }
+                  // P3-QUESTION — réponse seule : aucune carte de diff, aucune
+                  // mention de mise à jour de fichier, aucun rechargement
+                  // d'iframe (aucun renderNow sur ce chemin) ; badge discret.
+                  if (statusEl) statusEl.innerHTML = '<span>💬 Réponse seule — aucun fichier modifié</span>';
+                  if (titleEl) titleEl.innerHTML = '<span>Réponse</span>';
                 }
+              } else if (event.type === 'on_intent_classified' && event.category) {
+                // P2-SIGNAUX — In-Place Update : on réécrit LE badge d'état
+                // existant (statusEl), jamais une ligne empilée de plus.
+                if (statusEl) statusEl.innerHTML = 'Compréhension : <strong>' + canonicalEscape(String(event.category)) + '</strong>…';
+              } else if (event.type === 'on_plan_step' && event.total) {
+                const idx = Number(event.index) || 0;
+                const tot = Number(event.total) || 0;
+                if (statusEl) statusEl.innerHTML = 'Planification : étape <strong>' + idx + '/' + tot + '</strong> — ' + canonicalEscape(String(event.step || ''));
+                if (titleEl) titleEl.innerHTML = '<span>Planification…</span>';
+              } else if (event.type === 'on_provider_waiting') {
+                const secs = Math.round(Number(event.elapsedMs || 0) / 1000);
+                if (statusEl) statusEl.innerHTML = 'Génération en cours… <span>' + secs + 's</span>';
               } else if (event.type === 'plan' && event.plan) {
                 // LOT 4 — carte de plan réelle (Plan Engine, §17 CDC)
                 timelineEnterPhase('PLAN');
@@ -4400,6 +4524,8 @@ ${sections}
                   timelineEnterPhase('COMPLETE');
                   if (planCtl) planCtl.step('Vérifier le rendu', 'COMPLETED');
                 }
+              } else if (event.type === 'closing') {
+                vibeRenderClosing(document.getElementById(msgId), event);
               } else if (event.type === 'diff') {
                 // T4 (CDC §11) — diff RÉEL calculé par le serveur au merge :
                 // +lignes ajoutées / −lignes retirées, et la vérité du merge.
@@ -11454,6 +11580,346 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
       repair: 'fa-solid fa-wrench', execution: 'fa-solid fa-bolt', agent: 'fa-solid fa-sparkles', event: 'fa-solid fa-circle-dot'
     };
 
+    /* ===== VIBE_LIVE_LINE v5 : ligne de progression unique + détails repliables + clôture + chat épuré + texte de l'IA =====
+     * - Une seule ligne vivante (point qui pulse, texte qui brille, barre fine),
+     *   alimentée par les mêmes activités que le fil détaillé.
+     * - Un clic sur la ligne déplie un récapitulatif PROPRE (fichier + sections modifiées,
+     sans doublons). L'ancien fil brut / accordéon technique reste masqué.
+     * - À la fin : synthèse de quelques phrases + suggestions (événement « closing »).
+     * Retour à l'ancien affichage :
+     *   localStorage.setItem('vibe_live_line', '0') puis recharger.
+     * Voir le fil détaillé pour déboguer :
+     *   localStorage.setItem('vibe_live_line_details', '1') puis recharger. */
+    function liveLineEnabled() {
+      try { return localStorage.getItem('vibe_live_line') !== '0'; } catch (e) { return true; }
+    }
+    function liveLineDetailsMode() {
+      try { return localStorage.getItem('vibe_live_line_details') === '1'; } catch (e) { return false; }
+    }
+
+    function vibeInjectLiveStyle() {
+      if (document.getElementById('vibe-live-style')) return;
+      const st = document.createElement('style');
+      st.id = 'vibe-live-style';
+      st.textContent = [
+        '.vl-host:not(.vl-details) .build-trace-accordion{display:none}',
+        '.vl-host:not(.vl-details):not(:has(.vl-card.vl-fail)) > div:first-child[class*="justify-between"]{display:none}',
+        '.vl-host:not(.vl-details):has(.vl-card.vl-work) [id$="-status"],.vl-host:not(.vl-details):has(.vl-card.vl-done) [id$="-status"]{display:none}',
+        '.vl-card{position:relative;overflow:hidden;border:0;background:rgba(255,255,255,.04);border-radius:12px;padding:9px 12px;margin:6px 0}',
+        '.vl-row{display:flex;align-items:center;gap:10px;width:100%}',
+        '.vl-dot{flex:none;width:9px;height:9px;border-radius:50%;background:#a78bfa;animation:vl-pulse 1.4s infinite}',
+        '.vl-done .vl-dot{background:#4ade80;animation:none}',
+        '.vl-fail .vl-dot{background:#fb7185;animation:none}',
+        '.vl-wait .vl-dot{background:#fbbf24;animation:none}',
+        '@keyframes vl-pulse{0%{box-shadow:0 0 0 0 rgba(167,139,250,.55)}70%{box-shadow:0 0 0 8px rgba(167,139,250,0)}100%{box-shadow:0 0 0 0 rgba(167,139,250,0)}}',
+        '.vl-txt{flex:1;min-width:0;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+        '.vl-txt b{font-weight:600}',
+        '.vl-card:not(.vl-work) .vl-d{opacity:.75}',
+        '.vl-swap{animation:vl-swap .3s ease both}',
+        '@keyframes vl-swap{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}',
+        '.vl-work .vl-shim{background:linear-gradient(90deg,rgba(148,163,184,.95) 0%,rgba(148,163,184,.95) 35%,#a78bfa 50%,rgba(148,163,184,.95) 65%,rgba(148,163,184,.95) 100%);background-size:220% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent;animation:vl-shim 2s linear infinite}',
+        '@keyframes vl-shim{from{background-position:120% 0}to{background-position:-120% 0}}',
+        '.vl-work::after{content:"";position:absolute;left:0;bottom:0;height:2px;width:35%;background:linear-gradient(90deg,transparent,#a78bfa,transparent);animation:vl-sweep 1.6s ease-in-out infinite}',
+        '@keyframes vl-sweep{from{transform:translateX(-100%)}to{transform:translateX(300%)}}',
+        '.vl-meta{flex:none;font-size:11px;opacity:.65;font-variant-numeric:tabular-nums}',
+        '.vl-row{cursor:pointer;background:none;border:0;color:inherit;font:inherit;padding:0;text-align:left}',
+        '.vl-chev{flex:none;opacity:.6;font-size:10px;transition:transform .2s}',
+        '.vl-open .vl-chev{transform:rotate(180deg)}',
+        '.vl-panel{display:none;margin-top:10px;padding-top:10px;border-top:1px solid rgba(148,163,184,.22);font-size:12px}',
+        '.vl-open .vl-panel{display:block}',
+        '.vl-file{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-weight:600;margin-bottom:6px}',
+        '.vl-file span{font-family:inherit;font-weight:400;opacity:.7}',
+        '.vl-secs{list-style:none;margin:0;padding:0}',
+        '.vl-secs li{display:flex;gap:8px;align-items:baseline;padding:3px 0}',
+        '.vl-secs i{font-style:normal;width:12px;flex:none;color:#4ade80}',
+        '.vl-secs li.vl-run i{color:#a78bfa}',
+        '.vl-secs li.vl-bad i{color:#fb7185}',
+        '.vl-sn{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}',
+        '.vl-sa{opacity:.7}',
+        '.vl-sd{margin-left:auto;font-variant-numeric:tabular-nums;opacity:.85}',
+        '.vl-add{color:#4ade80}.vl-rem{color:#fb7185}',
+        '.vl-links{display:flex;gap:14px;margin-top:8px}',
+        '.vl-link{background:none;border:0;color:#c4b5fd;cursor:pointer;text-decoration:underline;font:inherit;padding:0}',
+        '.vl-say{font-size:13px;line-height:1.65;color:#e2e8f0;margin:4px 0 8px;white-space:pre-wrap}',
+        '.vl-closing-txt{font-size:13px;line-height:1.65;margin-top:12px;color:#cbd5e1}',
+        '.vl-chips{display:flex;flex-direction:column;gap:2px;margin-top:10px}',
+        '.vl-chip{display:flex;align-items:center;gap:10px;width:100%;background:none;border:0;text-align:left;color:#c4b5fd;font:inherit;font-size:13px;padding:7px 8px;border-radius:8px;cursor:pointer;transition:background .15s,color .15s}',
+        '.vl-chip::before{content:"↳";color:#7c6bd6}',
+        '.vl-chip:hover{background:rgba(167,139,250,.11);color:#ede9fe}',
+        '@media (prefers-reduced-motion:reduce){.vl-dot,.vl-swap,.vl-work::after{animation:none}.vl-work .vl-shim{animation:none;background:none;color:inherit;-webkit-text-fill-color:currentColor}}'
+      ].join('\n');
+      document.head.appendChild(st);
+    }
+
+    /** Synthèse de fin (quelques phrases) + suggestions cliquables. */
+    function vibeRenderClosing(host, ev) {
+      if (!host || !ev) return;
+      vibeInjectLiveStyle();
+      const old = host.querySelector('.vl-closing');
+      if (old) old.remove();
+      const box = document.createElement('div');
+      box.className = 'vl-closing';
+      if (ev.closingMessage) {
+        const p = document.createElement('div');
+        p.className = 'vl-closing-txt';
+        p.textContent = String(ev.closingMessage);
+        box.appendChild(p);
+      }
+      const sugg = Array.isArray(ev.suggestions) ? ev.suggestions.filter(function (s) { return typeof s === 'string' && s.trim(); }) : [];
+      if (sugg.length) {
+        const row = document.createElement('div');
+        row.className = 'vl-chips';
+        sugg.slice(0, 3).forEach(function (s) {
+          const chip = document.createElement('button');
+          chip.type = 'button';
+          chip.className = 'vl-chip';
+          chip.textContent = s;
+          chip.addEventListener('click', function () {
+            const input = document.getElementById('wsPromptInput');
+            if (input) { input.value = s; input.focus(); }
+            try { handleWorkspacePromptSubmit({ preventDefault: function () {} }); } catch (e) { /* envoi manuel possible */ }
+          });
+          row.appendChild(chip);
+        });
+        box.appendChild(row);
+      }
+      host.appendChild(box);
+    }
+
+    function createLiveLine(container, feedRoot) {
+      vibeInjectLiveStyle();
+      const detailsMode = liveLineDetailsMode();
+      const host = container.parentNode;
+      if (!host) return null;
+      host.classList.add('vl-host');
+      if (detailsMode) host.classList.add('vl-details');
+
+      const el = document.createElement('div');
+      el.setAttribute('role', 'status');
+      const row = document.createElement('button'); row.type = 'button'; row.className = 'vl-row';
+      row.style.cssText = 'display:flex;align-items:center;gap:10px;width:100%';
+      row.setAttribute('aria-expanded', 'false');
+      row.setAttribute('aria-label', 'Afficher le détail des modifications');
+      const dot = document.createElement('span'); dot.className = 'vl-dot';
+      const txt = document.createElement('span'); txt.className = 'vl-txt';
+      const meta = document.createElement('span'); meta.className = 'vl-meta';
+      const chev = document.createElement('span'); chev.className = 'vl-chev'; chev.textContent = '\u25BE';
+      row.appendChild(dot); row.appendChild(txt); row.appendChild(meta); row.appendChild(chev);
+      el.appendChild(row);
+      const panel = document.createElement('div'); panel.className = 'vl-panel';
+      el.appendChild(panel);
+
+      let isOpen = false;
+      let state = 'vl-work';
+      function paint() { el.className = 'vl-card ' + state + (isOpen ? ' vl-open' : ''); }
+      paint();
+      row.addEventListener('click', function () {
+        isOpen = !isOpen;
+        row.setAttribute('aria-expanded', String(isOpen));
+        paint();
+      });
+      host.insertBefore(el, container);
+      if (!detailsMode) feedRoot.classList.add('hidden');
+
+      const STEP_ACTIONS = { read: 1, create: 1, modify: 1, delete: 1, validate: 1, repair: 1, retry: 1 };
+      const seenKeys = new Set();
+      const files = new Set();
+      const secs_ = new Map();
+      let fileName = 'index.html';
+      let t0 = 0, steps = 0, added = 0, removed = 0, score = null, finished = false, timer = null;
+
+      function verbOf(action) {
+        const map = (typeof ACTIVITY_VERBS !== 'undefined') ? ACTIVITY_VERBS : {};
+        return map[action] || action || 'Travail';
+      }
+      function secs() { return Math.max(1, Math.round((Date.now() - t0) / 1000)); }
+      function say(verb, detail) {
+        txt.textContent = '';
+        const shim = document.createElement('span'); shim.className = 'vl-shim';
+        const b = document.createElement('b'); b.textContent = verb;
+        shim.appendChild(b);
+        if (detail) {
+          const d = document.createElement('span'); d.className = 'vl-d'; d.textContent = ' ' + detail;
+          shim.appendChild(d);
+        }
+        txt.appendChild(shim);
+        txt.classList.remove('vl-swap');
+        void txt.offsetWidth;
+        txt.classList.add('vl-swap');
+      }
+      function tickMeta() {
+        if (!el.isConnected) { clearInterval(timer); return; }
+        if (finished || !t0) return;
+        meta.textContent = (steps ? steps + ' étape' + (steps > 1 ? 's' : '') + ' · ' : '') + secs() + ' s';
+      }
+      function summary() {
+        const parts = [];
+        if (steps) parts.push(steps + ' étape' + (steps > 1 ? 's' : ''));
+        if (files.size) parts.push(files.size + ' section' + (files.size > 1 ? 's' : ''));
+        if (added || removed) parts.push('+' + added + ' \u2212' + removed + ' lignes');
+        if (score !== null) parts.push('Gate ' + score + '/100');
+        parts.push(secs() + ' s');
+        return parts.join(' · ');
+      }
+      function finish(action, a) {
+        finished = true;
+        clearInterval(timer);
+        meta.textContent = '';
+        if (action === 'complete') { state = 'vl-done'; say('Terminé', summary()); }
+        else if (action === 'fail') { state = 'vl-fail'; say('Échec', String(a.error || a.title || '').slice(0, 120)); }
+        else { state = ''; say('Annulé', summary()); }
+        renderPanel();
+        paint();
+      }
+      /** Texte écrit par l'IA (phrase d'ouverture ou réponse à une question), rendu visible
+       *  hors de l'accordéon technique. Gelé dès que la première section démarre. */
+      let sayEl = null, sayText = '', sayFrozen = false;
+      function sayIntro(text) {
+        if (text === null) { sayFrozen = true; return; }
+        if (sayFrozen) return;
+        sayText += String(text);
+        const clean = sayText.trim();
+        if (!clean) return;
+        if (!sayEl) {
+          sayEl = document.createElement('div');
+          sayEl.className = 'vl-say vl-swap';
+          host.insertBefore(sayEl, el);
+        }
+        sayEl.textContent = clean;
+      }
+
+      const ACT_LABEL = { modify: 'modifiée', create: 'créée', delete: 'supprimée' };
+      function renderPanel() {
+        panel.textContent = '';
+        if (!secs_.size && score === null) return;
+        const head = document.createElement('div'); head.className = 'vl-file';
+        head.textContent = fileName + ' ';
+        const sub = document.createElement('span');
+        sub.textContent = '· ' + secs_.size + ' section' + (secs_.size > 1 ? 's' : '') + (added || removed ? ' · +' + added + ' \u2212' + removed : '');
+        head.appendChild(sub);
+        panel.appendChild(head);
+        const ul = document.createElement('ul'); ul.className = 'vl-secs';
+        secs_.forEach(function (s, name) {
+          const li = document.createElement('li');
+          li.className = s.status === 'running' ? 'vl-run' : (s.status === 'failed' ? 'vl-bad' : '');
+          const ic = document.createElement('i'); ic.textContent = s.status === 'running' ? '\u25CF' : (s.status === 'failed' ? '\u2717' : '\u2713');
+          const sn = document.createElement('span'); sn.className = 'vl-sn'; sn.textContent = name;
+          const sa = document.createElement('span'); sa.className = 'vl-sa';
+          sa.textContent = s.status === 'failed' ? 'non appliquée' : (s.status === 'running' ? 'en cours…' : (ACT_LABEL[s.action] || s.action));
+          li.appendChild(ic); li.appendChild(sn); li.appendChild(sa);
+          if (s.added || s.removed) {
+            const sd = document.createElement('span'); sd.className = 'vl-sd';
+            const ad = document.createElement('span'); ad.className = 'vl-add'; ad.textContent = '+' + (s.added || 0);
+            const rm = document.createElement('span'); rm.className = 'vl-rem'; rm.textContent = ' \u2212' + (s.removed || 0);
+            sd.appendChild(ad); sd.appendChild(rm); li.appendChild(sd);
+          }
+          ul.appendChild(li);
+        });
+        if (score !== null) {
+          const li = document.createElement('li');
+          const ic = document.createElement('i'); ic.textContent = '\u2713';
+          const sn = document.createElement('span'); sn.textContent = 'Vérification du rendu';
+          const sd = document.createElement('span'); sd.className = 'vl-sd'; sd.textContent = 'Gate ' + score + '/100';
+          li.appendChild(ic); li.appendChild(sn); li.appendChild(sd); ul.appendChild(li);
+        }
+        panel.appendChild(ul);
+        const links = document.createElement('div'); links.className = 'vl-links';
+        function link(label, fn) {
+          const bt = document.createElement('button'); bt.type = 'button'; bt.className = 'vl-link'; bt.textContent = label;
+          bt.addEventListener('click', function (ev) { ev.stopPropagation(); try { fn(); } catch (e) { /* indisponible */ } });
+          links.appendChild(bt);
+        }
+        if (typeof requestWorkspaceSubTab === 'function' && typeof selectCodeFile === 'function') {
+          link("Ouvrir l'éditeur", function () { requestWorkspaceSubTab('code'); selectCodeFile(fileName); });
+        }
+        if (typeof openTextDiffModal === 'function') {
+          link('Voir le diff', function () { openTextDiffModal(window._preGenerationHtml || '', (typeof currentAppHtml !== 'undefined' ? currentAppHtml : '') || ''); });
+        }
+        if (links.childNodes.length) panel.appendChild(links);
+      }
+      function detailOf(a, verb) {
+        let where = a.file ? String(a.file) : ((a.action !== 'phase' && a.action !== 'plan' && a.title) ? String(a.title) : '');
+        if (where.toLowerCase().indexOf(verb.toLowerCase()) === 0) {
+          where = where.slice(verb.length).replace(/^[\s:\u2013-]+/, '');
+        }
+        return where;
+      }
+
+      function update(list) {
+        for (const a of (list || [])) {
+          if (!a || !a.id || finished) continue;
+          const key = a.id + ':' + a.status;
+          if (seenKeys.has(key)) continue;
+          seenKeys.add(key);
+          if (!t0) { t0 = Date.now(); timer = setInterval(tickMeta, 1000); }
+          const act = a.action, status = a.status;
+
+          if (act === 'read' && a.file && /\.[a-z0-9]+$/i.test(String(a.file))) fileName = String(a.file);
+          if (act === 'diff') {
+            const nm = a.file ? String(a.file) : '';
+            if (a.metadata) {
+              added += Number(a.metadata.addedLines) || 0;
+              removed += Number(a.metadata.removedLines) || 0;
+            }
+            if (nm) {
+              const cur = secs_.get(nm) || { action: 'modify', status: 'done', added: 0, removed: 0 };
+              if (a.metadata) { cur.added = Number(a.metadata.addedLines) || 0; cur.removed = Number(a.metadata.removedLines) || 0; }
+              if (status === 'FAILED') cur.status = 'failed';
+              secs_.set(nm, cur);
+            }
+            continue;
+          }
+          if (a.file && (act === 'modify' || act === 'create' || act === 'delete')) {
+            const nm2 = String(a.file);
+            const cur2 = secs_.get(nm2) || { action: act, status: 'running', added: 0, removed: 0 };
+            cur2.action = act;
+            if (status === 'RUNNING') cur2.status = 'running';
+            else if (status === 'COMPLETED') cur2.status = (cur2.status === 'failed') ? 'failed' : 'done';
+            else if (status === 'FAILED') cur2.status = 'failed';
+            secs_.set(nm2, cur2);
+          }
+          if (act === 'validate' && a.metadata && typeof a.metadata.score === 'number') score = a.metadata.score;
+          if (act === 'complete' || act === 'fail' || act === 'cancel') { finish(act, a); continue; }
+
+          const verb = verbOf(act);
+          if (status === 'WAITING_USER') {
+            state = 'vl-wait'; paint(); say(verb, detailOf(a, verb) || 'confirmation requise');
+            continue;
+          }
+          if (act === 'phase' || act === 'plan' || act === 'summary') continue;
+
+          if (status === 'RUNNING') {
+            state = 'vl-work'; paint(); say(verb, detailOf(a, verb));
+          } else if (status === 'FAILED') {
+            say(verb, detailOf(a, verb) || String(a.error || '').slice(0, 80));
+          } else if (status === 'COMPLETED' && STEP_ACTIONS[act]) {
+            steps++;
+            if (a.file && (act === 'modify' || act === 'create' || act === 'delete')) files.add(String(a.file));
+          }
+        }
+        renderPanel();
+        tickMeta();
+      }
+
+      /** Fin pilotée par le flux (le serveur n'envoie pas « Terminé » en direct). */
+      function finishFromStream(type, ev) {
+        if (finished) return;
+        if (type === 'done') {
+          if (ev && ev.updated === false && !secs_.size && score === null) { finished = true; clearInterval(timer); el.style.display = 'none'; return; }
+          if (!t0) t0 = Date.now();
+          finish('complete', {});
+        } else if (type === 'error') {
+          if (!t0) t0 = Date.now();
+          finish('fail', { error: (ev && (ev.message || ev.error)) || 'Une erreur est survenue' });
+        } else if (type === 'cancelled') {
+          if (!t0) t0 = Date.now();
+          finish('cancel', {});
+        }
+      }
+
+      return { update: update, finishFromStream: finishFromStream, sayIntro: sayIntro };
+    }
+
     /**
      * Fabrique un conteneur ActivityStream dans un message. Retourne l'API
      * d'alimentation : append(activities) — idempotent par id (anti-doublon,
@@ -11465,6 +11931,8 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
       root.setAttribute('role', 'log');
       root.setAttribute('aria-live', 'polite');
       container.appendChild(root);
+      let live = null;
+      try { if (liveLineEnabled()) live = createLiveLine(container, root); } catch (e) { live = null; root.classList.remove('hidden'); }
       const seen = new Set();
 
       function marker(status) {
@@ -11528,13 +11996,14 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
           seen.add(a.id);
           root.insertAdjacentHTML('beforeend', itemHtml(a));
         }
+        if (live) { try { live.update(activities); } catch (e) {} }
         // Le dernier item running reste visible (scroll léger du conteneur)
         if (opts && opts.autoScroll && root.lastElementChild) {
           try { root.lastElementChild.scrollIntoView({ block: 'nearest' }); } catch (e) {}
         }
       }
 
-      return { root, append };
+      return { root, append, finishLive: live ? live.finishFromStream : null, say: live ? live.sayIntro : null };
     }
 
     /**

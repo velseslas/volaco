@@ -76,15 +76,12 @@ describe('CORE-005 : Terminal Service & Security Whitelist Unit Tests', () => {
     assert.equal(gitRes.binary, 'git');
     assert.ok(gitRes.stderr.includes('non exécuté'));
 
-    const pnpmRes = terminalService.executeCommand(
-      tenantId,
-      project.id,
-      { command: 'pnpm test' },
-      'ENGINEER'
+    // SEC-03 : `pnpm test` n'est plus accepté par la whitelist (alias de
+    // `pnpm run test` + hooks → RCE via package.json piégé).
+    assert.throws(
+      () => terminalService.executeCommand(tenantId, project.id, { command: 'pnpm test' }, 'ENGINEER'),
+      ValidationError
     );
-    assert.equal(pnpmRes.exitCode, 1);
-    assert.equal(pnpmRes.binary, 'pnpm');
-    assert.ok(pnpmRes.stderr.includes('non exécuté'));
   });
 
   it('doit bloquer "node -e" (exécution de code arbitraire) même s il est dans la whitelist des binaires', () => {
@@ -145,14 +142,19 @@ describe('CORE-005 : Terminal Service & Security Whitelist Unit Tests', () => {
     }
   });
 
-  it('doit continuer à autoriser les sous-commandes sûres (test, build, lint, --version)', () => {
-    // S'assurer que le durcissement n'a pas cassé les commandes légitimes.
-    // Ces commandes sont acceptées par la whitelist puis rejetées proprement
-    // par le service avec le message "non exécuté" (fichiers projet non sur disque).
+  it('SEC-03 : npm/pnpm test, build, lint sont rejetés (alias de `run` + hooks → RCE)', () => {
+    // `npm test` ≡ `npm run test` (+ pretest/posttest) : autoriser `test`
+    // annulait le blocage de `run`. Ne restent que --version/-v.
     for (const cmd of ['npm test', 'pnpm test', 'npm build', 'pnpm build', 'npm lint', 'pnpm lint']) {
+      assert.throws(
+        () => terminalService.executeCommand(tenantId, project.id, { command: cmd }),
+        ValidationError,
+        `${cmd} doit être rejeté par la whitelist`
+      );
+    }
+    for (const cmd of ['npm --version', 'pnpm --version', 'node -v']) {
       const res = terminalService.executeCommand(tenantId, project.id, { command: cmd });
-      assert.equal(res.exitCode, 1, `${cmd} devrait être accepté par la whitelist mais rejeté côté disque`);
-      assert.ok(res.stderr.includes('non exécuté'), `${cmd} devrait avoir le message "non exécuté"`);
+      assert.ok(res.exitCode !== undefined, `${cmd} reste autorisé`);
     }
   });
 

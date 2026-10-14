@@ -39,6 +39,11 @@ export const DANGEROUS_PATTERNS = [
  *   et l'exécuter via `npm run evil`. C'est une RCE (Remote Code Execution)
  *   potentielle même en environnement de développement local.
  *
+ * - SEC-03 — `npm test` / `npm build` / `npm lint` (et `pnpm …`) : ce sont des
+ *   ALIAS de `npm run` (`npm test` ≡ `npm run test` + hooks pre/post). Le
+ *   blocage de `run` était donc contournable par une seule sous-commande
+ *   autorisée. Retirés de la liste autorisée (ne restent que `--version`).
+ *
  * - `npm install` / `pnpm install` / `npm i` : déclenchent les hooks
  *   `preinstall` / `postinstall` des paquets installés. Un paquet npm tiers
  *   peut exécuter du code arbitraire à l'installation sans que tu n'en voies
@@ -59,8 +64,8 @@ export const DANGEROUS_PATTERNS = [
  *   n'a aucun sens dans un terminal web et contourne toute la sécurité.
  */
 export const ALLOWED_SUBCOMMANDS: Readonly<Record<AllowedBinary, readonly string[]>> = {
-  pnpm: ['test', 'build', 'lint', '--version', '-v'],
-  npm:  ['test', 'build', 'lint', '--version', '-v'],
+  pnpm: ['--version', '-v'],
+  npm:  ['--version', '-v'],
   node: ['--version', '-v'],
   git:  ['status', 'log', 'diff', 'branch', 'show', '--version']
 };
@@ -72,8 +77,8 @@ export const ALLOWED_SUBCOMMANDS: Readonly<Record<AllowedBinary, readonly string
  * ALLOWED_SUBCOMMANDS par erreur, elle serait quand même rejetée ici.
  */
 export const DANGEROUS_SUBCOMMANDS: Readonly<Record<AllowedBinary, readonly string[]>> = {
-  pnpm: ['run', 'exec', 'dlx', 'install', 'i', 'add', 'remove', 'uninstall', 'rm'],
-  npm:  ['run', 'exec', 'install', 'i', 'add', 'uninstall', 'rm'],
+  pnpm: ['run', 'exec', 'dlx', 'install', 'i', 'add', 'remove', 'uninstall', 'rm', 'test', 'build', 'lint'],
+  npm:  ['run', 'exec', 'install', 'i', 'add', 'uninstall', 'rm', 'test', 'build', 'lint'],
   node: ['-e', '--eval', '-p', '--print', '-r', '--require', '-i', '--interactive', '--experimental-network-imports'],
   git:  []
 };
