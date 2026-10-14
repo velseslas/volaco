@@ -4146,6 +4146,16 @@ ${sections}
             try {
               const event = JSON.parse(dataStr);
 
+              // SOURCE UNIQUE — le Builder REFLÈTE ce flux au lieu de lancer
+              // sa propre génération en parallèle (2 flux = 2 sites différents
+              // + double facture). Relai best-effort, le chat reste maître.
+              try {
+                const bfRelay = document.getElementById('wsLiveIframe');
+                if (bfRelay && bfRelay.contentWindow && event && typeof event.type === 'string') {
+                  bfRelay.contentWindow.postMessage({ source: 'vibecode-studio', command: 'builder-event', event }, window.location.origin);
+                }
+              } catch (_) { /* panneau non critique */ }
+
               // LOT D — point d'alimentation UNIQUE de l'ActivityStream : toute
               // frame milestone porte sa vue normalisée `activity` (serveur).
               if (event.activity && activityFeed) activityFeed.append([event.activity]);

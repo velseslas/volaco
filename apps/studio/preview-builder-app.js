@@ -6,7 +6,7 @@
     import { layoutTree } from '/preview-builder/layout.js';
     import { renderComponentVisual } from '/preview-builder/visuals.js';
     import { demoBuildScript, scriptToEvents } from '/preview-builder/mocks.js';
-    import { MockBuildEventSource, SSEBuildEventSource } from '/preview-builder/adapter.js';
+    import { MockBuildEventSource, SSEBuildEventSource, normalizeGenerationEvent } from '/preview-builder/adapter.js';
     import { demoSseChunks } from '/preview-builder/mocks.js';
     import { resolvePreviewBuilderV2 } from '/preview-builder/flags.js';
     const btnSse = document.getElementById('btnSse');
@@ -1077,12 +1077,28 @@
       if (d.source !== 'vibecode-studio') return;
       if (typeof d.projectId === 'string' && d.projectId) builderProjectId = d.projectId;
       if (d.command === 'sync-project') { syncProjectContent(); return; }
+      // RELAI (plus de 2e génération) : le flux du chat est rejoué dans le
+      // moteur (démarrage paresseux au 1er événement moteur, jamais sur une
+      // génération manuelle en cours). Le bouton GÉNÉRER manuel garde SON flux.
+      if (d.command === 'builder-event' && d.event && typeof d.event === 'object') {
+        if (realSource) return;
+        try {
+          const norm = normalizeGenerationEvent(d.event);
+          if (!norm || norm.events.length === 0) return;
+          if (state.status !== 'building') {
+            state = createPreviewBuildState();
+            consume({ kind: 'BUILD_STARTED', stage: 'structure', timestamp: Date.now() });
+          }
+          for (const e of norm.events) consume(e);
+        } catch (e) { /* frame malformée : le flux continue */ }
+        return;
+      }
       if (d.command !== 'start-builder-generation') return;
       const promptInput = document.getElementById('v2Prompt');
-      const realBtn = document.getElementById('btnReal');
-      if (!promptInput || !realBtn || typeof d.prompt !== 'string' || !d.prompt.trim()) return;
+      if (!promptInput || typeof d.prompt !== 'string' || !d.prompt.trim()) return;
       promptInput.value = d.prompt;
-      realBtn.click();
+      // Affichage seul : la GÉNÉRATION vient du relai (pas de 2e flux).
+      if (v2Status) v2Status.textContent = 'Génération reçue du chat — construction en direct…';
     });
     // Recharge le projet suivi depuis le serveur — jamais pendant une
     // génération réelle en cours (le flux en livrera le contenu).

@@ -51,11 +51,12 @@ describe('ÉTAPE 27 : Builder v2 = Preview principal, Legacy = fallback', () => 
     assert.ok(flowBlock.includes('postMessage'), 'transmis par postMessage (le Studio n écrit jamais dans le document du Builder)');
   });
 
-  it('4. le Builder reçoit le pont : listener additif → son PROPRE flux (btnReal)', () => {
+  it('4. le Builder reçoit le pont : affichage + RELAI (plus de flux propre parallèle)', () => {
     const page = builderAppJs();
     assert.ok(page.includes('start-builder-generation'), 'listener du pont présent');
     assert.ok(page.includes('ev.origin !== location.origin'), 'origine vérifiée');
-    assert.ok(page.includes('promptInput.value = d.prompt') && page.includes('realBtn.click()'), 'le Builder déclenche SON PROPRE flux (btnReal)');
+    assert.ok(page.includes('promptInput.value = d.prompt'), 'l’intention reçue reste affichée');
+    assert.ok(page.includes("d.command === 'builder-event'") && page.includes('normalizeGenerationEvent(d.event)'), 'le flux du chat est rejoué (relai), pas régénéré');
   });
 
   it('5. gardes É26 toujours actives : aucun écrasement Legacy pendant que le Builder génère', () => {

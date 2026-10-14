@@ -16,9 +16,9 @@ describe('PV-03 : pas de double génération', () => {
     assert.equal(hits, 1, `1 seul pont attendu, trouvé ${hits} (doublon = 2 générations facturées)`);
   });
 
-  it('2. un seul déclenchement realBtn.click()', () => {
+  it('2. aucun déclenchement auto : le pont AFFICHE, le relai CONSTRUIT (1 seule génération)', () => {
     const hits = src.split('realBtn.click()').length - 1;
-    assert.equal(hits, 1, `1 seul déclenchement attendu, trouvé ${hits}`);
+    assert.equal(hits, 0, `aucun flux parallèle déclenché par le pont (trouvé ${hits}) — la génération manuelle garde son bouton`);
   });
 
   it('3. startRealGeneration est non réentrant (garde)', () => {

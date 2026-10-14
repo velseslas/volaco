@@ -27,7 +27,18 @@ describe('SOURCE UNIQUE : panneau et onglet suivent le projet actif', () => {
     assert.ok(builder.includes('let builderProjectId = null'), 'projet suivi mémorisé');
     assert.ok(builder.includes("d.command === 'sync-project'"), 'commande sync-project traitée');
     assert.ok(builder.includes('resumeSession(builderProjectId || undefined)'), 'rechargement du projet suivi');
-    assert.ok(builder.includes('builderProjectId && list.find'), 'génération ciblée sur le projet suivi');
+    assert.ok(builder.includes('builderProjectId && list.find'), 'génération manuelle ciblée sur le projet suivi');
     assert.ok(builder.includes('async function resumeSession(explicitProjectId)'), 'reprise paramétrable');
+  });
+
+  it('4. UNE SEULE génération : le pont ne déclenche plus de flux, le relai rejoue', () => {
+    // Côté Studio : chaque frame du flux chat est relayée telle quelle.
+    assert.ok(studio.includes("command: 'builder-event'"), 'relai des frames vers le Builder');
+    // Côté Builder : le pont AFFICHE seulement (pas de realBtn.click).
+    const bridge = builder.slice(builder.indexOf("d.command !== 'start-builder-generation'"));
+    assert.ok(!bridge.slice(0, 800).includes('realBtn.click'), 'fini le 2e flux parallèle');
+    assert.ok(builder.includes("d.command === 'builder-event'"), 'branche de relai présente');
+    assert.ok(builder.includes('normalizeGenerationEvent(d.event)'), 'frames normalisées avant consommation');
+    assert.ok(builder.includes('if (realSource) return;'), 'relai ignoré pendant une génération manuelle');
   });
 });

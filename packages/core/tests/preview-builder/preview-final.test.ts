@@ -83,11 +83,13 @@ describe('ÉTAPE 28 : page Preview finale (canvas maximal)', () => {
     assert.ok(appJs().includes("document.querySelectorAll('.vp-btn')"), 'le handler viewport reste dans le code (sans bouton)');
   });
 
-  it('6. le pont Chat Studio → Builder reste fonctionnel (éléments conservés)', () => {
+  it('6. le pont Chat Studio → Builder reste fonctionnel (relai, plus de 2e flux)', () => {
     const src = appJs();
     assert.ok(src.includes("d.command !== 'start-builder-generation'"), 'listener du pont présent');
     assert.ok(page().includes('id="v2Prompt"') && page().includes('id="btnReal"'), 'v2Prompt + btnReal conservés (dans le chrome)');
-    assert.ok(src.includes("promptInput.value = d.prompt") && src.includes('realBtn.click()'), 'le pont déclenche toujours le flux réel');
+    assert.ok(src.includes("promptInput.value = d.prompt"), 'le pont affiche toujours l’intention reçue');
+    assert.ok(!src.slice(src.indexOf("d.command !== 'start-builder-generation'"), src.indexOf("d.command !== 'start-builder-generation'") + 900).includes('realBtn.click()'), 'le pont ne déclenche PLUS de flux parallèle (relai seul)');
+    assert.ok(src.includes("d.command === 'builder-event'"), 'le relai d’événements est branché');
   });
 
   it('7. PREVIEW READY fonctionne toujours (statusBadge conservé, visible dans le header)', () => {
