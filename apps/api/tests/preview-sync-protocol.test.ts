@@ -31,6 +31,15 @@ describe('SOURCE UNIQUE : panneau et onglet suivent le projet actif', () => {
     assert.ok(builder.includes('async function resumeSession(explicitProjectId)'), 'reprise paramétrable');
   });
 
+  it('4b. chargement : le Builder s’annonce, le Studio répond avec le projet actif', () => {
+    assert.ok(builder.includes("command: 'builder-ready'"), 'le Builder annonce son chargement');
+    assert.ok(builder.includes('window.parent.postMessage'), 'annonce au parent (intégré uniquement)');
+    assert.ok(studio.includes('function postBuilderSync()'), 'helper de synchro (visible partout)');
+    assert.ok(studio.includes("rd.command === 'builder-ready'"), 'le Studio écoute l’annonce');
+    const openFn = studio.slice(studio.indexOf('function openProject(id)'));
+    assert.ok(openFn.slice(0, 2500).includes('postBuilderSync()'), 'changement de projet → panneau resynchronisé');
+  });
+
   it('4. UNE SEULE génération : le pont ne déclenche plus de flux, le relai rejoue', () => {
     // Côté Studio : chaque frame du flux chat est relayée telle quelle.
     assert.ok(studio.includes("command: 'builder-event'"), 'relai des frames vers le Builder');

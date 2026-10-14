@@ -1251,6 +1251,14 @@
     // panneau Real AI Generation n'apparaît qu'en ON — jamais d'activation
     // implicite. Le chemin mock/SSE simulée reste disponible pour la démo.
     const v2Flag = resolvePreviewBuilderV2({ search: location.search, storageGet: (k) => localStorage.getItem(k) });
+    // SOURCE UNIQUE — le Builder annonce son chargement au Studio (intégré
+    // uniquement) : le Studio répond avec le projet ACTIF. Sans ça, un
+    // rechargement affiche projects[0] au lieu du projet actif.
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({ source: 'vibecode-builder', command: 'builder-ready' }, location.origin);
+      }
+    } catch (e) { /* hors iframe : rien à annoncer */ }
     const v2Panel = document.getElementById('v2Panel');
     const v2Status = document.getElementById('v2Status');
     if (v2Flag === 'on' && v2Panel) {

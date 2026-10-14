@@ -5993,6 +5993,24 @@ ${sections}
       showCaptureToast(`Projet "${proj.name}" chargé !`);
       // T2 — replay : la dernière génération de CE projet réapparaît (réelle)
       renderLastExecutionReplay();
+      // SOURCE UNIQUE — le panneau suit le changement de projet.
+      try { postBuilderSync(); } catch (_) { /* panneau non critique */ }
+    }
+
+    // SOURCE UNIQUE — envoie au Builder le projet ACTIF (déclaration
+    // function : visible de tous les blocs script). Utilisé au chargement
+    // du panneau (builder-ready), au changement de projet et en fin de
+    // génération (inline, chemin déjà prouvé).
+    function postBuilderSync() {
+      try {
+        if (typeof userProjects === 'undefined' || typeof activeProjectId === 'undefined') return;
+        const frame = document.getElementById('wsLiveIframe');
+        const ap = userProjects.find(p => p.id === activeProjectId) || null;
+        const pid = ap && ap.serverProjectId;
+        if (frame && frame.contentWindow && pid) {
+          frame.contentWindow.postMessage({ source: 'vibecode-studio', command: 'sync-project', projectId: pid }, window.location.origin);
+        }
+      } catch (_) { /* panneau non critique */ }
     }
 
     function openNewProjectModal() {
@@ -6380,6 +6398,14 @@ function renderWorkspaceIframe(htmlCode) {
   // Conversation vivante — Focus manager : l'Studio demande au preview de
   // défiler vers la section que l'IA est en train de construire/modifier,
   // avec un halo lumineux temporaire.
+  window.addEventListener('message', function (ev) {
+    var rd = ev.data || {};
+    if (rd && rd.source === 'vibecode-builder' && rd.command === 'builder-ready') {
+      if (ev.origin !== window.location.origin) return;
+      try { postBuilderSync(); } catch (_) { /* panneau non critique */ }
+      return;
+    }
+  });
   window.addEventListener('message', function(ev){
     var d = ev.data || {};
     if (d.source !== 'vibecode-studio' || d.command !== 'focus-section' || !d.name) return;
