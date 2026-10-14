@@ -175,3 +175,29 @@ describe('CORE-003 : File Explorer Service Unit Tests', () => {
     );
   });
 });
+
+describe('QUOTAS : taille max par fichier (anti-DoS mémoire/disque)', () => {
+  it('fichier trop gros refusé (saveFile + createNode), rien d’écrit', () => {
+    const prev = process.env.VOLACO_FILE_MAX_BYTES;
+    process.env.VOLACO_FILE_MAX_BYTES = '100';
+    try {
+      const store = new FileStore();
+      assert.throws(
+        () => store.saveFile('t', 'p', 'gros.html', 'A'.repeat(101)),
+        ValidationError
+      );
+      assert.throws(
+        () => store.createNode('t', 'p', 'gros2.html', 'file', 'B'.repeat(500)),
+        ValidationError
+      );
+      // Rien d’écrit : le projet par défaut reste seul.
+      assert.equal(store.getFile('t', 'p', 'gros.html'), null);
+      // À la limite exacte : accepté.
+      const ok = store.saveFile('t', 'p', 'ok.html', 'C'.repeat(100));
+      assert.equal(ok.sizeBytes, 100);
+    } finally {
+      if (prev === undefined) delete process.env.VOLACO_FILE_MAX_BYTES;
+      else process.env.VOLACO_FILE_MAX_BYTES = prev;
+    }
+  });
+});

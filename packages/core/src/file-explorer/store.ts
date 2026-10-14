@@ -91,6 +91,23 @@ export function sanitizePath(inputPath: string): string {
   return normalized;
 }
 
+const DEFAULT_FILE_MAX_BYTES = 5 * 1024 * 1024;
+
+function resolveFileMaxBytes(): number {
+  const raw = Number.parseInt(process.env.VOLACO_FILE_MAX_BYTES || '', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_FILE_MAX_BYTES;
+}
+
+/** Quota anti-DoS mémoire/disque : un fichier ne dépasse jamais le plafond. */
+function assertContentSize(content: string, maxBytes: number = resolveFileMaxBytes()): void {
+  const size = Buffer.byteLength(content, 'utf8');
+  if (size > maxBytes) {
+    throw new ValidationError(
+      `Fichier trop volumineux (${(size / 1048576).toFixed(1)} Mo, max ${(maxBytes / 1048576).toFixed(1)} Mo)`
+    );
+  }
+}
+
 export class FileStore {
   // Clé: `${tenantId}:${projectId}` -> Map<relativePath, StoredEntry>
   private projectFiles = new Map<string, Map<string, StoredEntry>>();
@@ -228,6 +245,7 @@ export class FileStore {
 
     const now = new Date();
     const storedContent = type === 'file' ? (content ?? '') : undefined;
+    if (storedContent !== undefined) assertContentSize(storedContent);
     map.set(path, {
       type,
       content: storedContent,
@@ -260,6 +278,7 @@ export class FileStore {
     if (existing && existing.type === 'directory') {
       throw new ValidationError(`"${path}" est un dossier, impossible d'écrire du contenu de fichier`);
     }
+    assertContentSize(content);
 
     const now = new Date();
     map.set(path, {
