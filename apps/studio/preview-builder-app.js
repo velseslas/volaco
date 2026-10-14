@@ -1067,16 +1067,29 @@
     // il déclenche son PROPRE flux (v2Prompt + btnReal, même endpoint SSE).
     // Origine vérifiée ; tout autre message est ignoré. Aucune écriture
     // externe dans ce document (le Studio ne fait que poster).
+    // SOURCE UNIQUE — le Builder suit le projet ACTIF du Studio (plus
+    // projects[0] aveugle : c'est ce qui affichait un vieux projet pendant
+    // que l'onglet ouvrait le bon).
+    let builderProjectId = null;
     window.addEventListener('message', (ev) => {
       if (ev.origin !== location.origin) return;
       const d = ev.data || {};
-      if (d.source !== 'vibecode-studio' || d.command !== 'start-builder-generation') return;
+      if (d.source !== 'vibecode-studio') return;
+      if (typeof d.projectId === 'string' && d.projectId) builderProjectId = d.projectId;
+      if (d.command === 'sync-project') { syncProjectContent(); return; }
+      if (d.command !== 'start-builder-generation') return;
       const promptInput = document.getElementById('v2Prompt');
       const realBtn = document.getElementById('btnReal');
       if (!promptInput || !realBtn || typeof d.prompt !== 'string' || !d.prompt.trim()) return;
       promptInput.value = d.prompt;
       realBtn.click();
     });
+    // Recharge le projet suivi depuis le serveur — jamais pendant une
+    // génération réelle en cours (le flux en livrera le contenu).
+    async function syncProjectContent() {
+      if (realSource) return;
+      await resumeSession(builderProjectId || undefined);
+    }
 
     document.addEventListener('pointercancel', () => {
       dragCtx = null;
@@ -1285,12 +1298,23 @@
     // premier projet serveur est rechargé dans le canvas — un rafraîchissement
     // ne perd plus le site (les éditions, elles, sont déjà persistées É38).
     // Silencieux en mode démo/offline ; n'écrase JAMAIS un build en cours.
-    async function resumeSession() {
+    // SOURCE UNIQUE : avec un projectId explicite (sync du Studio), on
+    // recharge CE projet même si le canvas n'est pas vide — c'est un ordre,
+    // pas une devinette (le bail anti-écrasement ne vaut que pour le boot).
+    async function resumeSession(explicitProjectId) {
       try {
-        const pres = await fetch('/api/v1/projects', { headers: H });
-        const pdata = await pres.json();
-        const proj = (pdata.projects || pdata)[0];
-        if (!proj) return;
+        let proj = null;
+        if (typeof explicitProjectId === 'string' && explicitProjectId) {
+          const pres = await fetch('/api/v1/projects', { headers: H });
+          const pdata = await pres.json();
+          proj = (pdata.projects || pdata).find((p) => p && p.id === explicitProjectId) || null;
+          if (!proj) return;
+        } else {
+          const pres = await fetch('/api/v1/projects', { headers: H });
+          const pdata = await pres.json();
+          proj = (pdata.projects || pdata)[0];
+          if (!proj) return;
+        }
         currentProjectId = proj.id;
         // P3 — si le projet est au format react-vite : recharger le BUNDLE
         const st = await fetch('/api/v1/projects/' + proj.id + '/app/status', { headers: H });
@@ -1308,7 +1332,10 @@
         const fdata = await fres.json();
         const content = fdata && fdata.file ? fdata.file.content : null;
         if (typeof content !== 'string' || content.length === 0) return;
-        if (state.components.size > 0) return;
+        // Ordre explicite du Studio : on recharge même si le canvas affiche
+        // déjà autre chose (c'est exactement le bug panneau≠onglet).
+        const explicit = typeof explicitProjectId === 'string' && !!explicitProjectId;
+        if (state.components.size > 0 && !explicit) return;
         const sectionCount = rebuildCanvasFromHtml(content);
         if (sectionCount > 0 && v2Status) {
           v2Status.textContent = 'Site existant rechargé (' + sectionCount + ' section(s)) — édite-le, ou 🕘 HISTORIQUE pour une version antérieure.';
@@ -1341,10 +1368,11 @@
       const promptInput = document.getElementById('v2Prompt');
       const message = promptInput ? promptInput.value.trim() : '';
       if (!message) { if (v2Status) v2Status.textContent = 'Décris d’abord l’interface à générer.'; return; }
-      // 1. Projet serveur (même convention que le Studio : premier projet)
+      // 1. Projet serveur : celui SUIVI (ordre du Studio), sinon premier.
       const pres = await fetch('/api/v1/projects', { headers: H });
       const pdata = await pres.json();
-      const proj = (pdata.projects || pdata)[0];
+      const list = (pdata.projects || pdata);
+      const proj = (builderProjectId && list.find((p) => p && p.id === builderProjectId)) || list[0];
       if (!proj) { if (v2Status) v2Status.textContent = 'Aucun projet serveur.'; return; }
       currentProjectId = proj.id;
       // 2. Session de conversation réelle

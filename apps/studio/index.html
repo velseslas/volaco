@@ -3230,7 +3230,11 @@ html:not(.vl-off) #chatPanel form button[type="submit"]:hover{background:#c4b5fd
     if (window.__previewMode === 'builder') {
       const builderFrame = document.getElementById('wsLiveIframe');
       if (builderFrame && builderFrame.contentWindow) {
-        builderFrame.contentWindow.postMessage({ source: 'vibecode-studio', command: 'start-builder-generation', prompt: String(text || '') }, window.location.origin);
+        // SOURCE UNIQUE — le Builder doit suivre le projet ACTIF (avant :
+        // prompt seul → le Builder générait dans projects[0] pendant que le
+        // chat écrivait ici : panneau et onglet divergeaient).
+        const knownPid = (typeof userProjects !== 'undefined' && (userProjects.find(p => p.id === activeProjectId) || {}).serverProjectId) || undefined;
+        builderFrame.contentWindow.postMessage({ source: 'vibecode-studio', command: 'start-builder-generation', prompt: String(text || ''), ...(knownPid ? { projectId: knownPid } : {}) }, window.location.origin);
       }
     }
       planState = planState || { confirmed: false };
@@ -4310,6 +4314,16 @@ ${sections}
                   } catch (e) { console.warn('Sauvegarde:', e); }
                   // LOT 2 — l'arborescence réelle change après génération
                   loadFileTree();
+                  // SOURCE UNIQUE — le Builder affiche le projet ACTIF : après
+                  // chaque génération, on lui ordonne de recharger ce projet
+                  // (fini le panneau sur un vieux projet pendant que l'onglet
+                  // ouvre le bon).
+                  try {
+                    const builderFrame2 = document.getElementById('wsLiveIframe');
+                    if (builderFrame2 && builderFrame2.contentWindow && serverProjectId) {
+                      builderFrame2.contentWindow.postMessage({ source: 'vibecode-studio', command: 'sync-project', projectId: serverProjectId }, window.location.origin);
+                    }
+                  } catch (_) { /* panneau non critique */ }
                   // LOT 5 — le Quality Gate tourne désormais CÔTÉ SERVEUR (T6,
                   // source de vérité unique) : résultat dans event.gate.
                   const gate = event.gate || null;

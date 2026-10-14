@@ -217,10 +217,12 @@ describe('E41 : reprise de session au chargement du Builder', () => {
     assert.ok(fn.includes('files/content?path=index.html'), 'contenu du site existant');
   });
 
-  it('3. gardes : jamais écraser un build en cours, rien si pas de sections, échec silencieux', () => {
+  it('3. gardes : jamais écraser un build en cours (boot), ordre explicite du Studio obéi, rien si pas de sections, échec silencieux', () => {
     const src = appJs();
     const fn = src.slice(src.indexOf('async function resumeSession'), src.indexOf('let realSource = null;'));
-    assert.ok(fn.includes('if (state.components.size > 0) return;'), 'build en cours respecté');
+    assert.ok(fn.includes('if (state.components.size > 0 && !explicit) return;'), 'boot : build en cours respecté');
+    assert.ok(src.includes("d.command === 'sync-project'"), 'ordre explicite sync-project traité');
+    assert.ok(src.includes('syncProjectContent()'), 'rechargement du projet suivi');
     assert.ok(fn.includes('if (sectionCount > 0 && v2Status)'), 'statut seulement si sections');
     assert.ok(fn.includes('} catch {'), 'échec réseau silencieux (mode démo)');
   });
