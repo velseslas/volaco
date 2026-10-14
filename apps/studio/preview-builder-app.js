@@ -22,6 +22,72 @@
     let lastFocusId = null;
     let timer = null;
 
+    /* ===== VIBE_ELEMENT_REVEAL v1 : construction élément par élément =====
+     * Quand un bloc passe de « building » à « completed », ses éléments (titres,
+     * textes, boutons, images, liens…) apparaissent un par un, au lieu du bloc
+     * entier d'un coup. Observateur autonome : il ne touche ni au state, ni au
+     * moteur, ni au rendu, et restaure les styles d'origine à la fin.
+     * Désactivation : localStorage.setItem('vibe_reveal', '0') puis recharger. */
+    (function installElementReveal() {
+      try { if (localStorage.getItem('vibe_reveal') === '0') return; } catch (e) { /* stockage indisponible */ }
+      if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+      const TARGETS = 'h1,h2,h3,h4,h5,h6,p,a,button,img,picture,svg,li,input,textarea,select,blockquote,figure,video,table,hr,label';
+      const MAX = 40, SCAN = 300, TOTAL_MS = 1500, STEP_MS = 80, DUR_MS = 460;
+
+      /** Éléments visibles « de premier niveau » (on ignore ceux contenus dans un autre élément retenu). */
+      function pickTargets(root) {
+        const all = Array.from(root.querySelectorAll(TARGETS)).slice(0, SCAN);
+        return all.filter(function (e) { return !all.some(function (o) { return o !== e && o.contains(e); }); });
+      }
+
+      function reveal(root) {
+        const els = pickTargets(root).slice(0, MAX);
+        if (!els.length) return;
+        const step = Math.min(STEP_MS, Math.floor(TOTAL_MS / els.length));
+        const saved = els.map(function (e) {
+          return { e: e, had: e.hasAttribute('style'), style: e.getAttribute('style'), op: e.style.opacity, tf: e.style.transform };
+        });
+        els.forEach(function (e) {
+          e.style.transition = 'none';
+          e.style.opacity = '0';
+          e.style.transform = 'translateY(10px)';
+        });
+        void root.offsetHeight; // fige l'état de départ avant d'animer
+        requestAnimationFrame(function () {
+          saved.forEach(function (s, i) {
+            s.e.style.transition = 'opacity ' + DUR_MS + 'ms ease, transform ' + DUR_MS + 'ms cubic-bezier(.22,.9,.34,1)';
+            s.e.style.transitionDelay = (i * step) + 'ms';
+            s.e.style.opacity = s.op || '';
+            s.e.style.transform = s.tf || '';
+          });
+          setTimeout(function () {
+            saved.forEach(function (s) {
+              if (s.had) s.e.setAttribute('style', s.style); else s.e.removeAttribute('style');
+            });
+          }, els.length * step + DUR_MS + 120);
+        });
+      }
+
+      function start() {
+        const canvas = document.getElementById('canvas');
+        if (!canvas) return;
+        new MutationObserver(function (records) {
+          const finished = new Set();
+          records.forEach(function (r) {
+            if (r.type === 'attributes' && r.attributeName === 'data-pv-status' && r.oldValue === 'building' &&
+                r.target.getAttribute('data-pv-status') === 'completed') finished.add(r.target);
+          });
+          finished.forEach(function (node) {
+            const real = node.querySelector('.pvz-real');
+            if (real) reveal(real);
+          });
+        }).observe(canvas, { subtree: true, attributes: true, attributeFilter: ['data-pv-status'], attributeOldValue: true });
+      }
+      // Un script de type module s'exécute une fois la page analysée : le canvas existe déjà.
+      if (document.getElementById('canvas')) start(); else setTimeout(start, 0);
+    })();
+
+
     /* ---------- LOT 03 — render DOM INCRÉMENTAL ---------- */
     /* Le canvas est synchronisé par data-pv-id : un nœud n'est recréé QUE
        lorsque son STATUT (ou son focus) change — c'est ce changement qui
@@ -1124,22 +1190,6 @@
       renderCurrent(); // applique la taille du state OU restaure l'ancienne
     });
 
-    // É27 — PONT STUDIO → BUILDER (additif) : le chat du Studio transmet
-    // l'intention de génération ; le Builder reste MAÎTRE de son pipeline —
-    // il déclenche son PROPRE flux (v2Prompt + btnReal, même endpoint SSE).
-    // Origine vérifiée ; tout autre message est ignoré. Aucune écriture
-    // externe dans ce document (le Studio ne fait que poster).
-    window.addEventListener('message', (ev) => {
-      if (ev.origin !== location.origin) return;
-      const d = ev.data || {};
-      if (d.source !== 'vibecode-studio' || d.command !== 'start-builder-generation') return;
-      const promptInput = document.getElementById('v2Prompt');
-      const realBtn = document.getElementById('btnReal');
-      if (!promptInput || !realBtn || typeof d.prompt !== 'string' || !d.prompt.trim()) return;
-      promptInput.value = d.prompt;
-      realBtn.click();
-    });
-
     document.addEventListener('pointercancel', () => {
       if (!resizeCtx) return;
       resizeCtx = null;
@@ -1279,7 +1329,15 @@
       startWith(new MockBuildEventSource({ events, intervalMs: 300 }));
     });
 
+    // PV-03 — garde anti-réentrance : deux démarrages concurrents (double
+    // listener, double-clic nerveux) créaient 2 sessions + 2 flux SSE facturés
+    // qui écrivaient dans le même état. Le 2e démarrage pendant la phase
+    // d'amorçage est ignoré ; un nouveau clic APRÈS reste possible (restart).
+    let realGenerationStarting = false;
     async function startRealGeneration() {
+      if (realGenerationStarting) return;
+      realGenerationStarting = true;
+      try {
       const promptInput = document.getElementById('v2Prompt');
       const message = promptInput ? promptInput.value.trim() : '';
       if (!message) { if (v2Status) v2Status.textContent = 'Décris d’abord l’interface à générer.'; return; }
@@ -1312,6 +1370,9 @@
         (event) => consume(event),
         (m) => { if (v2Status) v2Status.textContent = 'Erreur: ' + m; }
       );
+      } finally {
+        realGenerationStarting = false;
+      }
     }
 
     document.getElementById('btnReal').addEventListener('click', () => { startRealGeneration(); });
