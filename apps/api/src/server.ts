@@ -25,6 +25,8 @@ import { handleExecutionRoutes } from './routes/executions.js';
 import { handleSettingsRoutes } from './routes/settings.js';
 import { handleRevisionsRoutes } from './routes/revisions.js';
 import { handleObservabilityRoutes } from './routes/observability.js';
+import { handleFinopsRoutes } from './routes/finops.js';
+import { handleGdprRoutes } from './routes/gdpr.js';
 import { handleWorkspaceRoutes } from './routes/workspace.js';
 import { handleProjectStateRoutes } from './routes/project-state.js';
 import { handleStudioRoutes } from './routes/studio.js';
@@ -448,6 +450,8 @@ const revisionsWithAudit: RouteHandler = async (req, res, pathname, context, req
 const API_ROUTES: readonly RouteEntry[] = [
   { name: 'auth (JWT)', handler: handleAuthRoutes },
   { name: 'observability (FND-005)', handler: handleObservabilityRoutes },
+  { name: 'finops (CDC §53)', handler: handleFinopsRoutes },
+  { name: 'gdpr (CDC §50)', handler: handleGdprRoutes },
   { name: 'dashboard (CORE-002)', handler: handleDashboardRoutes },
   { name: 'workspace (CAPP-001)', handler: handleWorkspaceRoutes },
   { name: 'project-state (CAPP-004)', handler: handleProjectStateRoutes },

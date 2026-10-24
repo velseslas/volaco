@@ -17088,4 +17088,83 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
   </div>
 
 
-</div></body></html>
+</div>
+<script>
+/* ============================================================================
+   CDC §49 — Internationalisation, tranche V1 : moteur FR/EN du Studio.
+   - Dictionnaire par paires (sélecteur, texte FR, texte EN) appliquées aux
+     <span> enfants des éléments ciblés — le HTML source reste inchangé.
+   - Choix persisté (localStorage 'vibecode_lang'), défaut FR.
+   - Bouton bascule injecté à côté du bouton de thème (#btnLangToggle).
+   ============================================================================ */
+(function () {
+  'use strict';
+  var LANG_KEY = 'vibecode_lang';
+
+  var TRANSLATIONS = [
+    { sel: '#btnWsTab-preview', fr: 'Aperçu', en: 'Preview' },
+    { sel: '#btnTermMode-cli', fr: 'Console CLI', en: 'CLI Console' },
+    { sel: '#btnTermMode-logs', fr: 'Logs en Direct', en: 'Live Logs' },
+    { sel: '#btnTermMode-mixed', fr: 'Vue Mixte', en: 'Mixed View' },
+    { sel: '#btnHistTab-timeline', fr: "Timeline d'Activité (CAPP-007)", en: 'Activity Timeline' },
+    { sel: '#btnHistTab-revisions', fr: 'Révisions & Rollback', en: 'Revisions & Rollback' },
+    { sel: '#btnExportLogs', fr: 'Exporter', en: 'Export' }
+  ];
+
+  function currentLang() {
+    var stored = null;
+    try { stored = localStorage.getItem(LANG_KEY); } catch (e) { stored = null; }
+    return stored === 'en' ? 'en' : 'fr';
+  }
+
+  function applyI18n(lang) {
+    for (var i = 0; i < TRANSLATIONS.length; i++) {
+      var entry = TRANSLATIONS[i];
+      var targets = document.querySelectorAll(entry.sel);
+      for (var t = 0; t < targets.length; t++) {
+        var spans = targets[t].querySelectorAll('span');
+        for (var s = 0; s < spans.length; s++) {
+          var text = (spans[s].textContent || '').trim();
+          if (lang === 'en' && text === entry.fr) spans[s].textContent = entry.en;
+          else if (lang === 'fr' && text === entry.en) spans[s].textContent = entry.fr;
+        }
+      }
+    }
+    document.documentElement.lang = lang;
+  }
+
+  function toggleLang() {
+    var next = currentLang() === 'fr' ? 'en' : 'fr';
+    try { localStorage.setItem(LANG_KEY, next); } catch (e) { /* stockage indisponible : choix non persisté */ }
+    applyI18n(next);
+    updateToggleLabel(next);
+  }
+
+  function updateToggleLabel(lang) {
+    var btn = document.getElementById('btnLangToggle');
+    if (btn) btn.textContent = lang === 'fr' ? 'EN' : 'FR';
+  }
+
+  window.VolacoI18n = { apply: applyI18n, toggle: toggleLang, current: currentLang };
+
+  function boot() {
+    var themeBtn = document.getElementById('btnThemeToggle');
+    if (themeBtn && !document.getElementById('btnLangToggle')) {
+      var btn = document.createElement('button');
+      btn.id = 'btnLangToggle';
+      btn.type = 'button';
+      btn.title = 'Français / English';
+      btn.setAttribute('class', 'p-1.5 text-[10px] font-bold text-slate-400 hover:text-amber-300 rounded hover:bg-slate-800 transition');
+      btn.addEventListener('click', toggleLang);
+      if (themeBtn.parentNode) themeBtn.parentNode.insertBefore(btn, themeBtn);
+    }
+    var lang = currentLang();
+    applyI18n(lang);
+    updateToggleLabel(lang);
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+  else boot();
+})();
+</script>
+</body></html>
