@@ -11,3 +11,17 @@ Thumbs.db
 # Données runtime du Studio (projets, révisions, mémoire conversationnelle)
 .volaco-data/
 workspace/
+
+# Artefacts de travail locaux (audits 2026-10) — jamais versionnés
+*.bak
+*.bak-*
+*.bak2
+_backup-*/
+_sauvegarde-*/
+restauration-*/
+.live-line-backup/
+.memory-backup/
+.reveal-backup/
+.tmp-lot*/
+missions-artifacts/
+*.tar.gz
