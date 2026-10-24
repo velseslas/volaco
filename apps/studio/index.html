@@ -12537,11 +12537,16 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
     let aiProviderCache = [];
 
     function providerHttpHeaders() {
-      return {
+      const headers = {
         "Content-Type": "application/json",
         "x-tenant-id": STUDIO_TENANT_ID,
         "x-user-role": "ENGINEER"
       };
+      // Production fail-closed : la grille des providers exige le JWT comme
+      // toute route /api (les en-têtes legacy ne sont plus une identité).
+      const token = getAuthToken();
+      if (token) headers["Authorization"] = "Bearer " + token;
+      return headers;
     }
 
     async function loadProviderCards() {
