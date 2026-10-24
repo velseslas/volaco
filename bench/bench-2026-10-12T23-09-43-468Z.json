@@ -1,0 +1,58 @@
+{
+  "base": "http://127.0.0.1:3000",
+  "when": "2026-10-12T23:09:43.473Z",
+  "results": [
+    {
+      "id": "ai-proxy",
+      "title": "POST /api/v1/ai/chat/completions — sémaphore IA (VOLACO_MAX_CONCURRENT_AI)",
+      "levels": [
+        {
+          "concurrency": 1,
+          "count": 8,
+          "rps": 3,
+          "p50": 293.9,
+          "p95": 635.4,
+          "p99": 635.4,
+          "max": 635.4,
+          "statuses": {
+            "200": 8
+          },
+          "sampleError": null
+        },
+        {
+          "concurrency": 4,
+          "count": 8,
+          "rps": 8.9,
+          "p50": 16.1,
+          "p95": 900.2,
+          "p99": 900.2,
+          "max": 900.2,
+          "statuses": {
+            "200": 3,
+            "503": 5
+          },
+          "sampleError": null
+        },
+        {
+          "concurrency": 8,
+          "count": 8,
+          "rps": 26.4,
+          "p50": 14.8,
+          "p95": 303.2,
+          "p99": 303.2,
+          "max": 303.2,
+          "statuses": {
+            "200": 3,
+            "503": 5
+          },
+          "sampleError": null
+        }
+      ],
+      "probe": null
+    }
+  ],
+  "skipped": [],
+  "findings": [
+    "ai-proxy : des 503 (sémaphore IA ou surcharge) apparaissent → plafond de concurrence atteint."
+  ]
+}

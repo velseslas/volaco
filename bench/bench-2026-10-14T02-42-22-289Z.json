@@ -1,0 +1,281 @@
+{
+  "base": "http://127.0.0.1:3000",
+  "when": "2026-10-14T02:42:22.295Z",
+  "results": [
+    {
+      "id": "health",
+      "title": "GET /health — coût le plus faible (aucune auth, aucun disque)",
+      "levels": [
+        {
+          "concurrency": 1,
+          "count": 110,
+          "rps": 79.1,
+          "p50": 15.4,
+          "p95": 16.9,
+          "p99": 17.2,
+          "max": 17.2,
+          "statuses": {
+            "200": 110
+          },
+          "sampleError": null
+        },
+        {
+          "concurrency": 10,
+          "count": 110,
+          "rps": 1094,
+          "p50": 8.5,
+          "p95": 15,
+          "p99": 16.5,
+          "max": 17.9,
+          "statuses": {
+            "200": 110
+          },
+          "sampleError": null
+        },
+        {
+          "concurrency": 50,
+          "count": 110,
+          "rps": 1068.8,
+          "p50": 43.9,
+          "p95": 55.2,
+          "p99": 56.8,
+          "max": 57.3,
+          "statuses": {
+            "200": 110
+          },
+          "sampleError": null
+        },
+        {
+          "concurrency": 100,
+          "count": 110,
+          "rps": 1435.8,
+          "p50": 63.3,
+          "p95": 67.7,
+          "p99": 67.9,
+          "max": 67.9,
+          "statuses": {
+            "200": 110
+          },
+          "sampleError": null
+        }
+      ],
+      "probe": null
+    },
+    {
+      "id": "projects-read",
+      "title": "GET /api/v1/projects — lecture JSON authentifiée",
+      "levels": [
+        {
+          "concurrency": 1,
+          "count": 110,
+          "rps": 69.2,
+          "p50": 15.8,
+          "p95": 16.5,
+          "p99": 16.7,
+          "max": 17.2,
+          "statuses": {
+            "200": 110
+          },
+          "sampleError": null
+        },
+        {
+          "concurrency": 10,
+          "count": 110,
+          "rps": 804.7,
+          "p50": 10.4,
+          "p95": 28.6,
+          "p99": 32.4,
+          "max": 33.2,
+          "statuses": {
+            "200": 110
+          },
+          "sampleError": null
+        },
+        {
+          "concurrency": 50,
+          "count": 110,
+          "rps": 830.4,
+          "p50": 55.6,
+          "p95": 75.7,
+          "p99": 77.2,
+          "max": 78,
+          "statuses": {
+            "200": 110
+          },
+          "sampleError": null
+        },
+        {
+          "concurrency": 100,
+          "count": 110,
+          "rps": 1034.6,
+          "p50": 82.7,
+          "p95": 92.9,
+          "p99": 96.3,
+          "max": 97.1,
+          "statuses": {
+            "200": 110
+          },
+          "sampleError": null
+        }
+      ],
+      "probe": {
+        "p50": 17.4,
+        "p95": 104.8,
+        "n": 18
+      }
+    },
+    {
+      "id": "bundle-static",
+      "title": "GET /preview-builder/engine.js — fichier statique (readFileSync)",
+      "levels": [
+        {
+          "concurrency": 10,
+          "count": 110,
+          "rps": 575.6,
+          "p50": 15.2,
+          "p95": 36.3,
+          "p99": 36.8,
+          "max": 37.6,
+          "statuses": {
+            "200": 110
+          },
+          "sampleError": null
+        },
+        {
+          "concurrency": 50,
+          "count": 110,
+          "rps": 475.3,
+          "p50": 99.6,
+          "p95": 110.5,
+          "p99": 110.8,
+          "max": 158.8,
+          "statuses": {
+            "200": 110
+          },
+          "sampleError": null
+        },
+        {
+          "concurrency": 100,
+          "count": 110,
+          "rps": 604.6,
+          "p50": 161.8,
+          "p95": 163.1,
+          "p99": 167.8,
+          "max": 167.9,
+          "statuses": {
+            "200": 110
+          },
+          "sampleError": null
+        }
+      ],
+      "probe": null
+    },
+    {
+      "id": "projects-write",
+      "title": "POST /api/v1/projects — écriture (persist + fsync synchrones)",
+      "levels": [
+        {
+          "concurrency": 1,
+          "count": 40,
+          "rps": 67.3,
+          "p50": 15.7,
+          "p95": 21.8,
+          "p99": 80.5,
+          "max": 80.5,
+          "statuses": {
+            "201": 40
+          },
+          "sampleError": null
+        },
+        {
+          "concurrency": 5,
+          "count": 40,
+          "rps": 333.4,
+          "p50": 12.2,
+          "p95": 31,
+          "p99": 33.4,
+          "max": 33.4,
+          "statuses": {
+            "201": 40
+          },
+          "sampleError": null
+        },
+        {
+          "concurrency": 20,
+          "count": 40,
+          "rps": 256.3,
+          "p50": 60.3,
+          "p95": 91.7,
+          "p99": 94.4,
+          "max": 94.4,
+          "statuses": {
+            "201": 40
+          },
+          "sampleError": null
+        }
+      ],
+      "probe": {
+        "p50": 18.4,
+        "p95": 100.3,
+        "n": 18
+      }
+    },
+    {
+      "id": "auth-login",
+      "title": "POST /api/v1/auth/login — scrypt SYNCHRONE sur un compte RÉEL (bloquant)",
+      "levels": [
+        {
+          "concurrency": 1,
+          "count": 40,
+          "rps": 11.5,
+          "p50": 88.3,
+          "p95": 104.2,
+          "p99": 108.8,
+          "max": 108.8,
+          "statuses": {
+            "200": 40
+          },
+          "sampleError": null
+        },
+        {
+          "concurrency": 5,
+          "count": 40,
+          "rps": 50.2,
+          "p50": 86.3,
+          "p95": 140.6,
+          "p99": 179.9,
+          "max": 179.9,
+          "statuses": {
+            "200": 40
+          },
+          "sampleError": null
+        },
+        {
+          "concurrency": 20,
+          "count": 40,
+          "rps": 59.1,
+          "p50": 305.8,
+          "p95": 340,
+          "p99": 344.2,
+          "max": 344.2,
+          "statuses": {
+            "200": 40
+          },
+          "sampleError": null
+        }
+      ],
+      "probe": {
+        "p50": 18.3,
+        "p95": 21.6,
+        "n": 19
+      }
+    }
+  ],
+  "skipped": [],
+  "findings": [
+    "projects-read : p95 ×5.6 au dernier palier → file d'attente côté serveur (traitement séquentiel).",
+    "projects-read : la sonde /health concurrente monte à p95 104.8 ms → la charge BLOQUE les autres clients (boucle d'événements monopolisée).",
+    "bundle-static : le débit ne progresse plus (×1.1 de conc 10 → 100) → SATURATION vers 605 req/s.",
+    "projects-write : la sonde /health concurrente monte à p95 100.3 ms → la charge BLOQUE les autres clients (boucle d'événements monopolisée)."
+  ]
+}

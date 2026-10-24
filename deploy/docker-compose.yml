@@ -1,0 +1,67 @@
+# =============================================================================
+# volaco-core — mise en service (API + accueil public)
+# =============================================================================
+# À lancer DEPUIS LA RACINE du dossier de release :
+#   docker compose -f deploy/docker-compose.yml up -d --build
+#
+# Tout est relatif au dossier `deploy/` (fichier .env, données, sauvegardes) :
+# le paquet est autonome, on peut le déplacer sans rien casser.
+# =============================================================================
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: volaco-api:latest
+    container_name: volaco-api
+    restart: unless-stopped
+
+    # Variables d'environnement : à créer dans deploy/.env (voir DEPLOIEMENT.md §6)
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      # Le serveur doit écouter sur toutes les interfaces DANS le conteneur,
+      # sinon il n'est joignable que depuis l'intérieur de celui-ci.
+      VOLACO_BIND_HOST: 0.0.0.0
+      PORT: "3000"
+      VOLACO_DATA_DIR: /app/.volaco-data
+
+    # PHASE DE MESURE (voir DEPLOIEMENT.md §9) : remplace la ligne ci-dessous par
+    #   - "3000:3000"
+    # pour que le banc de charge tape l'API directement (l'adresse IP réelle du
+    # client est alors visible, la limitation par IP se comporte comme en local).
+    ports:
+      - "127.0.0.1:3000:3000"
+
+    volumes:
+      # Données du Studio (projets, utilisateurs, audit, usage IA)
+      - ./data/volaco-data:/app/.volaco-data
+      # Workspaces de build des applications générées (dist des bundles React)
+      - ./data/workspace:/app/workspace
+
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+    # ---------------------------------------------------------------------
+    # PAS DE DEUXIÈME EXEMPLAIRE POUR L'INSTANT.
+    # La persistance actuelle est un fichier unique (SQLite / JSON) : deux
+    # processus qui écrivent dedans simultanément se marcheraient dessus.
+    # Le passage à plusieurs serveurs suppose d'abord la base de données
+    # (étape 1 du plan d'architecture).
+    # ---------------------------------------------------------------------
