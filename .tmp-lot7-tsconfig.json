@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./.tmp-lot7-build",
+    "declaration": false,
+    "sourceMap": false
+  }
+}
