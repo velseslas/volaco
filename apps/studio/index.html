@@ -3261,8 +3261,8 @@
           headers: studioApiHeaders(),
           body: JSON.stringify({ name: proj.name || 'Projet Studio' })
         });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.message || "Impossible de créer le projet côté serveur.");
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error?.message || data.message || "Impossible de créer le projet côté serveur.");
         proj.serverProjectId = data.project.id;
         proj.serverSessionId = null; // l'ancienne session appartenait à l'ancien projet
         saveUserProjects();
