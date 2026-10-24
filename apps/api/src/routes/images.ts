@@ -22,6 +22,7 @@ import { assertPermission } from '../../../../packages/core/src/identity/permiss
 import { NotFoundError, ValidationError } from '../../../../packages/core/src/errors.js';
 import { logger } from '../../../../packages/core/src/logger.js';
 import { fileStore } from '../../../../packages/core/src/file-explorer/index.js';
+import { projectStore } from '../../../../packages/core/src/identity/project.js';
 import {
   buildApp,
   ensureWorkspace,
@@ -63,6 +64,24 @@ function resolveProvider(requested?: string): ImageProvider {
   return p;
 }
 
+/**
+ * ISOLATION TENANT (audit 2026-10) — vérifie que le projet appartient bien au
+ * tenant de la requête AVANT toute opération. Sans cela, un tenant B pouvait
+ * générer/lister des images dans un espace « fantôme » tenantB:projetA (le
+ * FileStore crée la map à la demande) — aucune fuite de données de A vers B,
+ * mais violation du §37 (multi-tenancy). Même garde que files.ts.
+ */
+function assertProjectOwnership(
+  tenantId: string,
+  projectId: string,
+  requestId: string
+): void {
+  const project = projectStore.getProject(tenantId, projectId);
+  if (!project) {
+    throw new NotFoundError(`Projet ${projectId}`, requestId);
+  }
+}
+
 export async function handleImageRoutes(
   req: IncomingMessage,
   res: ServerResponse,
@@ -75,6 +94,7 @@ export async function handleImageRoutes(
   if (genMatch && req.method === 'POST') {
     const projectId = genMatch[1]!;
     assertPermission(context.role, 'PROJECT_UPDATE', requestId);
+    assertProjectOwnership(context.tenantId, projectId, requestId);
     const bodyText = await readBody(req);
     let body: { prompt?: string; name?: string; width?: number; height?: number; provider?: string };
     try {
@@ -138,6 +158,7 @@ export async function handleImageRoutes(
     const projectId = assetMatch[1]!;
     const fileName = assetMatch[2]!;
     assertPermission(context.role, 'PROJECT_READ', requestId);
+    assertProjectOwnership(context.tenantId, projectId, requestId);
     const stored = fileStore.getFile(context.tenantId, projectId, 'assets/' + fileName);
     if (!stored) {
       throw new NotFoundError('Image ' + fileName, requestId);
@@ -152,6 +173,7 @@ export async function handleImageRoutes(
   if (pathname.match(/^\/api\/v1\/projects\/([^/]+)\/images$/) && req.method === 'GET') {
     const projectId = pathname.split('/')[4]!;
     assertPermission(context.role, 'PROJECT_READ', requestId);
+    assertProjectOwnership(context.tenantId, projectId, requestId);
     const all = fileStore.getAllProjectFiles(context.tenantId, projectId);
     const assets = Object.keys(all)
       .filter((p) => p.startsWith('assets/') && /\.(jpg|jpeg|png|webp)$/.test(p))
