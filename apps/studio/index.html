@@ -17387,7 +17387,24 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
 
   function bootAuth() {
     var status = buildBar();
-    status.textContent = getToken() ? 'Connecté ✓' : 'Non connecté — inscris-toi ou connecte-toi';
+    var t = getToken();
+    if (!t) {
+      status.textContent = 'Non connecté — inscris-toi ou connecte-toi';
+      return;
+    }
+    // Session potentiellement expirée (serveur redémarré avec un nouveau
+    // secret) : validation réelle au chargement, purge si rejetée.
+    status.textContent = 'Vérification de la session…';
+    fetch('/api/v1/ai/providers', { headers: { 'Authorization': 'Bearer ' + t } })
+      .then(function (res) {
+        if (res.ok) {
+          status.textContent = 'Connecté ✓';
+        } else {
+          try { localStorage.removeItem(TOKEN_KEY); } catch (e) { }
+          status.textContent = 'Session expirée — saisis email/mot de passe puis Entrer';
+        }
+      })
+      .catch(function () { status.textContent = 'Connecté (serveur injoignable pour vérification)'; });
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bootAuth);
