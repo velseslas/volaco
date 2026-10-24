@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import type {
   ApplicationAuditFinding,
   AuditDimensionScores,
+  AuditDimensionStatusMap,
   AuditSeverity
 } from './types.js';
 
@@ -53,10 +54,16 @@ export function compareAuditFindings(
 export function computeApplicationAuditHash(data: {
   tenantId: string;
   projectId: string;
-  overallScore: number;
+  overallScore: number | null;
   findingsCount: number;
   dimensionScores: AuditDimensionScores;
+  dimensionStatus?: AuditDimensionStatusMap;
+  coverage?: number;
 }): string {
-  const raw = `${data.tenantId}:${data.projectId}:${data.overallScore}:${data.findingsCount}:${data.dimensionScores.architecture}:${data.dimensionScores.codeQuality}:${data.dimensionScores.security}:${data.dimensionScores.performance}:${data.dimensionScores.ux}:${data.dimensionScores.accessibility}:${data.dimensionScores.aiConfig}:${data.dimensionScores.designHarmony}`;
+  const status = data.dimensionStatus;
+  const raw = `${data.tenantId}:${data.projectId}:${data.overallScore ?? 'NA'}:${data.findingsCount}` +
+    `:${data.coverage ?? 1}` +
+    `:${data.dimensionScores.architecture ?? 'NA'}:${data.dimensionScores.codeQuality ?? 'NA'}:${data.dimensionScores.security ?? 'NA'}:${data.dimensionScores.performance ?? 'NA'}:${data.dimensionScores.ux ?? 'NA'}:${data.dimensionScores.accessibility ?? 'NA'}:${data.dimensionScores.aiConfig ?? 'NA'}:${data.dimensionScores.designHarmony ?? 'NA'}` +
+    `:${status?.ARCHITECTURE ?? 'MEASURED'}:${status?.CODE_QUALITY ?? 'MEASURED'}:${status?.SECURITY ?? 'MEASURED'}:${status?.PERFORMANCE ?? 'MEASURED'}:${status?.UX ?? 'MEASURED'}:${status?.ACCESSIBILITY ?? 'MEASURED'}:${status?.AI_CONFIG ?? 'MEASURED'}:${status?.DESIGN_HARMONY ?? 'MEASURED'}`;
   return 'aar:' + createHash('sha256').update(raw, 'utf8').digest('hex').substring(0, 16);
 }

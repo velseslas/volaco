@@ -36,6 +36,7 @@ import type { AgentExecutionOutcome, AgentExecutionPhaseEntry } from './agent-ex
 import type { AgentTask, TaskContextPayload } from '../types.js';
 import { agentTraceStore } from '../../../observability/agent-trace-store.js';
 import { buildBatchTrace } from './trace.js';
+import { loadProjectDesignContext, type ProjectDesignContext } from '../../design-harmony/design-context.js';
 
 // ---------------------------------------------------------------------------
 // Contrats
@@ -248,7 +249,7 @@ export class MultiAgentScheduler {
             executionId: state.taskExecutionId,
             agentId: state.spec.agentId,
             task: state.spec.task,
-            context: this.buildContext(state.spec.task),
+            context: this.buildContext(state.spec.task, request.tenantId, request.projectId),
             tenantId: request.tenantId,
             projectId: request.projectId,
             ...(request.userRole !== undefined ? { userRole: request.userRole } : {}),
@@ -459,14 +460,24 @@ export class MultiAgentScheduler {
     }
   }
 
-  /** Contexte minimal construit depuis requiredContext (aucune autre source). */
-  private buildContext(task: AgentTask): TaskContextPayload {
+  /**
+   * Contexte minimal construit depuis requiredContext — plus, quand
+   * `includeDna` est posé, le Design DNA RÉEL du projet (rapport Design
+   * Harmony persisté, même chargeur que le ContextOrchestrator AINT-010 :
+   * aucune fabrication, aucune autre source).
+   */
+  private buildContext(task: AgentTask, tenantId: string, projectId: string): TaskContextPayload {
+    let designContext: ProjectDesignContext | undefined;
+    if (task.requiredContext.includeDna === true) {
+      designContext = loadProjectDesignContext({ tenantId, projectId });
+    }
     return {
       relevantFiles: {},
       relevantSymbols: [...(task.requiredContext.targetSymbols ?? [])],
       decisions: [],
       constraints: [],
-      recentHistory: []
+      recentHistory: [],
+      ...(designContext ? { designContext } : {})
     };
   }
 }

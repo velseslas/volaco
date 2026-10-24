@@ -31,6 +31,7 @@ import type {
 import { ConstraintRegistry } from './constraint-registry.js';
 import { DecisionLedger } from './decision-ledger.js';
 import { AlternativeGenerator } from './alternative-generator.js';
+import { matchMemorySignals, type MemorySignals } from './memory-signals.js';
 
 export interface DecisionEngineDeps {
   readonly constraintRegistry: ConstraintRegistry;
@@ -41,13 +42,25 @@ export interface DecisionEngineDeps {
 export class DecisionEngine {
   constructor(private readonly deps: DecisionEngineDeps) {}
 
-  public async decide(context: DecisionContext): Promise<Decision> {
+  public async decide(
+    context: DecisionContext,
+    options: { readonly record?: boolean } = {}
+  ): Promise<Decision> {
     const trace: string[] = [];
     trace.push(`DecisionEngine.start goal="${context.intent.goal}" category=${context.intent.category}`);
 
     // 1. Charger les contraintes du projet
     const constraints = this.deps.constraintRegistry.loadConstraints(context.projectId);
     trace.push(`constraints loaded=${constraints.length}`);
+
+    // V7 — les contraintes/risques mémorisés sont reliés à l'intent courant.
+    // Matching lexical explicite (heuristique), jamais une décision inventée.
+    const memorySignals = matchMemorySignals(context.intent, context.memory);
+    trace.push(
+      `memory signals risks=${memorySignals.matchedRisks.length} ` +
+      `constraints=${memorySignals.matchedConstraints.length} ` +
+      `decisions=${memorySignals.activeDecisions}`
+    );
 
     // 2. Générer les alternatives
     const alternatives = await this.deps.alternativeGenerator.generate({
@@ -80,7 +93,8 @@ export class DecisionEngine {
       blocked,
       contradicting,
       chosen,
-      intent: context.intent
+      intent: context.intent,
+      memorySignals
     });
     trace.push(`verdict=${verdict}`);
 
@@ -91,6 +105,7 @@ export class DecisionEngine {
       constraints,
       contradicting,
       intent: context.intent,
+      memorySignals,
       intelligenceRecommendations: context.intelligenceRecommendations
     });
     const requiredClarifications = this.deriveClarifications({
@@ -112,6 +127,7 @@ export class DecisionEngine {
       chosenAlternative: chosen,
       alternatives: viable.length > 0 ? viable : alternatives,
       constraints,
+      memorySignals,
       contradictingDecisions: contradicting.map((d) => d.decisionId),
       rationale,
       requiredClarifications,
@@ -120,9 +136,16 @@ export class DecisionEngine {
       status: 'PROPOSED'
     };
 
-    // 9. Persister la décision
-    this.deps.decisionLedger.recordDecision(decision);
-    trace.push(`decision recorded id=${decision.decisionId}`);
+    // 9. Persister la décision — sauf en mode CONSULTATIF (`record: false`).
+    // Utilisé par le flux de génération : la décision éclaire l'action sans
+    // polluer le Decision Ledger (qui reste l'autorité de la route /decide et
+    // des décisions humainement confirmées).
+    if (options.record === false) {
+      trace.push(`decision advisory (not recorded) id=${decision.decisionId}`);
+    } else {
+      this.deps.decisionLedger.recordDecision(decision);
+      trace.push(`decision recorded id=${decision.decisionId}`);
+    }
 
     logger.info('DecisionEngine.decide', {
       component: 'decision-engine',
@@ -184,8 +207,9 @@ export class DecisionEngine {
     contradicting: readonly Decision[];
     chosen: DecisionAlternative | undefined;
     intent: IntentResult;
+    memorySignals: MemorySignals;
   }): DecisionVerdict {
-    const { viable, blocked, contradicting, chosen, intent } = params;
+    const { viable, blocked, contradicting, chosen, intent, memorySignals } = params;
 
     // Si toutes les alternatives violent une HARD constraint → BLOCKED
     if (viable.length === 0 && blocked.length > 0) {
@@ -220,6 +244,22 @@ export class DecisionEngine {
       return 'NEEDS_CONFIRMATION';
     }
 
+    // V7 — une contrainte ou un risque mémorisé qui touche une action mutante
+    // exige une confirmation humaine. La décision reste consultative : elle
+    // n'écrit rien et ne bloque pas la génération dans ce lot.
+    const memorySensitiveCategory =
+      intent.category === 'CREATE' ||
+      intent.category === 'MODIFY' ||
+      intent.category === 'REFACTOR' ||
+      intent.category === 'DEBUG' ||
+      intent.category === 'OPTIMIZE';
+    if (
+      memorySensitiveCategory &&
+      (memorySignals.matchedRisks.length > 0 || memorySignals.matchedConstraints.length > 0)
+    ) {
+      return 'NEEDS_CONFIRMATION';
+    }
+
     // Risk score > 50 → NEEDS_CONFIRMATION
     if (chosen && chosen.riskScore > 50) {
       return 'NEEDS_CONFIRMATION';
@@ -235,9 +275,10 @@ export class DecisionEngine {
     constraints: readonly DecisionConstraint[];
     contradicting: readonly Decision[];
     intent: IntentResult;
+    memorySignals: MemorySignals;
     intelligenceRecommendations?: readonly IntelligenceRecommendation[] | undefined;
   }): string {
-    const { verdict, chosen, constraints, contradicting, intent } = params;
+    const { verdict, chosen, constraints, contradicting, intent, memorySignals } = params;
 
     const parts: string[] = [];
 
@@ -265,6 +306,19 @@ export class DecisionEngine {
       parts.push(
         `Alternative choisie : "${chosen?.label}" avec riskScore=${chosen?.riskScore}. ` +
           `Aucune contrainte HARD violée, aucune contradiction. Prêt à exécuter.`
+      );
+    }
+
+    if (memorySignals.matchedRisks.length > 0) {
+      parts.push(
+        `Mémoire projet : ${memorySignals.matchedRisks.length} risque(s) connu(s) lié(s) à cette demande — ` +
+        memorySignals.matchedRisks.join('; ')
+      );
+    }
+    if (memorySignals.matchedConstraints.length > 0) {
+      parts.push(
+        `Mémoire projet : ${memorySignals.matchedConstraints.length} contrainte(s) connue(s) liée(s) — ` +
+        memorySignals.matchedConstraints.join('; ')
       );
     }
 

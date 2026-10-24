@@ -9,6 +9,13 @@ import { NotFoundError, ValidationError } from '../../../../packages/core/src/er
 import type { RequestContext } from '../middleware/auth.js';
 
 import { readBody } from '../middleware/body.js';
+import { imageGateInspect, imageGateInputsFromFilesMap } from '../middleware/image-gate.js';
+import {
+  formatImageViolations,
+  inspectAppImageSources,
+  type AppImageInspection
+} from '../../../../packages/core/src/image/app-policy.js';
+import { adoptedImageIds } from '../../../../packages/core/src/image/image-adoptions.js';
 export async function handleRevisionsRoutes(
   req: IncomingMessage,
   res: ServerResponse,
@@ -57,6 +64,29 @@ export async function handleRevisionsRoutes(
       throw new ValidationError('Champs "message" et "files" obligatoires', undefined, requestId);
     }
 
+    // PATCH-R3-B3 — la carte `payload.files` EST l'objet transmis ci-dessous à
+    // createRevision : les valeurs string qu'elle contient sont EXACTEMENT ce
+    // que createFileArtifact persistera. Inspection AVANT toute persistance :
+    // en cas de violation ou d'erreur d'inspection, aucun artefact partiel.
+    const gate = imageGateInspect(imageGateInputsFromFilesMap(payload.files));
+    if (gate.kind !== 'clean') {
+      logger.warn('Création de révision refusée par la porte d images', {
+        component: 'revisions-route',
+        projectId,
+        refused: gate.kind,
+        imageIssues: gate.imageIssues,
+        requestId
+      });
+      res.statusCode = 200;
+      res.end(JSON.stringify({
+        success: false,
+        refused: gate.kind === 'violations' ? 'images' : 'inspection-error',
+        imageIssues: gate.imageIssues,
+        requestId
+      }));
+      return true;
+    }
+
     const revision = revisionStore.createRevision(context.tenantId, projectId, {
       message: payload.message,
       author: payload.author || 'engineer',
@@ -75,6 +105,65 @@ export async function handleRevisionsRoutes(
     const targetRevId = parts[2];
     if (!targetRevId) return false;
     assertPermission(context.role, 'PROJECT_UPDATE', requestId);
+
+    // PATCH-2 — sécurité de publication par rollback. La révision cible est
+    // LUE (pure lecture, aucune écriture) et son contenu EXACT est inspecté
+    // AVANT toute autre opération : ni le FileStore, ni le workspace, ni
+    // l'historique (aucune révision dérivée), ni le bundle ne peuvent être
+    // pollués par un contenu refusé. À l'inverse du flux antérieur, le gate
+    // d'images ne peut PLUS être contourné par le chemin du rollback.
+    const target = revisionStore.getRevision(context.tenantId, projectId, targetRevId);
+    if (!target) {
+      throw new NotFoundError(`Révision cible pour rollback introuvable : ${targetRevId}`, requestId);
+    }
+
+    const targetInputs: Array<{ path: string; content: string }> = [];
+    for (const [path, artifact] of Object.entries(target.files)) {
+      const content = typeof artifact === 'string'
+        ? artifact
+        : (artifact as { content?: string }).content;
+      if (typeof content === 'string' && content.length > 0) {
+        targetInputs.push({
+          path: path.startsWith('app/') ? path.slice(4) : path,
+          content
+        });
+      }
+    }
+
+    // FAIL-CLOSED : toute erreur d'inspection (contenu inaccessible,
+    // exception du vérificateur) refuse le rollback — jamais de contournement.
+    let inspection: AppImageInspection;
+    try {
+      inspection = inspectAppImageSources(targetInputs, { adoptedIds: adoptedImageIds() });
+    } catch (err) {
+      logger.warn('Rollback refusé : inspection des images en échec', {
+        component: 'revisions-route', projectId, revisionId: targetRevId,
+        error: err instanceof Error ? err.message : String(err), requestId
+      });
+      res.statusCode = 200;
+      res.end(JSON.stringify({
+        success: false,
+        refused: 'inspection-error',
+        imageIssues: ['inspection des références d images en échec : rollback refusé par précaution'],
+        requestId
+      }));
+      return true;
+    }
+
+    if (inspection.violations.length > 0) {
+      const imageIssues = formatImageViolations(inspection);
+      logger.warn('Rollback refusé : URLs d images interdites dans la révision cible', {
+        component: 'revisions-route', projectId, revisionId: targetRevId,
+        violations: imageIssues, requestId
+      });
+      res.statusCode = 200;
+      res.end(JSON.stringify({ success: false, refused: 'images', imageIssues, requestId }));
+      return true;
+    }
+    // Références undetermined : la politique du pipeline EXISTANT s'applique
+    // (génération/édition : non bloquantes à la réinspection). Le rollback
+    // reste cohérent avec ce que ce même pipeline a déjà accepté — jamais
+    // déclaré CONFORME, simplement traité comme le pipeline le fait déjà.
 
     const rollbackRevision = revisionStore.rollbackTo(
       context.tenantId,
@@ -104,10 +193,22 @@ export async function handleRevisionsRoutes(
         }
       }
     }
+
+    // PATCH-2 — wording honnête : un rebuild en échec n'est PAS un succès.
+    // Le bundle publié (échange atomique de buildApp) reste la dernière
+    // version VALIDE ; les fichiers restaurés restent ceux de la cible.
+    let buildFailed = false;
+    let buildErrors: string[] = [];
     if (appFilesRestored) {
       try {
-        await buildApp(projectId);
+        const build = await buildApp(projectId);
+        if (!build.ok) {
+          buildFailed = true;
+          buildErrors = build.errors.slice(0, 4);
+        }
       } catch (err) {
+        buildFailed = true;
+        buildErrors.push((err instanceof Error ? err.message : String(err)).slice(0, 1000));
         logger.warn('Rebuild post-rollback en échec', {
           component: 'revisions-route', projectId,
           error: err instanceof Error ? err.message : String(err)
@@ -116,7 +217,13 @@ export async function handleRevisionsRoutes(
     }
 
     res.statusCode = 200;
-    res.end(JSON.stringify({ success: true, rollbackRevision, restoredFiles, requestId }));
+    res.end(JSON.stringify({
+      success: !buildFailed,
+      ...(buildFailed ? { buildFailed, buildErrors } : {}),
+      rollbackRevision,
+      restoredFiles,
+      requestId
+    }));
     return true;
   }
 

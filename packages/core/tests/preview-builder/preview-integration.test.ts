@@ -44,7 +44,10 @@ describe('ÉTAPE 27 : Builder v2 = Preview principal, Legacy = fallback', () => 
 
   it('3. PONT Chat Studio → Builder : postMessage conditionné au mode builder', () => {
     const src = studio();
-    const flowStart = src.indexOf('async function runConversationEngineFlow(text, isModification, loadEl, cleanTitle, planState) {');
+    // Évolué : la fonction a été renommée runConversationEngineFlowInner
+    // (wrapper autour du flux) — le pont et sa garde sont inchangés.
+    const flowStart = src.indexOf('async function runConversationEngineFlowInner(text, isModification, loadEl, cleanTitle, planState) {');
+    assert.ok(flowStart > 0, 'fonction du flux conversationnel présente');
     const flowBlock = src.slice(flowStart, flowStart + 1600);
     assert.ok(flowBlock.includes("window.__previewMode === 'builder'"), 'conditionné au mode builder');
     assert.ok(flowBlock.includes('start-builder-generation'), 'commande de génération transmise');

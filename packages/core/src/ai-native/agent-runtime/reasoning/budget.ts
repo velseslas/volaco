@@ -4,6 +4,8 @@
  */
 
 import { BudgetExceededError, type ReasoningBudget, type ReasoningBudgetUsage } from '../types.js';
+import { estimateTokenCount } from '../llm/request.js';
+import { logger } from '../../../logger.js';
 
 export const DEFAULT_REASONING_BUDGET: ReasoningBudget = {
   maxIterations: 10,
@@ -24,9 +26,38 @@ export class BudgetTracker {
   private readonly startTime: number;
 
   constructor(budget?: Partial<ReasoningBudget> | undefined) {
+    // P0-PROD — plafond serveur : une option client ne peut qu'abaisser les
+    // budgets, jamais les élargir (Math.min champ par champ, champs du
+    // défaut uniquement — les clés optionnelles inconnues sont ignorées).
+    const requested = budget ?? {};
+    const clamped: Partial<ReasoningBudget> = {};
+    const defaultKeys = new Set(Object.keys(DEFAULT_REASONING_BUDGET));
+    for (const key of Object.keys(DEFAULT_REASONING_BUDGET) as Array<keyof ReasoningBudget>) {
+      const ceiling = DEFAULT_REASONING_BUDGET[key];
+      const wanted: unknown = requested[key];
+      if (typeof ceiling === 'number' && typeof wanted === 'number' && Number.isFinite(wanted)) {
+        if (wanted > ceiling) {
+          logger.warn('Budget client supérieur au plafond serveur — clampé', {
+            component: 'budget-tracker',
+            key,
+            wanted,
+            ceiling
+          });
+        }
+        (clamped as Record<string, number>)[key] = Math.min(wanted, ceiling);
+      }
+    }
+    // Les clés hors défaut (ex. maxTasks optionnels, non appliqués par le
+    // tracker) sont recopiées telles quelles : aucun changement de
+    // comportement pour les champs non plafonnés.
+    for (const key of Object.keys(requested) as Array<keyof ReasoningBudget>) {
+      if (!defaultKeys.has(key)) {
+        (clamped as Record<string, unknown>)[key] = requested[key];
+      }
+    }
     this.budget = {
       ...DEFAULT_REASONING_BUDGET,
-      ...budget
+      ...clamped
     };
     this.startTime = Date.now();
   }
@@ -45,6 +76,21 @@ export class BudgetTracker {
     this.inputTokens += input;
     this.outputTokens += output;
     this.checkLimits();
+  }
+
+  /**
+   * P0-PROD — comptabilise les E/S d'un appel d'outil dans le budget tokens /
+   * coût via l'estimateur du projet (~4 caractères/token). Avant ce correctif,
+   * recordTokens() n'avait aucun appelant : les bras maxTokens/maxCost du
+   * budget ne pouvaient jamais se déclencher. L'estimation est bornée en
+   * entrée pour ne jamais coûter plus que l'outil lui-même.
+   */
+  public recordToolIo(inputText: string, outputText: string): void {
+    const MAX_ESTIMATE_CHARS = 250_000;
+    this.recordTokens(
+      estimateTokenCount(inputText.slice(0, MAX_ESTIMATE_CHARS)),
+      estimateTokenCount(outputText.slice(0, MAX_ESTIMATE_CHARS))
+    );
   }
 
   public recordRepairAttempt(): void {

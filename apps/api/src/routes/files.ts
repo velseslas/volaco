@@ -9,6 +9,7 @@ import { logger } from '../../../../packages/core/src/logger.js';
 import type { RequestContext } from '../middleware/auth.js';
 
 import { readBody } from '../middleware/body.js';
+import { imageGateInspect } from '../middleware/image-gate.js';
 export const fileExplorerService = new FileExplorerService(projectStore, fileStore, auditStore, revisionStore);
 export const editorService = new EditorService(projectStore, fileStore, undefined, auditStore);
 
@@ -76,6 +77,34 @@ export async function handleFilesRoutes(
       throw new ValidationError('Le champ "content" est obligatoire et doit être une chaîne', undefined, requestId);
     }
 
+    // PATCH-R3-B1 — la porte d'images inspecte le contenu EXACT qui va être
+    // persisté (EditorService.saveFile écrit payload.content verbatim dans le
+    // FileStore, le disque et le workspace matérialisé ; c'est aussi ce que
+    // reliront révisions / rollback / publish). Toute violation ou erreur
+    // d'inspection refuse : AUCUNE écriture, AUCUN audit de réussite.
+    const gate = imageGateInspect([
+      { path: payload.path, content: payload.content }
+    ]);
+    if (gate.kind !== 'clean') {
+      logger.warn('Écriture refusée par la porte d images', {
+        component: 'files-route',
+        projectId,
+        path: payload.path,
+        refused: gate.kind,
+        imageIssues: gate.imageIssues,
+        requestId
+      });
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({
+        success: false,
+        refused: gate.kind === 'violations' ? 'images' : 'inspection-error',
+        imageIssues: gate.imageIssues,
+        requestId
+      }));
+      return true;
+    }
+
     const saved = editorService.saveFile(
       context.tenantId,
       projectId,
@@ -133,14 +162,46 @@ export async function handleFilesRoutes(
       res.end(JSON.stringify({ applied: false, reason: 'section-not-found', requestId }));
       return true;
     }
+    // PATCH-R3-B2 — remplacement par FONCTION : les séquences spéciales de
+    // remplacement ($&, $`, $', $1…) contenues dans l'HTML injecté restent
+    // LITTÉRALES (un remplacement par chaîne les interpréterait et corromprait
+    // l'HTML). Sémantique inchangée : première occurrence uniquement
+    // (regex non-globale).
     const updatedHtml = existing.content.replace(
       blockRegex,
-      `<div class="vibe-stitched" data-section="${sectionName}">${payload.html}</div>`
+      () => `<div class="vibe-stitched" data-section="${sectionName}">${payload.html}</div>`
     );
     if (updatedHtml === existing.content) {
       res.statusCode = 200;
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({ applied: false, reason: 'unchanged', requestId }));
+      return true;
+    }
+
+    // PATCH-R3-B2 — le HTML FINAL calculé est inspecté avant TOUTE écriture :
+    // ni FileStore (saveFile), ni workspace, ni révision. Le court-circuit
+    // « unchanged » au-dessus reste exempt d'inspection : aucun octet ne serait
+    // modifié, il n'y a donc rien à refuser pour la publication.
+    const gate = imageGateInspect([
+      { path: 'index.html', content: updatedHtml }
+    ]);
+    if (gate.kind !== 'clean') {
+      logger.warn('Édition de section refusée par la porte d images', {
+        component: 'files-route',
+        projectId,
+        section: sectionName,
+        refused: gate.kind,
+        imageIssues: gate.imageIssues,
+        requestId
+      });
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({
+        success: false,
+        refused: gate.kind === 'violations' ? 'images' : 'inspection-error',
+        imageIssues: gate.imageIssues,
+        requestId
+      }));
       return true;
     }
 

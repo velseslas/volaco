@@ -7,28 +7,37 @@ import type { ApplicationAuditFinding, ApplicationAuditReport } from '../types.j
 
 export class ApplicationAuditConversationBridge {
   public explainAuditReport(report: ApplicationAuditReport): string {
-    const { overallScore, dimensionScores, summary, findings } = report;
+    const { overallScore, dimensionScores, dimensionStatus, coverage, summary, findings } = report;
+
+    const scoreLabel = (value: number | null): string => value === null ? 'NON MESURÉ' : `${value}/100`;
+    const statusLabel = (status: string): string =>
+      status === 'MEASURED' ? '' : (status === 'PARTIAL' ? ' *(partiel)*' : ' *(NON MESURÉ)*');
 
     let verdict = 'Excellent niveau de santé applicative !';
-    if (overallScore < 60) {
+    if (overallScore === null) {
+      verdict = 'Audit incomplet : preuves insuffisantes pour prononcer un verdict global.';
+    } else if (coverage < 1) {
+      verdict = 'Verdict partiel : seules les dimensions réellement mesurées sont notées.';
+    } else if (overallScore < 60) {
       verdict = 'Attention : plusieurs anomalies critiques nécessitent une correction prioritaire.';
     } else if (overallScore < 80) {
       verdict = 'Bon niveau d\'ensemble, mais des points de vigilance doivent être résolus.';
     }
 
     const lines: string[] = [
-      `### 📋 Diagnostic Global de l'Application : ${overallScore}/100`,
+      `### 📋 Diagnostic Global de l'Application : ${overallScore === null ? 'NON MESURÉ' : `${overallScore}/100`}`,
       `**Verdict** : ${verdict}`,
+      `**Couverture réelle** : ${Math.round(coverage * 100)}% des dimensions pondérées`,
       '',
       '#### 📊 Décomposition des 8 Dimensions de Qualité :',
-      `- **Sécurité** : ${dimensionScores.security}/100 (pondération 20%)`,
-      `- **Architecture** : ${dimensionScores.architecture}/100 (pondération 15%)`,
-      `- **Qualité du Code** : ${dimensionScores.codeQuality}/100 (pondération 15%)`,
-      `- **Design Harmony** : ${dimensionScores.designHarmony}/100 (pondération 15%)`,
-      `- **Performance** : ${dimensionScores.performance}/100 (pondération 10%)`,
-      `- **Ergonomie & UX** : ${dimensionScores.ux}/100 (pondération 10%)`,
-      `- **Accessibilité WCAG** : ${dimensionScores.accessibility}/100 (pondération 10%)`,
-      `- **Configuration IA** : ${dimensionScores.aiConfig}/100 (pondération 5%)`,
+      `- **Sécurité** : ${scoreLabel(dimensionScores.security)}${statusLabel(dimensionStatus.SECURITY)} (pondération 20%)`,
+      `- **Architecture** : ${scoreLabel(dimensionScores.architecture)}${statusLabel(dimensionStatus.ARCHITECTURE)} (pondération 15%)`,
+      `- **Qualité du Code** : ${scoreLabel(dimensionScores.codeQuality)}${statusLabel(dimensionStatus.CODE_QUALITY)} (pondération 15%)`,
+      `- **Design Harmony** : ${scoreLabel(dimensionScores.designHarmony)}${statusLabel(dimensionStatus.DESIGN_HARMONY)} (pondération 15%)`,
+      `- **Performance** : ${scoreLabel(dimensionScores.performance)}${statusLabel(dimensionStatus.PERFORMANCE)} (pondération 10%)`,
+      `- **Ergonomie & UX** : ${scoreLabel(dimensionScores.ux)}${statusLabel(dimensionStatus.UX)} (pondération 10%)`,
+      `- **Accessibilité WCAG** : ${scoreLabel(dimensionScores.accessibility)}${statusLabel(dimensionStatus.ACCESSIBILITY)} (pondération 10%)`,
+      `- **Configuration IA** : ${scoreLabel(dimensionScores.aiConfig)}${statusLabel(dimensionStatus.AI_CONFIG)} (pondération 5%)`,
       '',
       `#### 🔍 Synthèse des Anomalies (${summary.totalFindings} findings) :`,
       `- 🔴 **Critiques** : ${summary.criticalCount}`,

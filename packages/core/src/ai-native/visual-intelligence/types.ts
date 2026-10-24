@@ -3,7 +3,7 @@
  * Visual Intelligence Engine - Data Contracts
  */
 
-export type ViewportKind = 'MOBILE' | 'TABLET' | 'DESKTOP';
+export type ViewportKind = 'MOBILE' | 'TABLET' | 'LAPTOP' | 'DESKTOP' | 'DESKTOP_HD' | 'WIDE';
 
 export interface ViewportDimension {
   readonly kind: ViewportKind;
@@ -15,7 +15,10 @@ export interface ViewportDimension {
 export const STANDARD_VIEWPORTS: Record<ViewportKind, ViewportDimension> = {
   MOBILE: { kind: 'MOBILE', width: 375, height: 667, scale: 1 },
   TABLET: { kind: 'TABLET', width: 768, height: 1024, scale: 1 },
-  DESKTOP: { kind: 'DESKTOP', width: 1280, height: 800, scale: 1 }
+  LAPTOP: { kind: 'LAPTOP', width: 1024, height: 768, scale: 1 },
+  DESKTOP: { kind: 'DESKTOP', width: 1280, height: 800, scale: 1 },
+  DESKTOP_HD: { kind: 'DESKTOP_HD', width: 1440, height: 900, scale: 1 },
+  WIDE: { kind: 'WIDE', width: 1920, height: 1080, scale: 1 }
 };
 
 export interface LayoutBox {
@@ -47,6 +50,23 @@ export interface ComputedStyleSnapshot {
   readonly gap: string;
   readonly opacity: number;
   readonly zIndex: number;
+  /**
+   * CDC V8 §7.2 / §7.6 / §7.7 — champs ADDITIFS capturés par le rendu réel
+   * (computed styles Chromium) ou le parseur CSS de repli. Optionnels pour
+   * préserver les snapshots historiques : un champ absent = preuve absente,
+   * jamais une valeur inventée.
+   */
+  readonly letterSpacing?: string | undefined;
+  readonly transitionProperty?: string | undefined;
+  readonly transitionDuration?: string | undefined;
+  readonly transitionTimingFunction?: string | undefined;
+  readonly animationName?: string | undefined;
+  readonly animationDuration?: string | undefined;
+  readonly animationTimingFunction?: string | undefined;
+  readonly maxWidth?: string | undefined;
+  readonly gridTemplateColumns?: string | undefined;
+  readonly columnGap?: string | undefined;
+  readonly rowGap?: string | undefined;
 }
 
 export type SemanticRole =
@@ -103,6 +123,12 @@ export interface VisualSnapshot {
   readonly capturedAt: string;
   readonly durationMs: number;
   readonly screenshotBase64?: string | undefined;
+  /**
+   * Provenance des boîtes de layout : RUNTIME quand le rendu Chromium a fourni
+   * de vraies getBoundingClientRect, ESTIMATED quand le parseur statique les a
+   * dérivées. Le Design Critic baisse sa confiance sur les mesures estimées.
+   */
+  readonly layoutSource?: 'RUNTIME' | 'ESTIMATED' | undefined;
 }
 
 export interface VisualIntelligenceConfig {

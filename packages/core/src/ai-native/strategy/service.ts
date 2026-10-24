@@ -146,8 +146,13 @@ export class StrategyOptimizerService {
     overallScore -= criticalBugs * 15;
     overallScore -= regressions * 15;
     overallScore -= securityRisks * 10;
-    if (context.auditReport?.overallScore) {
-      overallScore = Math.round(0.6 * overallScore + 0.4 * context.auditReport.overallScore);
+    if (typeof context.auditReport?.overallScore === 'number') {
+      // Un audit partiel ne doit pas peser autant qu'un audit complet.
+      const auditCoverage = typeof context.auditReport.coverage === 'number'
+        ? Math.max(0, Math.min(1, context.auditReport.coverage))
+        : 1;
+      const auditWeight = 0.4 * auditCoverage;
+      overallScore = Math.round((1 - auditWeight) * overallScore + auditWeight * context.auditReport.overallScore);
     }
     overallScore = Math.min(100, Math.max(0, overallScore));
 

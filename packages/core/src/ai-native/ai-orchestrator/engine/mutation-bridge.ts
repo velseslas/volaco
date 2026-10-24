@@ -5,7 +5,11 @@
 
 import type { Role } from '../../../identity/permissions.js';
 import type { MutationOrchestratorService } from '../../mutation-orchestrator/service.js';
-import type { SingleMutation } from '../../mutation-orchestrator/types.js';
+import type {
+  MutationTransaction,
+  SingleMutation,
+  StructuredDiff
+} from '../../mutation-orchestrator/types.js';
 import type { AgentArtifact, ProposedFileChangePayload } from '../types.js';
 
 export interface MutationBridgeResult {
@@ -13,6 +17,10 @@ export interface MutationBridgeResult {
   readonly transactionId?: string | undefined;
   readonly appliedCount: number;
   readonly error?: string | undefined;
+  /** V7-LOT6 — résultat transactionnel réel restitué au sandbox/apply. */
+  readonly dryRun?: boolean | undefined;
+  readonly diffs?: readonly StructuredDiff[] | undefined;
+  readonly transaction?: MutationTransaction | undefined;
 }
 
 export class MutationBridge {
@@ -27,14 +35,29 @@ export class MutationBridge {
     userRole?: Role | undefined;
     requestId?: string | undefined;
     dryRun?: boolean | undefined;
+    /** Accord humain explicite pour un risque HIGH/CRITICAL ou une suppression. */
+    allowHighRisk?: boolean | undefined;
+    /** Accord humain explicite pour un changement de rupture (BREAKING). */
+    allowBreaking?: boolean | undefined;
   }): Promise<MutationBridgeResult> {
-    const { artifacts, tenantId, projectId, userRole = 'ENGINEER', requestId, dryRun = false } = params;
+    const {
+      artifacts,
+      tenantId,
+      projectId,
+      userRole = 'ENGINEER',
+      requestId,
+      dryRun = false,
+      allowHighRisk = true,
+      allowBreaking = false
+    } = params;
 
     const fileChanges = artifacts.filter((a) => a.kind === 'PROPOSED_FILE_CHANGE');
     if (fileChanges.length === 0) {
       return {
         success: true,
-        appliedCount: 0
+        appliedCount: 0,
+        dryRun,
+        diffs: []
       };
     }
 
@@ -105,16 +128,22 @@ export class MutationBridge {
         plan,
         {
           dryRun,
-          allowHighRisk: true
+          allowHighRisk,
+          allowBreaking
         },
         userRole,
         requestId
       );
 
       return {
-        success: executionResult.transaction.status === 'COMMITTED',
+        // Compatibilité des mocks historiques : seul un `success: false`
+        // explicite ou un statut non COMMITTED constitue un échec.
+        success: executionResult.success !== false && executionResult.transaction.status === 'COMMITTED',
         transactionId: executionResult.transaction.transactionId,
-        appliedCount: executionResult.transaction.appliedMutations.length
+        appliedCount: executionResult.transaction.appliedMutations.length,
+        dryRun,
+        diffs: executionResult.diffs,
+        transaction: executionResult.transaction
       };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);

@@ -62,15 +62,30 @@ export interface ApplicationAuditFinding {
   readonly evidence: readonly AuditFindingEvidence[];
 }
 
+/**
+ * Un score null signifie explicitement « non mesuré ».
+ * Il ne doit jamais être remplacé par 100 dans l'affichage ou le calcul global.
+ */
+export type AuditDimensionScore = number | null;
+
+/**
+ * MEASURED : preuve complète pour la dimension.
+ * PARTIAL  : preuve partielle (ex. fichiers sans snapshots pour UX/perf).
+ * UNKNOWN  : aucune preuve exploitable.
+ */
+export type AuditDimensionStatus = 'MEASURED' | 'PARTIAL' | 'UNKNOWN';
+
+export type AuditDimensionStatusMap = Readonly<Record<AuditDimension, AuditDimensionStatus>>;
+
 export interface AuditDimensionScores {
-  readonly architecture: number;      // 15%
-  readonly codeQuality: number;       // 15%
-  readonly security: number;          // 20%
-  readonly performance: number;       // 10%
-  readonly ux: number;                // 10%
-  readonly accessibility: number;     // 10%
-  readonly aiConfig: number;          // 5%
-  readonly designHarmony: number;     // 15%
+  readonly architecture: AuditDimensionScore;      // 15%
+  readonly codeQuality: AuditDimensionScore;       // 15%
+  readonly security: AuditDimensionScore;          // 20%
+  readonly performance: AuditDimensionScore;       // 10%
+  readonly ux: AuditDimensionScore;                // 10%
+  readonly accessibility: AuditDimensionScore;     // 10%
+  readonly aiConfig: AuditDimensionScore;          // 5%
+  readonly designHarmony: AuditDimensionScore;     // 15%
 }
 
 export interface AuditSummary {
@@ -87,8 +102,11 @@ export interface ApplicationAuditReport {
   readonly reportId: string;
   readonly tenantId: string;
   readonly projectId: string;
-  readonly overallScore: number;      // 0 - 100
+  readonly overallScore: number | null; // 0 - 100, null si aucune dimension mesurée
   readonly dimensionScores: AuditDimensionScores;
+  readonly dimensionStatus: AuditDimensionStatusMap;
+  /** Couverture pondérée réelle : 1 = toutes les dimensions mesurées. */
+  readonly coverage: number;
   readonly findings: readonly ApplicationAuditFinding[];
   readonly summary: AuditSummary;
   readonly auditHash: string;         // SHA-256 déterministe
@@ -99,8 +117,8 @@ export interface ApplicationAuditReport {
 export interface ApplicationAuditComparison {
   readonly previousReportId: string;
   readonly currentReportId: string;
-  readonly scoreDelta: number;
-  readonly dimensionDeltas: Record<AuditDimension, number>;
+  readonly scoreDelta: number | null;
+  readonly dimensionDeltas: Readonly<Record<AuditDimension, number | null>>;
   readonly resolvedFindingIds: readonly string[];
   readonly newFindingIds: readonly string[];
   readonly improvements: readonly string[];

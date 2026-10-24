@@ -13,6 +13,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { addImageFallbacks, buildStudioShell, deriveFallbackTitle, extractPageTitle } from '../src/routes/conversation.js';
+import { THEME_IMAGE_RESOURCES } from '../../../packages/core/src/image/theme.js';
 
 describe('conversation : shell HTML complet', () => {
   const fragments = '<div data-section="header"><header>Menu</header></div>\n<div data-section="hero"><section><h1>Bienvenue</h1></section></div>';
@@ -66,14 +67,24 @@ describe('conversation : shell HTML complet', () => {
     assert.deepEqual(extractPageTitle('<!-- PAGE_TITLE: <b>X</b> -->').title, 'X', 'balises retirées');
   });
 
-  it('6b. garde source : réservoir vérifié imposé, IDs de mémoire interdits', async () => {
+  it('6b. garde source : brief visuel par thème câblé aux deux prompts (P0 images)', async () => {
     const { readFileSync } = await import('node:fs');
     const { join } = await import('node:path');
     const src = readFileSync(join(process.cwd(), 'apps/api/src/routes/conversation.ts'), 'utf8');
-    assert.ok(src.includes('RÉSERVOIR vérifié'), 'réservoir imposé dans le prompt');
-    assert.ok(src.includes('photo-1513104890138-7c749659a591'), 'IDs vérifiés présents');
+    const theme = readFileSync(join(process.cwd(), 'packages/core/src/image/theme.ts'), 'utf8');
+    // Câblage : les deux prompts consomment le brief serveur (fini le paragraphe statique)
+    // (UNSPLASH-DYN : 4e argument optionnel possible — la garde vérifie la tête d'appel seedée)
+    assert.ok(src.includes("buildImageBrief(imageTheme, 'create', imageSeed"), 'prompt création briefé par thème (rotation seedée)');
+    assert.ok(src.includes("buildImageBrief(imageTheme, 'modify', imageSeed"), 'prompt modification briefé + préservation (rotation seedée)');
+    assert.ok(src.includes('sanitizeImageSources(assembledHtml, imageTheme, imageSeed, dynamicImages)'), 'sanitizer final nourri par la source réelle quand la clé usager est fournie');
+    assert.ok(src.includes('const imageSeed = poolRotationSeed(requestId)'), 'seed de rotation déterministe par génération');
+    assert.ok(src.includes('detectImageTheme(body.message'), 'thème détecté côté serveur depuis la demande');
+    // Réservoir : vit désormais dans le module thème (source unique)
+    assert.ok(theme.includes('RÉSERVOIR vérifié'), 'réservoir imposé dans le brief');
+    assert.ok(theme.includes('photo-1513104890138-7c749659a591'), 'IDs vérifiés présents');
+    assert.ok(theme.includes("jamais d'autre adresse inventée de mémoire") || theme.includes("inventée de mémoire"), 'invention interdite');
+    // Bugs historiques toujours bannis du code serveur
     assert.ok(!src.includes('loremflickr.com/1200/800/'), 'loremflickr retiré (panne 500 constatée)');
-    assert.ok(src.includes("jamais d'autre adresse inventée de mémoire"), 'invention interdite');
   });
 
   it('6. addImageFallbacks : onerror ajouté aux http(s) sans gestionnaire, le reste intact', () => {
@@ -87,7 +98,11 @@ describe('conversation : shell HTML complet', () => {
     assert.equal(withFallback, 2, 'exactement les 2 http(s) sans onerror équipées');
     assert.ok(out.includes('onerror="custom()"'), 'gestionnaire existant conservé');
     assert.ok(out.includes('alt="a > b"'), '`>` dans alt préservé (tag non corrompu)');
-    assert.ok(out.includes('picsum.photos/seed/vibe-1') && out.includes('picsum.photos/seed/vibe-2'), 'seeds stables');
+    const fb = [...out.matchAll(/onerror="this\.onerror=null;this\.src='([^']+)'/g)].map((m) => m[1] ?? '');
+    assert.equal(fb.length, 2, '2 replis émis');
+    const fbIds = fb.map((s) => /photo-[0-9a-z-]+/.exec(s)?.[0] ?? '');
+    for (const id of fbIds) assert.ok(THEME_IMAGE_RESOURCES.autre.unsplash.includes(id), 'repli T0.5 : ' + id);
+    assert.ok(new Set(fbIds).size === 2, 'replis distincts');
     assert.equal(addImageFallbacks('<img src="data:image/png;base64,xx">'), '<img src="data:image/png;base64,xx">', 'data: ignoré');
   });
 });

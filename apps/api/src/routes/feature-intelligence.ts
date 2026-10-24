@@ -240,7 +240,7 @@ export async function handleFeatureIntelligenceRoutes(
       }
     }
 
-    const tenantId = payload.tenantId || context.tenantId;
+    const tenantId = context.tenantId; // SÉCURITÉ (SEC-TENANT) : le tenant ne vient JAMAIS du corps — un client ne choisit pas son locataire.
     const projectId = payload.projectId || 'in-memory-features';
 
     const files: FeatureFileEntry[] = Array.isArray(payload.files) && payload.files.length > 0

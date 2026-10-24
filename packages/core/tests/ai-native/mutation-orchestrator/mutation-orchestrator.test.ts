@@ -601,6 +601,52 @@ describe('AINT-006 : Mutation Orchestrator Unit & Integration Tests', () => {
         orchestrator.rollback('tx-unknown', 'ENGINEER');
       }, NotFoundError);
     });
+
+    it('G.5 V7-WIRE-2 — registre de transactions borné (LRU), éviction honnête', () => {
+      const bounded = new MutationOrchestratorService(
+        fileSource,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { transactionsMaxEntries: 2 }
+      );
+
+      const transactionIds: string[] = [];
+      for (const name of ['a', 'b', 'c']) {
+        const plan = bounded.createPlan({
+          tenantId: 'tenant-1',
+          projectId: 'proj-1',
+          baseGraphHash: 'graph-lru',
+          mutations: [
+            {
+              mutationId: `m-${name}`,
+              kind: 'CREATE_FILE',
+              target: `src/evict-${name}.ts`,
+              preconditions: [],
+              operation: { path: `src/evict-${name}.ts`, content: `export const ${name} = true;\n` },
+              expectedOutcome: `create ${name}`,
+              evidence: []
+            }
+          ]
+        }, 'ENGINEER');
+        const exec = bounded.executePlan(plan, undefined, 'ENGINEER');
+        transactionIds.push(exec.transaction.transactionId);
+      }
+
+      // La plus ancienne est évincée ; les deux dernières restent consultables.
+      assert.strictEqual(bounded.getTransaction(transactionIds[0]!, 'ENGINEER'), undefined);
+      assert.ok(bounded.getTransaction(transactionIds[1]!, 'ENGINEER'));
+      assert.ok(bounded.getTransaction(transactionIds[2]!, 'ENGINEER'));
+
+      // Un rollback d'une transaction évincée échoue explicitement (pas de faux succès).
+      assert.throws(() => bounded.rollback(transactionIds[0]!, 'ENGINEER'), NotFoundError);
+
+      // La transaction la plus récente reste réellement restaurable.
+      const rb = bounded.rollback(transactionIds[2]!, 'ENGINEER');
+      assert.strictEqual(rb.success, true);
+      assert.strictEqual(fileSource.getFile('tenant-1', 'proj-1', 'src/evict-c.ts'), null);
+    });
   });
 
   // =========================================================================

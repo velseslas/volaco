@@ -132,6 +132,17 @@ const MOCK_AUDIT: ApplicationAuditReport = {
     aiConfig: 85,
     designHarmony: 70
   },
+  dimensionStatus: {
+    ARCHITECTURE: 'MEASURED',
+    CODE_QUALITY: 'MEASURED',
+    SECURITY: 'MEASURED',
+    PERFORMANCE: 'MEASURED',
+    UX: 'MEASURED',
+    ACCESSIBILITY: 'MEASURED',
+    AI_CONFIG: 'MEASURED',
+    DESIGN_HARMONY: 'MEASURED'
+  },
+  coverage: 1,
   findings: [
     {
       id: 'finding-001',

@@ -22,6 +22,29 @@ import { projectStore } from '../../../../packages/core/src/identity/project.js'
 import { acquireProjectLock, isSafeProjectId, workspaceDir } from '../../../../packages/core/src/app-pipeline.js';
 import { logger } from '../../../../packages/core/src/logger.js';
 import { aiProviderRegistry } from '../../../../packages/core/src/ai/providers/registry.js';
+import { preferredAiProvider } from '../../../../packages/core/src/ai/providers/provider-catalog.js';
+import {
+  buildImageBrief,
+  buildSectorContract,
+  detectImageTheme,
+  poolRotationSeed,
+  thematicImageRewrite,
+  type ImageTheme,
+} from '../../../../packages/core/src/image/theme.js';
+// P1-B — contrôle images des apps React : inspection AVANT sauvegarde/build
+// (aucune réécriture server-side du TSX ; violations renvoyées au LLM).
+import {
+  formatImageViolations,
+  inspectAppImageSources,
+  isInspectableAppFile,
+  type AppImageInspection
+} from '../../../../packages/core/src/image/app-policy.js';
+// PATCH L2 — barrière d'écriture du générateur (B1) : le contenu CANDIDAT de
+// create_file est inspecté par la porte partagée R3-B (cité unique du
+// checker : app-policy) AVANT toute écriture. Fail-closed et `undetermined`
+// non bloquant sont ceux du pipeline — aucun second scanner.
+import { imageGateInspect, type ImageGateInspector } from '../middleware/image-gate.js';
+import { adoptedImageIds } from '../../../../packages/core/src/image/image-adoptions.js';
 import { runToolLoop } from '../../../../packages/core/src/ai/tool-loop.js';
 import type { AIProviderTool } from '../../../../packages/core/src/ai/providers/types.js';
 import {
@@ -34,6 +57,7 @@ import {
   writeAppFile
 } from '../../../../packages/core/src/app-pipeline.js';
 import { revisionStore } from '../../../../packages/core/src/model/revision-store.js';
+import { withProjectDesignContext } from '../../../../packages/core/src/ai-native/design-harmony/design-context.js';
 import type { RequestContext } from '../middleware/auth.js';
 
 import { readBody } from '../middleware/body.js';
@@ -190,15 +214,80 @@ function editHandlers(
   };
 }
 
-function handlersFor(
+/** PATCH L2 — événement d'écriture candidate refusée par la barrière. */
+export interface ImageWriteRefusalEvent {
+  readonly path: string;
+  /** Vocabulaire ImageGateKind : 'violations' (politique) ou 'inspection-error' (fail-closed). */
+  readonly kind: 'violations' | 'inspection-error';
+  /** Issues formatées par le checker (fichier, ligne, référence, motif). */
+  readonly issues: readonly string[];
+}
+
+/** PATCH L2 — seams du contrôle d'écriture (réservés aux tests ; défaut = production). */
+export interface GenerateWriteGateHooks {
+  /** Inspecteur injecté pour tester le fail-closed ; défaut : scanner du pipeline. */
+  readonly inspector?: ImageGateInspector;
+  /** Comptabilité route : signalé pour TOUTE écriture candidate refusée. */
+  readonly onImageWriteRefusal?: (entry: ImageWriteRefusalEvent) => void;
+  /**
+   * PATCH PERTINENCE — thème de réécriture thématique du candidat create_file
+   * (défaut 'autre') : une URL Unsplash VÉRIFIÉE appartenant à un autre
+   * secteur est remplacée par une image du réservoir de ce thème AVANT que la
+   * barrière de sécurité n'inspecte ce qui sera réellement écrit. La
+   * SÉCURITÉ (app-policy.ts / image-gate.ts) n'est ni modifiée ni contournée.
+   */
+  readonly imageTheme?: ImageTheme;
+  /** PATCH PERTINENCE — seed de rotation déterministe (0 = ordre historique). */
+  readonly imageRotationSeed?: number;
+}
+
+/**
+ * PATCH L2 (B1) — handlers de génération avec contrôle AVANT ÉCRITURE : le
+ * contenu candidat de create_file passe par la porte partagée
+ * (imageGateInspect → app-policy) AVANT writeAppFile. Garanties :
+ *  1. violation        → RIEN n'est écrit (ni workspace, ni miroir
+ *     FileStore) : le fichier préexistant garde son contenu exact ; l'LLM
+ *     reçoit fichier/ligne/référence et peut corriger dans la même boucle ;
+ *  2. checker indisponible → fail-closed : RIEN n'est écrit (jamais traité
+ *     comme une validation) ;
+ *  3. `undetermined` → non bloquant inchangé (politique L1/L7 intacte).
+ * La barrière terminale L1 de buildApp reste en place au-delà de ce contrôle
+ * (défense en profondeur, inchangée).
+ */
+export function handlersFor(
   tenantId: string,
   projectId: string,
-  emit: (data: Record<string, unknown>) => void
+  emit: (data: Record<string, unknown>) => void,
+  gate: GenerateWriteGateHooks = {}
 ): Record<string, (args: Record<string, unknown>) => unknown> {
+  // PATCH PERTINENCE — pertinence ≠ sécurité : app-policy / image-gate restent
+  // l'unique autorité des HÔTES/IDs autorisés ; en amont, le candidat
+  // create_file passe par la réécriture thématique (IDs vérifiés d'un autre
+  // secteur → réservoir du thème), PUIS la porte L2 inspecte exactement ce
+  // qui sera écrit — Inspection = contenu final = contenu sur disque.
+  const pertinenceTheme = gate.imageTheme ?? 'autre';
+  const pertinenceSeed = gate.imageRotationSeed ?? 0;
   return {
     create_file: (args) => {
       const path = String(args.path ?? '');
-      const content = String(args.content ?? '');
+      const themed = thematicImageRewrite(
+        String(args.content ?? ''),
+        pertinenceTheme,
+        pertinenceSeed
+      );
+      const content = themed.content;
+      if (isInspectableAppFile(path)) {
+        const candidate = imageGateInspect([{ path, content }], gate.inspector);
+        if (candidate.kind !== 'clean') {
+          gate.onImageWriteRefusal?.({ path, kind: candidate.kind, issues: candidate.imageIssues });
+          return candidate.kind === 'violations'
+            ? 'ERREUR: images interdites par la politique du serveur — écriture REFUSÉE (rien n a été écrit) :\n'
+              + candidate.imageIssues.join('\n')
+              + '\nCorrige ce fichier et écris-le ENTIÈREMENT conforme avec create_file.'
+            : 'ERREUR: inspection des images impossible — écriture REFUSÉE par précaution (fail-closed). '
+              + candidate.imageIssues.join(' ');
+        }
+      }
       const res = writeAppFile(projectId, path, content);
       if (!res.ok) return 'ERREUR: ' + res.reason;
       persistSource(tenantId, projectId, path, content);
@@ -220,7 +309,7 @@ const GENERATION_SYSTEM_PROMPT = [
   '- Écris src/App.tsx qui compose le site, et UN composant par section dans src/components/ (Header.tsx, Hero.tsx, …).',
   '- Styles : UNIQUEMENT des classes Tailwind (le CSS est déjà branché). Aucun <script>, aucun import de fichier CSS autre que l\'existant.',
   '- Imports : uniquement react / react-dom et des fichiers locaux relatifs (./components/Header). Aucune dépendance npm supplémentaire.',
-  '- Images : uniquement des URL https://images.unsplash.com/photo-… cohérentes avec le thème.',
+  '- Images (CONTRÔLE SERVEUR RÉEL après écriture des fichiers, avant chaque build) : n’invente jamais d’URL de mémoire (ni loremflickr, en panne). Photos à sujet = UNIQUEMENT les IDs vérifiés du RÉSERVOIR du brief sectoriel ci-joint, sinon fallback https://picsum.photos/seed/<mot>/800/520 thématique. Le serveur inspecte chaque référence d’image (img src, srcset, url(…), classes Tailwind bg-[url(...)]). Une URL interdite provoque un RETOUR AUTOMATIQUE INDIQUANT fichier/ligne/référence pour correction (UNE seule tentative) ; si une URL interdite persiste, la génération est REFUSÉE (ok:false, aucun bundle publié). Admis : IDs vérifiés ci-joint, https://picsum.photos/..., data:image/..., références locales relatives (./assets/..., /api/.../images/...).',
   '- Chaque fichier doit COMPILER (TypeScript strict, exports nommés par défaut pour les composants).',
   '',
   'QUALITÉ DESIGN (obligatoire) : palette limitée et cohérente, hiérarchie typographique nette, espacements généreux, états hover sur les boutons, responsive (sm/md/lg), contenu réaliste en français. Le résultat doit avoir l\'air conçu par un designer senior.',
@@ -243,6 +332,49 @@ const MIME: Record<string, string> = {
   '.woff': 'font/woff',
   '.woff2': 'font/woff2'
 };
+
+// ============================================================================
+// P1-B — politique d'images des apps React, au niveau du générateur.
+// Les contenus inspectés sont TOUJOURS relus sur disque (workspace) : ce sont
+// exactement ceux que buildApp consomme pour produire le bundle servi.
+// ============================================================================
+
+/** Sources inspectables du workspace (cellules du bundle ; sources du FileStore exclues). */
+function collectWorkspaceSources(projectId: string): Array<{ path: string; content: string }> {
+  const out: Array<{ path: string; content: string }> = [];
+  for (const f of listAppFiles(projectId)) {
+    if (!isInspectableAppFile(f.path)) continue;
+    const content = readAppFile(projectId, f.path);
+    if (content !== null && content.length > 0) out.push({ path: f.path, content });
+  }
+  return out;
+}
+
+function inspectWorkspaceAppImages(projectId: string): AppImageInspection {
+  return inspectAppImageSources(collectWorkspaceSources(projectId), { adoptedIds: adoptedImageIds() });
+}
+
+/**
+ * Rond de correction assistée P1-B : violations exactes (fichier, ligne,
+ * référence, motif) nourries au LLM, avec le rappel de la procédure autorisée.
+ */
+function imageRepairPrompt(
+  inspection: AppImageInspection,
+  unresolvedRefusals: ReadonlyArray<{ path: string; issues: readonly string[] }> = []
+): string {
+  // PATCH L2 — une écriture candidate refusée n'apparaît PAS dans
+  // l'inspection du workspace (elle n'a jamais été écrite). La liste des
+  // refus non résolus est injectée dans le prompt de correction, au format
+  // du checker (fichier, ligne, référence, motif).
+  const refusedSection = unresolvedRefusals.length > 0
+    ? '\n\nÉcritures REFUSÉES AVANT enregistrement (aucune trace écrite — proposer un contenu INTÉGRALEMENT conforme) :'
+      + '\n' + unresolvedRefusals.map((r) => r.path + ' :\n' + r.issues.join('\n')).join('\n---\n')
+    : '';
+  return 'Le serveur a trouvé des références d\'images interdites ; la génération ne sera pas publiée tant qu\'elles existent.'
+    + '\n\n' + formatImageViolations(inspection).join('\n')
+    + refusedSection
+    + '\n\nCorrige CHAQUE fichier cité avec create_file (contenu COMPLET) : remplace toute URL interdite par un ID vérifié du RÉSERVOIR sectoriel (faire référence au brief ci-dessous) ou https://picsum.photos/seed/<mot-sujet>/800/520 pour une photo neutre — en gardant TOUT le reste du fichier identique. Un ID Unsplash HORS du réservoir ci-joint compte comme interdit.';
+}
 
 export async function handleAppGeneratorRoutes(
   req: IncomingMessage,
@@ -277,6 +409,22 @@ export async function handleAppGeneratorRoutes(
       throw new ValidationError('Le champ "prompt" est obligatoire', undefined, requestId);
     }
 
+    // Contrat de thème global (PATCH secteur) : le chemin React générait sans
+    // aucune contrainte de secteur ni d'images — même brief que le stream HTML.
+    const reactTheme = detectImageTheme(prompt);
+    // PATCH PERTINENCE — seed stable pour TOUTE la génération (brief + seams) :
+    // rotation déterministe par requestId, jamais aléatoire.
+    const themeSeed = poolRotationSeed(requestId);
+    const reactSectorAppendix = '\n\n' + buildSectorContract(reactTheme, 'create')
+      + '\n\n' + buildImageBrief(reactTheme, 'create', themeSeed);
+    logger.info('Contrat de thème (générateur React)', {
+      component: 'app-generator',
+      tenantId: context.tenantId,
+      projectId,
+      imageTheme: reactTheme,
+      requestId
+    });
+
     // P1-masse — VERROU PAR PROJET : tout le flux (reset, écritures IA,
     // builds, réparations) est sérialisé par projet. Acquis AVANT le SSE
     // (sinon 503 après des en-têtes 200 = client pendu).
@@ -301,12 +449,57 @@ export async function handleAppGeneratorRoutes(
       res.write(`data: ${JSON.stringify(data)}\n\n`);
     };
 
+    // PATCH L2 (B1/B3) — comptabilité des écritures de la génération :
+    // chaque fichier écrit avec succès ('file') et chaque écriture candidate
+    // REFUSÉE par la barrière L2 sont horodatés (seq monotone). À la décision
+    // de publication, un refus dont le fichier n'a PAS été réécrit avec
+    // succès ensuite est « non résolu » : il bloque la publication avec la
+    // forme de refus P1-B existante (aucun build, done ok:false, imageIssues
+    // + imageWriteRefusals additifs). Les refus résolus en boucle (l'LLM
+    // réécrit conforme) ne changent pas le droit de publication.
+    let writeSeq = 0;
+    const okWrites: Array<{ seq: number; path: string }> = [];
+    const refusedWrites: Array<{ seq: number; path: string; kind: 'violations' | 'inspection-error'; issues: string[] }> = [];
+    const emit = (data: Record<string, unknown>): void => {
+      if (data.type === 'file' && typeof data.path === 'string') {
+        writeSeq += 1;
+        okWrites.push({ seq: writeSeq, path: data.path });
+      }
+      send(data);
+    };
+    const gateHooks = {
+      imageTheme: reactTheme,
+      imageRotationSeed: themeSeed,
+      onImageWriteRefusal: (entry: { path: string; kind: 'violations' | 'inspection-error'; issues: readonly string[] }): void => {
+        writeSeq += 1;
+        refusedWrites.push({ seq: writeSeq, path: entry.path, kind: entry.kind, issues: [...entry.issues] });
+        logger.warn('Génération : écriture candidate refusée par la barrière d images (avant écriture)', {
+          component: 'app-generator',
+          tenantId: context.tenantId,
+          projectId,
+          path: entry.path,
+          kind: entry.kind,
+          requestId
+        });
+      }
+    };
+    /** Refus L2 jamais suivis d'une réécriture réussie du même chemin. */
+    const pendingImageRefusals = (): Array<{ path: string; kind: 'violations' | 'inspection-error'; issues: string[] }> =>
+      refusedWrites.filter((r) => !okWrites.some((w) => w.path === r.path && w.seq > r.seq));
+    /** Champ additif du done : traçabilité de TOUTES les écritures refusées. */
+    const refusalDoneEntries = (): Array<{ path: string; kind: string; issues: string[] }> =>
+      refusedWrites.map((r) => ({ path: r.path, kind: r.kind, issues: r.issues }));
+
     // Site frais : le workspace est reconstruit depuis le template.
     ensureWorkspace(projectId, true);
     setProjectFormat(projectId, 'react-vite');
     send({ type: 'start' });
 
-    const adapter = aiProviderRegistry.resolve({ preferredProviderId: process.env.MISTRAL_API_KEY ? 'mistral' : undefined });
+    const adapter = aiProviderRegistry.resolve({
+      // LOT MULTI-MODÈLES — fournisseur actif du tableau de bord (ON/OFF) ;
+      // sans sélection → héritage exact : mistral si clé présente.
+      preferredProviderId: preferredAiProvider() ?? (process.env.MISTRAL_API_KEY ? 'mistral' : undefined)
+    });
     if (!adapter) {
       send({ type: 'error', error: 'Aucun fournisseur IA disponible (Mistral requis).' });
       res.end();
@@ -323,17 +516,73 @@ export async function handleAppGeneratorRoutes(
           tenantId: context.tenantId,
           projectId,
           prompt: 'Crée le site suivant : ' + prompt,
-          systemPrompt: GENERATION_SYSTEM_PROMPT,
+          systemPrompt: withProjectDesignContext(GENERATION_SYSTEM_PROMPT + reactSectorAppendix, { tenantId: context.tenantId, projectId }),
           temperature: 0.3,
           maxTokens: 8192,
           timeoutMs: 120000,
           requestId
         },
-        toolsFor(context.tenantId, projectId, send),
-        { handlers: handlersFor(context.tenantId, projectId, send), maxIterations: 12, maxToolResultLength: 2000, signal: aborter.signal },
+        toolsFor(context.tenantId, projectId, emit),
+        { handlers: handlersFor(context.tenantId, projectId, emit, gateHooks), maxIterations: 12, maxToolResultLength: 2000, signal: aborter.signal },
         credentials
       );
       send({ type: 'generation-done', iterations: gen.iterations, toolCalls: gen.trace.length });
+
+      // P1-B — CONTRÔLE IMAGES AVANT PUBLICATION : inspection des sources
+      // réelles (disque). PATCH L2 — une écriture candidate refusée n'a
+      // laissé AUCUN contenu dangereux sur disque ; un refus « non résolu »
+      // (le fichier refusé n'a jamais été réécrit avec succès ensuite)
+      // déclenche donc le MÊME round de correction assistée puis le MÊME
+      // refus qu'une violation persistante : aucun build, le bundle
+      // précédent (éventuel) reste servi, la génération n'est PAS déclarée
+      // réussie (ok:false + imageIssues + imageWriteRefusals additifs).
+      let inspection = inspectWorkspaceAppImages(projectId);
+      let pending = pendingImageRefusals();
+      if (inspection.violations.length > 0 || pending.length > 0) {
+        send({ type: 'repair', round: 1, reason: 'images' });
+        await runToolLoop(
+          adapter,
+          {
+            tenantId: context.tenantId,
+            projectId,
+            prompt: imageRepairPrompt(inspection, pending),
+            systemPrompt: withProjectDesignContext(GENERATION_SYSTEM_PROMPT + reactSectorAppendix, { tenantId: context.tenantId, projectId }),
+            temperature: 0.2,
+            maxTokens: 8192,
+            timeoutMs: 120000,
+            requestId
+          },
+          toolsFor(context.tenantId, projectId, emit),
+          { handlers: handlersFor(context.tenantId, projectId, emit, gateHooks), maxIterations: 8, maxToolResultLength: 2000, signal: aborter.signal },
+          credentials
+        );
+        inspection = inspectWorkspaceAppImages(projectId);
+        pending = pendingImageRefusals();
+        if (inspection.violations.length > 0 || pending.length > 0) {
+          const issues = formatImageViolations(inspection);
+          const refusalIssues = pending.flatMap((r) => r.issues);
+          logger.warn('Génération NON PUBLIÉE — URLs d\'images interdites persistantes', {
+            component: 'app-generator',
+            tenantId: context.tenantId,
+            projectId,
+            violations: issues,
+            refusals: pending.map((r) => ({ path: r.path, kind: r.kind })),
+            requestId
+          });
+          send({ type: 'error', error: ('Images interdites persistantes après la tentative de correction — génération NON publiée. ' + (issues[0] ?? refusalIssues[0] ?? '')).slice(0, 400) });
+          send({
+            type: 'done',
+            ok: false,
+            buildId: '',
+            files: listAppFiles(projectId).map((f) => f.path),
+            durationMs: 0,
+            imageIssues: issues.length > 0 ? issues : [...new Set(refusalIssues)],
+            ...(refusedWrites.length > 0 ? { imageWriteRefusals: refusalDoneEntries() } : {})
+          });
+          res.end();
+          return true;
+        }
+      }
 
       // P2 — build + auto-réparation bornée (les erreurs compilateur
       // repartent à l'IA qui corrige les fichiers).
@@ -342,8 +591,16 @@ export async function handleAppGeneratorRoutes(
       let repairRounds = 0;
       while (!build.ok && repairRounds < 3 && !clientGone) {
         repairRounds += 1;
-        send({ type: 'repair', round: repairRounds });
+        send({ type: 'repair', round: repairRounds, reason: 'compilation' });
+        // P1-B — si des violations d'images existent à ce stade, elles partent
+        // AUSSI dans le prompt de correction de compilation et la réinspection
+        // OBLIGATOIRE bloque tout build sur des sources non conformes
+        // (aucune réécriture serveur : le LLM corrige avec le brief).
+        const roundIssues = formatImageViolations(inspectWorkspaceAppImages(projectId));
         const fixPrompt = 'Le build TypeScript/Vite du projet échoue avec ces erreurs :\n\n' + build.errors.join('\n---\n').slice(0, 3000)
+          + (roundIssues.length > 0
+            ? '\n\nViolations d\'images à corriger en même temps (URLs interdites par la politique du serveur — remplace par un ID vérifié du RÉSERVOIR sectoriel) :\n' + roundIssues.join('\n')
+            : '')
           + '\n\nCorrige les fichiers nécessaires avec create_file (contenu COMPLET des fichiers corrigés). Ne touche à rien d\'autre.';
         await runToolLoop(
           adapter,
@@ -351,22 +608,61 @@ export async function handleAppGeneratorRoutes(
             tenantId: context.tenantId,
             projectId,
             prompt: fixPrompt,
-            systemPrompt: GENERATION_SYSTEM_PROMPT,
+            systemPrompt: withProjectDesignContext(GENERATION_SYSTEM_PROMPT, { tenantId: context.tenantId, projectId }),
             temperature: 0.2,
             maxTokens: 8192,
             timeoutMs: 120000,
             requestId
           },
-          toolsFor(context.tenantId, projectId, send),
-          { handlers: handlersFor(context.tenantId, projectId, send), maxIterations: 8, maxToolResultLength: 2000, signal: aborter.signal },
+          toolsFor(context.tenantId, projectId, emit),
+          { handlers: handlersFor(context.tenantId, projectId, emit, gateHooks), maxIterations: 8, maxToolResultLength: 2000, signal: aborter.signal },
           credentials
         );
+        inspection = inspectWorkspaceAppImages(projectId);
+        pending = pendingImageRefusals();
+        if (inspection.violations.length > 0 || pending.length > 0) {
+          const issues = formatImageViolations(inspection);
+          const refusalIssues = pending.flatMap((r) => r.issues);
+          logger.warn('Publication refusée — la correction de compilation a réintroduit des URLs interdites', {
+            component: 'app-generator',
+            tenantId: context.tenantId,
+            projectId,
+            violations: issues,
+            refusals: pending.map((r) => ({ path: r.path, kind: r.kind })),
+            requestId
+          });
+          send({ type: 'error', error: ('Images interdites persistantes après correction de compilation — génération NON publiée. ' + (issues[0] ?? refusalIssues[0] ?? '')).slice(0, 400) });
+          send({
+            type: 'done',
+            ok: false,
+            buildId: '',
+            files: listAppFiles(projectId).map((f) => f.path),
+            durationMs: 0,
+            imageIssues: issues.length > 0 ? issues : [...new Set(refusalIssues)],
+            ...(refusedWrites.length > 0 ? { imageWriteRefusals: refusalDoneEntries() } : {})
+          });
+          res.end();
+          return true;
+        }
         build = await buildApp(projectId);
         send({ type: build.ok ? 'build-ok' : 'build-error', durationMs: build.durationMs, errors: build.errors.slice(0, 4), round: repairRounds });
       }
 
       const files = listAppFiles(projectId);
-      send({ type: 'done', ok: build.ok, buildId: build.buildId, files: files.map((f) => f.path), durationMs: build.durationMs });
+      // P1-B — done : ok reflète le build ET la conforme images : chaque
+      // buildApp ci-dessus était immédiatement précédé d'une inspection propre,
+      // donc le bundle publié ne contient jamais d'URL interdite.
+      // PATCH L2 — champ ADDITIF du contrat done : les écritures candidates
+      // refusées (y compris résolues en boucle) sont listées pour l'appelant ;
+      // AUCUN nouveau type d'événement SSE n'est introduit.
+      send({
+        type: 'done',
+        ok: build.ok,
+        buildId: build.buildId,
+        files: files.map((f) => f.path),
+        durationMs: build.durationMs,
+        ...(refusedWrites.length > 0 ? { imageWriteRefusals: refusalDoneEntries() } : {})
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       send({ type: 'error', error: message.slice(0, 400) });

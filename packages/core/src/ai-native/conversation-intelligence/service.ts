@@ -34,6 +34,7 @@ import type {
   ConversationSession,
   ConversationTrace,
   ConversationTurn,
+  PreparedTurn,
   ReasoningProvider
 } from './types.js';
 import type { ConversationState, EngineeringPlan, HumanAiMessage, IntentResult } from './types.js';
@@ -334,6 +335,127 @@ export class ConversationIntelligenceService {
     this.persistSession(updatedSession);
     this.totalTurnsProcessed += 1;
     return updatedSession;
+  }
+
+  /**
+   * FIX-PLANFIRST — expose le plan émis par le stream planFirst à la session
+   * AVANT confirmation. Sans cet enregistrement, POST /confirm rejetait
+   * systématiquement le planId ("introuvable ou non actif") car activePlan
+   * n'était setté que par /turns. Le plan reste DRAFT : la mémoire projet ne
+   * le marque PAS comme accepté (confirmPlan le fera en cas d'approbation).
+   */
+  public stagePlanForConfirmation(params: {
+    tenantId: string;
+    projectId: string;
+    sessionId: string;
+    userMessage: string;
+    intent: IntentResult;
+    plan: EngineeringPlan;
+    userRole?: Role | undefined;
+    requestId?: string | undefined;
+  }): ConversationSession {
+    const userRole = params.userRole ?? 'OWNER';
+    const session = this.getSession(params.tenantId, params.projectId, params.sessionId, userRole, params.requestId);
+    if (!session) {
+      throw new ValidationError(`Session de conversation '${params.sessionId}' introuvable pour ce projet`);
+    }
+
+    const turnIndex = session.turns.length + 1;
+    const turnId = `turn-${session.sessionId}-${turnIndex}`;
+    const now = new Date().toISOString();
+    const turn: ConversationTurn = Object.freeze({
+      turnIndex,
+      turnId,
+      userMessage: Object.freeze({
+        id: turnId + '-user',
+        sender: 'HUMAN',
+        content: params.userMessage,
+        timestamp: now
+      }),
+      stateBefore: session.currentState,
+      stateAfter: 'WAITING_CONFIRMATION',
+      intent: params.intent,
+      assumptions: [],
+      decisions: session.activeDecisions,
+      plan: params.plan,
+      agentResponse: Object.freeze({
+        id: turnId + '-agent',
+        sender: 'AGENT',
+        content: `Voici mon plan : ${params.plan.steps.length} étape(s). En attente de ta validation.`,
+        timestamp: now
+      }),
+      trace: Object.freeze({
+        traceId: computeTraceId(session.sessionId, turnId),
+        sessionId: session.sessionId,
+        turnId,
+        stateBefore: session.currentState,
+        stateAfter: 'WAITING_CONFIRMATION' as ConversationState,
+        intentCategory: params.intent.category,
+        contextHash: 'stream-staged-' + session.turns.length,
+        applicationHash: 'stream',
+        actionTaken: 'Plan du stream exposé pour confirmation (FIX-PLANFIRST)',
+        confidence: params.intent.confidence,
+        events: ['Stream planFirst : plan persisté avant confirmation'],
+        durationMs: 0
+      })
+    });
+
+    const updatedSession: ConversationSession = deepFreeze({
+      ...session,
+      currentState: 'WAITING_CONFIRMATION' as ConversationState,
+      turns: [...session.turns, turn],
+      activeIntent: params.intent,
+      activePlan: params.plan
+    });
+
+    const cacheKey = ConversationSessionLruCache.buildKey(params.tenantId.trim(), params.projectId.trim(), params.sessionId.trim());
+    this.cache.set(cacheKey, updatedSession);
+    this.persistSession(updatedSession);
+    return updatedSession;
+  }
+
+  /**
+   * Prépare un tour sans le générer ni le persister.
+   *
+   * Le flux SSE s'en sert pour récupérer l'intention enrichie, le plan,
+   * l'impact, les hypothèses et le contexte borné, tout en conservant sa
+   * propre génération et sa propre persistance. Aucune écriture ici.
+   */
+  public async prepareTurn(
+    params: {
+      tenantId: string;
+      projectId: string;
+      sessionId: string;
+      message: string;
+      intent?: IntentResult | undefined;
+      targetFiles?: readonly string[] | undefined;
+      autoConfirmLowRisk?: boolean | undefined;
+    },
+    userRole: Role = 'OWNER',
+    requestId?: string | undefined
+  ): Promise<PreparedTurn> {
+    assertPermission(userRole, 'PROJECT_READ', requestId);
+
+    const { tenantId, projectId, sessionId, message, intent, targetFiles, autoConfirmLowRisk } = params;
+
+    if (!message || typeof message !== 'string' || message.trim().length === 0) {
+      throw new ValidationError('Le message utilisateur ne peut pas être vide');
+    }
+
+    const session = this.getSession(tenantId, projectId, sessionId, userRole, requestId);
+    if (!session) {
+      throw new ValidationError(`Session de conversation '${sessionId}' introuvable pour ce projet`);
+    }
+
+    return this.engine.prepareTurn({
+      session,
+      userMessageText: message,
+      intent,
+      targetFiles,
+      autoConfirmLowRisk: autoConfirmLowRisk ?? !this.config.requireConfirmationForMediumRisk,
+      userRole,
+      requestId
+    });
   }
 
   public async processTurn(

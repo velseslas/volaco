@@ -3,6 +3,7 @@ import { TerminalService } from '../../../../packages/core/src/terminal/index.js
 import { projectStore } from '../../../../packages/core/src/identity/project.js';
 import { auditStore } from '../../../../packages/core/src/observability/audit.js';
 import { ValidationError } from '../../../../packages/core/src/errors.js';
+import { assertPermission } from '../../../../packages/core/src/identity/permissions.js';
 import type { RequestContext } from '../middleware/auth.js';
 
 import { readBody } from '../middleware/body.js';
@@ -33,6 +34,13 @@ export async function handleTerminalRoutes(
 
   // POST /api/v1/projects/:projectId/terminal/execute
   if (req.method === 'POST') {
+    // Défense en profondeur : TerminalService applique déjà le RBAC (un VIEWER
+    // reçoit 403 — prouvé par terminal-api.test.ts) ainsi que la liste blanche
+    // de commandes et le rejet d'injection shell. Le contrôle est répété ici
+    // pour que la sécurité de la route ne dépende pas d'un seul point : si le
+    // service est un jour remplacé ou appelé autrement, l'autorisation reste
+    // appliquée au point d'entrée.
+    assertPermission(context.role, 'PROJECT_MUTATE', requestId);
     const bodyText = await readBody(req);
     let payload: { command?: string; timeoutMs?: number };
     try {

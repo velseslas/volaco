@@ -22,6 +22,16 @@ export interface PlanExecutionSummary {
 
 import type { SemanticCodeGraphService } from '../../semantic-graph/service.js';
 
+/** Sérialisation bornée pour l'estimation de tokens (jamais de throw). */
+function safeIoPreview(value: unknown): string {
+  try {
+    const text = typeof value === 'string' ? value : JSON.stringify(value);
+    return (text ?? '').slice(0, 250_000);
+  } catch {
+    return String(value).slice(0, 250_000);
+  }
+}
+
 export class PlanExecutor {
   constructor(
     private readonly toolRegistry: ToolRegistry,
@@ -94,10 +104,21 @@ export class PlanExecutor {
 
           const mutResult = await this.mutationService.executePlan(
             planPayload,
-            { dryRun: false, allowBreaking: true, allowHighRisk: true },
+            // P0-PROD — plus de `allowHighRisk/allowBreaking: true` en dur :
+            // le drapeau vient de l'approbation humaine du run
+            // (ToolExecutionContext.highRiskApproved). Sans approbation,
+            // l'Impact Gate bloque HIGH/CRITICAL/BREAKING (fail-closed).
+            {
+              dryRun: false,
+              allowBreaking: context.highRiskApproved === true,
+              allowHighRisk: context.highRiskApproved === true
+            },
             context.userRole,
             context.requestId
           );
+          // P0-PROD — alimente le budget tokens/coût (bras maxTokens/maxCost
+          // du BudgetTracker, jusqu'ici jamais déclenchés).
+          budgetTracker.recordToolIo(safeIoPreview(step.parameters), safeIoPreview(mutResult));
 
           transactionId = mutResult.transaction.transactionId;
           modifiedFiles.push(...plan.expectedChanges);
@@ -135,6 +156,9 @@ export class PlanExecutor {
       } else {
         // Standard tool execution
         const toolRes = await this.toolRegistry.execute(step.tool, step.parameters, context);
+        // P0-PROD — comptabilise les E/S même en cas d'échec (le volume
+        // consommé reste du budget dépensé).
+        budgetTracker.recordToolIo(safeIoPreview(step.parameters), safeIoPreview(toolRes));
         if (!toolRes.success) {
           const failedStep: AgentStep = {
             id: step.id,

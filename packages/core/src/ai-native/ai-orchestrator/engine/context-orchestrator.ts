@@ -10,12 +10,28 @@ import type { ApplicationDNAService } from '../../dna/service.js';
 import type { SemanticCodeGraphService } from '../../semantic-graph/service.js';
 import type { AgentTask, TaskContextPayload } from '../types.js';
 import { isSensitivePath, maskSensitiveDetail } from '../../application-understanding/engine/evidence.js';
+import {
+  loadProjectDesignContext,
+  type DesignContextStoreLike,
+  type ProjectDesignContext
+} from '../../design-harmony/design-context.js';
+import type { DesignSystemStoreLike } from '../../design-harmony/design-system-store.js';
 
 export class ContextOrchestrator {
   constructor(
     private readonly understandingService?: ApplicationUnderstandingService | undefined,
     private readonly dnaService?: ApplicationDNAService | undefined,
-    private readonly graphService?: SemanticCodeGraphService | undefined
+    private readonly graphService?: SemanticCodeGraphService | undefined,
+    /**
+     * CDC V8 §11 — source du Design DNA (DesignReportStore réel par défaut ;
+     * injectable pour les tests).
+     */
+    private readonly designReports?: DesignContextStoreLike | undefined,
+    /**
+     * CDC V8 §11 — source de l'artefact Design System persisté
+     * (DesignSystemStore réel par défaut ; injectable pour les tests).
+     */
+    private readonly designSystems?: DesignSystemStoreLike | undefined
   ) {}
 
   public assembleTaskContext(params: {
@@ -92,13 +108,28 @@ export class ContextOrchestrator {
       }
     }
 
+    // 4. CDC V8 §11 — Design DNA : consommé UNIQUEMENT quand la tâche le
+    //    demande (includeDna, posé par le décomposeur sur les tâches UI).
+    //    Sans rapport Design Harmony persisté : aucun bloc ajouté — le
+    //    prompt des agents reste strictement identique à l'ancien.
+    let designContext: ProjectDesignContext | undefined;
+    if (task.requiredContext.includeDna === true) {
+      designContext = loadProjectDesignContext({
+        tenantId,
+        projectId,
+        ...(this.designReports ? { store: this.designReports } : {}),
+        ...(this.designSystems ? { systemStore: this.designSystems } : {})
+      });
+    }
+
     return {
       understandingSnapshot: understandingSlice,
       relevantFiles: sanitizedRelevantFiles,
       relevantSymbols: relevantSymbols.slice(0, 20),
       decisions,
       constraints,
-      recentHistory: []
+      recentHistory: [],
+      ...(designContext ? { designContext } : {})
     };
   }
 }

@@ -17,6 +17,8 @@ export type {
   PlanStep,
   EngineeringPlan,
   PlanAssessment,
+  PreparedImpact,
+  PreparedTurn,
   ContradictionRecord,
   ContextDelta,
   HumanAiMessage,
@@ -64,6 +66,11 @@ export {
   type ConversationContextInput,
   type ConversationContextStats
 } from './engine/context-builder.js';
+export {
+  buildEngineeringBrief,
+  withEngineeringBrief,
+  MAX_ENGINEERING_BRIEF_CHARS
+} from './engine/generation-brief.js';
 export { DefaultReasoningProvider, MockReasoningProvider } from './provider/reasoning-provider.js';
 export { ConversationTraceCollector, type TraceSummaryMetrics } from './observability/conversation-trace.js';
 export { ConversationSessionLruCache } from './cache.js';

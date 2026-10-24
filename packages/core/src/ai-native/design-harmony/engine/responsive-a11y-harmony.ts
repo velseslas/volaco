@@ -28,10 +28,17 @@ export class ResponsiveA11yHarmonyEngine {
   }
 
   private checkWcagContrast(snap: VisualSnapshot, findings: DesignHarmonyFinding[]): void {
+    // Les styles runtime expriment « transparent » en rgba(0,0,0,0) : sans
+    // cette reconnaissance, un enfant transparent écrasait le fond hérité et
+    // fabriquait de faux déficits de contraste (mesuré : 6 CRITICAL sur une
+    // page blanche parfaitement lisible).
+    const isTransparentColor = (value: string): boolean =>
+      value === '' || value === 'transparent' || value === 'inherit' || /^rgba?\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\s*\)$/i.test(value);
     const traverse = (node: NormalizedDomNode, parentBg = '#ffffff') => {
-      let currentBg = node.styles.backgroundColor;
-      if (!currentBg || currentBg === 'transparent' || currentBg === 'inherit') {
-        currentBg = parentBg;
+      let currentBg = parentBg;
+      const ownBg = node.styles.backgroundColor;
+      if (!isTransparentColor(ownBg)) {
+        currentBg = ownBg;
       }
 
       const fg = node.styles.color;

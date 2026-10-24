@@ -42,15 +42,25 @@ describe('P5 : concurrence en réel — 4 générations parallèles, borne 2', (
   let server: Server;
   let baseUrl: string;
   let projectId = '';
+  // Porte déterministe pour J-1 : la requête « longue » reste ACTIVE côté
+  // provider jusqu'à libération manuelle par le test → l'état observable
+  // « exactement 1 slot occupé » existe forcément, quelle que soit la charge
+  // machine (anti-flakiness par construction, plus par fenêtre de temps).
+  let releaseLongRequest: () => void = () => {};
+  let longRequestGate: Promise<void> = Promise.resolve();
 
   before(async () => {
     process.env.VOLACO_MAX_CONCURRENT_AI = '2';
     // provider LENT (400 ms) : 4 requêtes parallèles → 2 passent, 2 × 503
+    // Porte J-1 : prompt > 30 caractères → bloqué jusqu'à releaseLongRequest().
+    // Tous les autres prompts (≤ 30) gardent le comportement historique 400 ms.
+    longRequestGate = new Promise<void>((resolve) => { releaseLongRequest = resolve; });
     imageProviderRegistry.register({
       id: 'slow-p5',
       name: 'Slow P5',
       isAvailable: () => true,
       generate: async (prompt: string) => {
+        if (prompt.length > 30) await longRequestGate;
         await new Promise((r) => setTimeout(r, 400));
         return { data: Buffer.from('P5:' + prompt.length), contentType: 'image/jpeg' };
       }
@@ -144,34 +154,37 @@ describe('P5 : concurrence en réel — 4 générations parallèles, borne 2', (
   });
 
   it('5. J-1 : chaque requête terminée libère EXACTEMENT un slot (pas de double-release close+finish)', async () => {
-    // Scénario de régression (borne 2, provider slow-p5 400 ms) :
-    //   A démarre à t=0 ; B à t=+250 ms (termine ~t=650 ms).
-    //   A termine ~t=410 ms → UNE libération ramène le compteur à 1 (B actif).
-    //   Avec le bug double-release (finish + close), le compteur tombait à 0
-    //   alors que B tournait encore → C ET D passaient (2 slots inventés).
+    // Scénario de régression (borne 2) :
+    //   A démarre à t=0 ; B à t=+250 ms. B est BLOQUÉE côté provider (porte
+    //   déterministe) tant que le test ne la libère pas → après la fin de A,
+    //   l'état « exactement 1 slot occupé (B) » est garanti observable, sans
+    //   dépendre de la vitesse disque/CPU (anti-flakiness par construction).
+    //   Avec le bug double-release (finish + close), la fin de A libérait DEUX
+    //   slots → activeAi tombait à 0 alors que B tournait encore, et C ET D
+    //   passaient (2 slots inventés).
     const H5 = { 'Content-Type': 'application/json', 'x-tenant-id': 'tenant_p5_02', 'x-user-role': 'ENGINEER' };
     const gen = (prompt: string) =>
       fetch(`${baseUrl}/api/v1/projects/${projectId}/images/generate`, {
         method: 'POST', headers: H5, body: JSON.stringify({ prompt })
       });
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
     const a = gen('J1 requête courte A');
-    await new Promise((r) => setTimeout(r, 250)); // décale B pour qu'il survive à A
-    const b = gen('J1 requête longue Bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+    await sleep(250); // décale B pour qu'il survive à A
+    const b = gen('J1 requête longue Bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'); // > 30 → porte
     const aRes = await a;
     await aRes.text(); // consomme la réponse → res terminé côté serveur
-    // Déterminisme : on attend l'état observable exact « B seul actif »
-    // (activeAi === 1). Avec le bug double-release, cet état n'arrive jamais
-    // (le compteur passe directement à 0) → les assertions suivantes échouent.
+    // Déterminisme : B étant bloquée côté provider, l'état « B seul actif »
+    // (activeAi === 1) est garanti atteignable. Avec le bug double-release,
+    // cet état n'arrive jamais (le compteur passe directement à 0).
     let activeAi = -1;
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 150; i++) {
       const m = (await (await fetch(`${baseUrl}/api/v1/metrics`, { headers: H5 })).json()) as { runtime?: { activeAi?: number } };
       activeAi = m.runtime?.activeAi ?? -1;
       if (activeAi === 1) break;
-      await new Promise((r) => setTimeout(r, 50));
+      await sleep(100);
     }
     assert.equal(activeAi, 1, 'état observable : exactement B actif (1 slot)');
-    const bStill = new Promise((r) => setTimeout(r, 100)).then(() => b);
 
     // Le slot de B est encore occupé : parmi C/D/E/F, UNE SEULE doit passer
     const cde = await Promise.all([gen('J1 Cc'), gen('J1 Dd'), gen('J1 Ee'), gen('J1 Ff')]);
@@ -179,9 +192,10 @@ describe('P5 : concurrence en réel — 4 générations parallèles, borne 2', (
     const busy = cde.filter((r) => r.status === 503).length;
     assert.equal(created, 1, `exactement 1 requête admise pendant B (bug double-release : 2 admises)`);
     assert.equal(busy, 3, 'les 3 autres sont refusées 503 AI_BUSY');
-    await bStill;
 
-    // État restauré : après tout le monde, la borne redevient disponible
+    // Libération déterministe de B, puis retour à l'état initial
+    releaseLongRequest();
+    await b;
     const after = await gen('J1 post-vérification');
     assert.equal(after.status, 201, 'compteur exactement revenu à l état initial');
   });

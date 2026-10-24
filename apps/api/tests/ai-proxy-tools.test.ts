@@ -75,6 +75,17 @@ describe('CORE-API É34 : proxy IA — transmission des outils', () => {
       body: JSON.stringify(body)
     });
 
+  it('0. NON-RÉGRESSION bouton Studio : model explicite + max_tokens:5 acceptés (P0 #400)', async () => {
+    // Le bouton "Tester la connexion" du Studio envoie TOUJOURS un model
+    // explicite. Un validateur trop strict ici casse 100 % des appels réels
+    // alors que la suite restait verte (les tests existants omettaient model).
+    cannedResponse = { choices: [{ message: { content: 'OK' } }] };
+    const res = await post({ model: 'codestral-latest', messages: [{ role: 'user', content: 'OK' }], max_tokens: 5 });
+    assert.equal(res.status, 200);
+    assert.equal(captured?.body?.model, 'codestral-latest');
+    assert.equal(captured?.body?.max_tokens, 5);
+  });
+
   it('1. sans tools : la requête upstream ne contient PAS de clé tools (comportement inchangé)', async () => {
     cannedResponse = { choices: [{ message: { content: 'Bonjour !' } }] };
     const res = await post({ messages: [{ role: 'user', content: 'salut' }] });

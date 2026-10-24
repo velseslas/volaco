@@ -77,8 +77,14 @@ export class VisualIntelligenceService {
     // É45 P2 — empreinte déterministe du contenu dans la clé : sans elle,
     // tenant:project:page:viewport resservait un snapshot stale après édition
     // du même projet (LRU sans TTL, clearCache() sans appelant production).
+    // CDC V8 Lot A — l'empreinte inclut la provenance du DOM : un snapshot
+    // RUNTIME (styles calculés réels) ne doit jamais être resservi pour une
+    // analyse statique du même HTML, et inversement.
     const contentFingerprint = createHash('sha256').update(htmlContent ?? '', 'utf8').digest('hex').substring(0, 16);
-    const cacheKey = `${tenantId}:${projectId}:${pageRoute}:${viewportKind}:${contentFingerprint}`;
+    const runtimeFingerprint = runtimeDom
+      ? createHash('sha256').update(JSON.stringify(runtimeDom), 'utf8').digest('hex').substring(0, 16)
+      : 'static';
+    const cacheKey = `${tenantId}:${projectId}:${pageRoute}:${viewportKind}:${contentFingerprint}:${runtimeFingerprint}`;
 
     // 1. Check LRU Cache
     const cached = this.cache.get(cacheKey);
@@ -97,10 +103,13 @@ export class VisualIntelligenceService {
       ? this.domNormalizer.normalizeFromRuntimeProbe(runtimeDom)
       : this.domNormalizer.normalizeFromHtml(htmlContent || '');
 
-    // 3. Compute Styles
+    // 3. Compute Styles (les media queries sont filtrées sur la largeur du
+    //    viewport réellement analysé — CDC V8 §7.7).
     const { updatedNode: styledRoot, colors, fonts } = this.styleComputer.computeNodeStyles(
       rawRootNode,
-      cssContent || ''
+      cssContent || '',
+      viewport.width,
+      { useProvidedStyles: Boolean(runtimeDom) }
     );
 
     // 4. Compute Layout & Profiles
@@ -136,7 +145,8 @@ export class VisualIntelligenceService {
       snapshotHash,
       capturedAt: new Date().toISOString(),
       durationMs,
-      screenshotBase64
+      screenshotBase64,
+      layoutSource: runtimeDom ? 'RUNTIME' : 'ESTIMATED'
     });
 
     // 6. Optional Multimodal Vision Analysis

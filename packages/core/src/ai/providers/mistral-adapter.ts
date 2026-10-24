@@ -53,7 +53,7 @@ export class MistralProviderAdapter implements AIProviderAdapter {
 
     const baseUrl = (credentials?.baseUrl || 'https://api.mistral.ai').replace(/\/+$/, '');
     const endpoint = `${baseUrl}/v1/chat/completions`;
-    const model = request.model || 'codestral-latest';
+    const model = request.model || process.env.MISTRAL_MODEL || 'mistral-medium-latest';
     const timeoutMs = request.timeoutMs ?? 15000;
 
     // É33 — Historique multi-tours : quand request.messages est fourni, il
@@ -280,7 +280,7 @@ export class MistralProviderAdapter implements AIProviderAdapter {
 
     const baseUrl = (credentials?.baseUrl || 'https://api.mistral.ai').replace(/\/+$/, '');
     const endpoint = `${baseUrl}/v1/chat/completions`;
-    const model = request.model || 'codestral-latest';
+    const model = request.model || process.env.MISTRAL_MODEL || 'mistral-medium-latest';
     const timeoutMs = request.timeoutMs ?? 120000; // 2 minutes pour le streaming
 
     const messages: { role: 'system' | 'user'; content: string }[] = [];

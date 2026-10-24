@@ -41,7 +41,10 @@ export class TaskDecomposer {
           requiredContext: {
             targetFiles: step.targetFiles ?? [],
             includeSemanticModel: true,
-            includeSemanticGraph: true
+            includeSemanticGraph: true,
+            // CDC V8 §11 — les tâches UI lisent aussi le Design DNA réel du
+            // projet (tokens/direction/règles) quand un rapport existe.
+            ...(domain === 'UI' ? { includeDna: true } : {})
           },
           requiredCapabilities: capabilities,
           operation: step.operation,

@@ -9,8 +9,80 @@
     import { MockBuildEventSource, SSEBuildEventSource, normalizeGenerationEvent } from '/preview-builder/adapter.js';
     import { demoSseChunks } from '/preview-builder/mocks.js';
     import { resolvePreviewBuilderV2 } from '/preview-builder/flags.js';
+    // Collecteur d'erreurs runtime (ex-inline preview-builder.html — la CSP
+    // script-src 'self' bloquait l'inline : déplacé ici, strictement équivalent).
+    window.__errs = window.__errs || [];
+    window.addEventListener('error', function (e) {
+      try {
+        window.__errs.push((e.message || '?') + ' @ ligne ' + e.lineno);
+        if (window.__errs.length > 200) window.__errs.splice(0, window.__errs.length - 200);
+      } catch (_) { /* diagnostic best-effort */ }
+    });
     const btnSse = document.getElementById('btnSse');
     const H = { 'Content-Type': 'application/json', 'x-tenant-id': 'studio-local', 'x-user-role': 'ENGINEER' };
+
+    // LOT VOLCO-1 — écran d'accueil « nouveau projet » : page Volaco animée
+    // (défilement continu), 100 % CSS, ZÉRO ressource externe (hors-ligne,
+    // répétable, hors radar images). Const doit exister AVANT l'appel boot
+    // de resumeSession() (pas de TDZ au démarrage).
+    const PVZ_NEUTRALIZER =
+      '.canvas .pvz-real{font-size:revert;line-height:revert;color:revert;}' +
+      '.canvas :where(.pvz-real) h1,.canvas :where(.pvz-real) h2,.canvas :where(.pvz-real) h3,.canvas :where(.pvz-real) h4{color:revert;font-weight:revert;line-height:revert;letter-spacing:revert;margin:revert;}' +
+      '.canvas :where(.pvz-real) p{margin:revert;color:revert;}' +
+      '.canvas :where(.pvz-real) ul,.canvas :where(.pvz-real) ol{margin:revert;padding:revert;color:revert;}' +
+      '.canvas :where(.pvz-real) li{margin:revert;}' +
+      '.canvas :where(.pvz-real) blockquote{margin:revert;padding:revert;color:revert;}' +
+      '.canvas :where(.pvz-real) a{color:revert;border-bottom:none;}' +
+      '.canvas :where(.pvz-real) button,.canvas :where(.pvz-real) input,.canvas :where(.pvz-real) textarea,.canvas :where(.pvz-real) select{all:revert;}';
+    const VOLACO_WELCOME_HTML = `<!DOCTYPE html>
+<html lang="fr"><head><meta charset="UTF-8"><title>VibeCode Studio — nouveau projet</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; font-family:'Segoe UI',system-ui,-apple-system,sans-serif; background:#07090f; color:#f1f5f9; overflow-x:hidden; }
+  section { overflow:hidden; }
+  .vhero { text-align:center; padding:64px 24px 44px; background:radial-gradient(1100px 480px at 50% 118%, rgba(251,146,60,.28), transparent 62%), linear-gradient(180deg,#0b0f1d 0%,#160a10 100%); }
+  .vcone { width:0; height:0; margin:0 auto 10px; border-left:78px solid transparent; border-right:78px solid transparent; border-bottom:118px solid #1d1722; filter:drop-shadow(0 8px 20px rgba(0,0,0,.55)); }
+  .vglow { width:92px; height:36px; margin:-56px auto 0; border-radius:50%; background:radial-gradient(closest-side,#fde68a,#f97316 55%,rgba(249,115,22,0) 80%); animation:vlavapulse 2.8s ease-in-out infinite; filter:blur(2px); }
+  @keyframes vlavapulse { 0%,100% { transform:scale(1); opacity:.85; } 50% { transform:scale(1.28); opacity:1; } }
+  .vhero h1 { margin:26px 0 12px; font-size:46px; font-weight:800; letter-spacing:-1px; background:linear-gradient(92deg,#fbbf24,#f97316,#fb7185); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  .vhero p { margin:0 auto; max-width:590px; color:#94a3b8; font-size:17px; line-height:1.65; }
+  .vpill { display:inline-block; margin-top:24px; padding:9px 18px; border-radius:999px; border:1px solid rgba(251,146,60,.45); color:#fdba74; background:rgba(251,146,60,.08); font-size:14px; font-weight:600; }
+  .vmarquee { padding:26px 0; border-top:1px solid rgba(251,146,60,.16); border-bottom:1px solid rgba(251,146,60,.16); background:#0a0d16; transform:rotate(-1.1deg); }
+  .vtrack { display:inline-flex; white-space:nowrap; animation:vscroll 22s linear infinite; will-change:transform; }
+  @keyframes vscroll { from { transform:translateX(0); } to { transform:translateX(-50%); } }
+  .vtrack span { font-size:22px; font-weight:800; color:#cbd5e1; padding:0 26px; letter-spacing:.5px; text-transform:uppercase; }
+  .vtrack b { color:#f59e0b; }
+  .vfeats { display:flex; gap:18px; justify-content:center; align-items:stretch; padding:50px 24px; background:#0b0f1d; flex-wrap:wrap; }
+  .vcard { width:250px; padding:22px; border-radius:16px; border:1px solid rgba(148,163,184,.15); background:rgba(15,23,42,.6); }
+  .vcard h3 { margin:0 0 8px; font-size:18px; color:#fdba74; }
+  .vcard p { margin:0; color:#94a3b8; font-size:14px; line-height:1.55; }
+  .vfoot { text-align:center; padding:26px; color:#475569; font-size:13px; background:#0a0d16; border-top:1px solid rgba(148,163,184,.12); }
+</style></head>
+<body>
+  <div class="vibe-stitched" data-section="hero-volcan">
+    <section class="vhero">
+      <div class="vcone"></div><div class="vglow"></div>
+      <h1>VibeCode Studio</h1>
+      <p>Ton projet est prêt à naître. Décris ton idée dans le chat — le site se construit en direct ici, section par section, sans code.</p>
+      <span class="vpill">🌋 Projet neuf — décris ton idée pour tout déclencher</span>
+    </section>
+  </div>
+  <div class="vibe-stitched" data-section="defile-volcan">
+    <section class="vmarquee">
+      <div class="vtrack"><span>VOLACO <b>•</b> parole = site <b>•</b> construit en direct <b>•</b> éditable au doigt <b>•</b> VOLACO <b>•</b> parole = site <b>•</b> construit en direct <b>•</b> éditable au doigt <b>•</b> </span><span>VOLACO <b>•</b> parole = site <b>•</b> construit en direct <b>•</b> éditable au doigt <b>•</b> VOLACO <b>•</b> parole = site <b>•</b> construit en direct <b>•</b> éditable au doigt <b>•</b> </span></div>
+    </section>
+  </div>
+  <div class="vibe-stitched" data-section="pret-a-erupter">
+    <section class="vfeats">
+      <div class="vcard"><h3>⚡ Un mot suffit</h3><p>Une phrase dans le chat lance la construction complète du site.</p></div>
+      <div class="vcard"><h3>✋ Édition en direct</h3><p>Déplace, style, édite : le canvas est un vrai éditeur visuel vivant.</p></div>
+      <div class="vcard"><h3>📦 Prêt à partir</h3><p>Site natif ou React — exportable et publié en un clic.</p></div>
+    </section>
+  </div>
+  <div class="vibe-stitched" data-section="pied-volcan">
+    <section class="vfoot">VibeCode Studio · Volaco — ton site s'écrira ici dès ta première phrase.</section>
+  </div>
+</body></html>`;
 
     const el = (id) => document.getElementById(id);
     // É30 — mode INTÉGRÉ : la page tourne dans l iframe du Studio
@@ -1062,6 +1134,216 @@
       }
     });
 
+    /* ===== VIBE_LIVE_PAINT v1 : construction ÉLÉMENT PAR ÉLÉMENT pendant le stream =====
+     * Le relai chat→Builder existe déjà (builder-event) mais l'adapter ignore les
+     * tokens : la preview ne peignait qu'à la section (squelette → bloc complet).
+     * Ce module exploite les tokens AVANT normalisation : le HTML partiel de la
+     * section en cours est peint élément par élément (~120 ms), en ajout seul —
+     * les éléments déjà peints ne sont jamais réécrits (images stables). Au
+     * section_end le moteur rend le vrai contenu (reveal VIBE_ELEMENT_REVEAL
+     * inchangé). Création comme modification : le moteur repart d'un canvas
+     * vierge à chaque build (BUILD_STARTED), la peinture y est donc cohérente
+     * dans les deux modes.
+     * Additif uniquement : aucun état moteur touché, repli silencieux si l'ancre
+     * DOM est absente. Désactivation : localStorage vibe_live_paint='0'.
+     * Diagnostic : window.__pvlStats { paints, elements, last }. */
+    const livePaint = { sec: null, buf: '', count: 0, timer: 0 };
+    const LIVE_TARGETS = 'h1,h2,h3,h4,h5,h6,p,a,button,img,picture,svg,li,input,textarea,select,blockquote,figure,video,table,hr,label';
+    /* TIMING (réglable sans toucher au code) : localStorage vibe_live_paint_ms
+     * (défaut 120 : throttle de peinture) et vibe_live_paint_cascade (défaut
+     * 80 : pas de la vague par élément, plafonnée à 6 pas). Plus bas = plus
+     * nerveux (plus de churn DOM), plus haut = plus doux (plus de décalage). */
+    function livePaintNum(key, fallback) {
+      try {
+        const v = Number(localStorage.getItem(key));
+        return Number.isFinite(v) && v > 0 ? v : fallback;
+      } catch (e) { return fallback; }
+    }
+    const LIVE_PAINT_MS = livePaintNum('vibe_live_paint_ms', 120);
+    const LIVE_CASCADE_STEP = livePaintNum('vibe_live_paint_cascade', 80);
+    const LIVE_CASCADE_MAX = 6;
+    const LIVE_MAX_ELTS = 60;
+
+    function livePaintStyle() {
+      if (document.getElementById('vibe-live-paint-style')) return;
+      const st = document.createElement('style');
+      st.id = 'vibe-live-paint-style';
+      st.textContent = [
+        '[data-pvl-live="1"] .pv-ghost{display:none}',
+        '.pvl-live{display:block;width:100%}',
+        '.pvl-in{animation:pvlIn 460ms cubic-bezier(.22,.9,.34,1) both}',
+        '@keyframes pvlIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}',
+        '.pvl-live img{opacity:0;transition:opacity .5s ease}',
+        '.pvl-live img.pvl-img-ok{opacity:1}',
+        '#pvl-counter{position:fixed;right:14px;bottom:14px;z-index:60;font-size:11px;color:#c4b5fd;background:rgba(12,18,36,.92);border:1px solid #2a3658;border-radius:999px;padding:4px 12px;pointer-events:none;display:none}',
+        '@media (prefers-reduced-motion:reduce){.pvl-in{animation:none}.pvl-live img{opacity:1;transition:none}}'
+      ].join('\n');
+      document.head.appendChild(st);
+    }
+    function livePaintEnabled() {
+      try { return localStorage.getItem('vibe_live_paint') !== '0'; } catch (e) { return true; }
+    }
+    function livePaintReset() {
+      livePaint.sec = null; livePaint.buf = ''; livePaint.count = 0;
+      if (livePaint.timer) { clearTimeout(livePaint.timer); livePaint.timer = 0; }
+      pvlCounterHide();
+    }
+    /* Images en fondu au chargement (pas de pop) : un seul handler onload
+     * par <img> (propriété, pas de listener : rien à accumuler ni retirer),
+     * le fallback onerror du serveur restant actif sur les clones. */
+    function pvlRevealImgs(root) {
+      try {
+        const imgs = root.querySelectorAll ? root.querySelectorAll('img') : [];
+        imgs.forEach(function (img) {
+          if (img.dataset.pvlImg === '1') return;
+          img.dataset.pvlImg = '1';
+          if (img.complete && img.naturalWidth > 0) img.classList.add('pvl-img-ok');
+          else img.onload = function () { img.classList.add('pvl-img-ok'); };
+        });
+      } catch (e) { /* décoratif : jamais de casse */ }
+    }
+    /* Compteur vivant "section · N éléments" (chip discrète, hors canvas). */
+    function pvlCounter(name, count) {
+      try {
+        let chip = document.getElementById('pvl-counter');
+        if (!chip) {
+          chip = document.createElement('div');
+          chip.id = 'pvl-counter';
+          document.body.appendChild(chip);
+        }
+        chip.textContent = name + ' · ' + count + ' élément' + (count > 1 ? 's' : '');
+        chip.style.display = 'block';
+      } catch (e) { /* décoratif */ }
+    }
+    function pvlCounterHide() {
+      try {
+        const c = document.getElementById('pvl-counter');
+        if (c) c.style.display = 'none';
+      } catch (e) { /* décoratif */ }
+    }
+    function livePaintCleanup(secName) {
+      // Le moteur rend le vrai contenu : on retire la boîte live + le marqueur.
+      pvlCounterHide();
+      try {
+        const id = (window.CSS && CSS.escape) ? CSS.escape(secName) : secName;
+        document.querySelectorAll('[data-pv-id="' + id + '"]').forEach(function (n) {
+          const box = n.querySelector(':scope > .pvl-live');
+          if (box) box.remove();
+          n.removeAttribute('data-pvl-live');
+        });
+      } catch (e) { /* best-effort */ }
+      if (livePaint.sec === secName) { livePaint.sec = null; livePaint.buf = ''; livePaint.count = 0; }
+    }
+    function livePaintPartial() {
+      if (!livePaint.sec) return null;
+      const rest = livePaint.buf;
+      const k = rest.search(/<[a-zA-Z]/);
+      if (k < 0) return { name: livePaint.sec, html: '' };
+      return { name: livePaint.sec, html: rest.slice(k).replace(/<[^>]*$/, '') };
+    }
+    function livePaintNow() {
+      livePaint.timer = 0;
+      if (!livePaintEnabled()) return;
+      const part = livePaintPartial();
+      if (!part || !part.html) return;
+      const id = (window.CSS && CSS.escape) ? CSS.escape(part.name) : part.name;
+      const node = document.querySelector('[data-pv-id="' + id + '"][data-pv-status="building"]');
+      if (!node || node.querySelector(':scope > .pvz-real')) return;
+      let doc;
+      try {
+        doc = new DOMParser().parseFromString('<body>' + part.html + '</body>', 'text/html');
+      } catch (e) { return; }
+      // Sécurité : jamais de script ni de gestionnaire inline dans la peinture live.
+      doc.querySelectorAll('script,iframe,object,embed').forEach(function (n) { n.remove(); });
+      doc.body.querySelectorAll('*').forEach(function (n) {
+        const attrs = n.attributes;
+        for (let i = attrs.length - 1; i >= 0; i--) {
+          if (/^on/i.test(attrs[i].name)) n.removeAttribute(attrs[i].name);
+        }
+      });
+      const all = Array.from(doc.body.querySelectorAll(LIVE_TARGETS));
+      const tops = all.filter(function (e) { return !all.some(function (o) { return o !== e && o.contains(e); }); }).slice(0, LIVE_MAX_ELTS);
+      if (!tops.length) return;
+      livePaintStyle();
+      node.setAttribute('data-pvl-live', '1');
+      let box = node.querySelector(':scope > .pvl-live');
+      if (!box) { box = document.createElement('div'); box.className = 'pvl-live'; node.appendChild(box); }
+      while (box.children.length > tops.length) box.removeChild(box.lastChild);
+      const prevCount = livePaint.count;
+      let cascadeIdx = 0;
+      let lastFreshNode = null;
+      for (let i = 0; i < tops.length; i++) {
+        const isLast = i === tops.length - 1;
+        const cur = box.children[i] || null;
+        // Stable (ni nouveau, ni en cours) : jamais retouché → images stables.
+        if (cur && cur.getAttribute('data-pvl-done') === '1') continue;
+        const fresh = document.importNode(tops[i], true);
+        if (!isLast) fresh.setAttribute('data-pvl-done', '1');
+        if (i >= prevCount) {
+          // CASCADE : vague visible (pas réglable, vague plafonnée).
+          fresh.classList.add('pvl-in');
+          fresh.style.animationDelay = Math.min(cascadeIdx, LIVE_CASCADE_MAX) * LIVE_CASCADE_STEP + 'ms';
+          cascadeIdx += 1;
+          lastFreshNode = fresh;
+        }
+        pvlRevealImgs(fresh);
+        if (cur) box.replaceChild(fresh, cur);
+        else box.appendChild(fresh);
+      }
+      livePaint.count = tops.length;
+      try {
+        window.__pvlStats = {
+          paints: ((window.__pvlStats && window.__pvlStats.paints) || 0) + 1,
+          elements: tops.length,
+          last: part.name
+        };
+      } catch (e) { /* diagnostic best-effort */ }
+      pvlCounter(part.name, tops.length);
+      // SUIVI : le panneau accompagne la construction (nearest = jamais
+      // intrusif si l'utilisateur lit ailleurs).
+      if (lastFreshNode) {
+        try {
+          const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+          lastFreshNode.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'nearest' });
+        } catch (e) { /* décoratif */ }
+      }
+    }
+    function livePaintRelay(ev) {
+      // Branché sur le relai existant AVANT normalisation (les tokens y sont
+      // ignorés par contrat). Ne jette jamais : tout est best-effort.
+      try {
+        if (!ev || typeof ev.type !== 'string') return;
+        switch (ev.type) {
+          case 'start':
+            livePaintReset();
+            return;
+          case 'section_start':
+            if (typeof ev.name !== 'string' || !ev.name) return;
+            livePaint.sec = ev.name; livePaint.buf = ''; livePaint.count = 0;
+            return;
+          case 'token':
+            if (!livePaint.sec || typeof ev.token !== 'string' || !ev.token) return;
+            livePaint.buf += ev.token;
+            if (livePaint.buf.length > 200000) livePaint.buf = livePaint.buf.slice(-100000);
+            if (!livePaint.timer) livePaint.timer = setTimeout(livePaintNow, LIVE_PAINT_MS);
+            return;
+          case 'section_end':
+            if (livePaint.timer) { clearTimeout(livePaint.timer); livePaint.timer = 0; }
+            if (typeof ev.name === 'string' && ev.name) livePaintCleanup(ev.name);
+            return;
+          case 'done':
+          case 'error':
+          case 'cancelled':
+            if (livePaint.timer) { clearTimeout(livePaint.timer); livePaint.timer = 0; }
+            if (livePaint.sec) livePaintCleanup(livePaint.sec);
+            livePaintReset();
+            return;
+          default:
+            return;
+        }
+      } catch (e) { /* la peinture live ne doit jamais casser le relai */ }
+    }
+
     // É27 — PONT STUDIO → BUILDER (additif) : le chat du Studio transmet
     // l'intention de génération ; le Builder reste MAÎTRE de son pipeline —
     // il déclenche son PROPRE flux (v2Prompt + btnReal, même endpoint SSE).
@@ -1071,25 +1353,55 @@
     // projects[0] aveugle : c'est ce qui affichait un vieux projet pendant
     // que l'onglet ouvrait le bon).
     let builderProjectId = null;
+    // BLOC 4 — projet porté par la construction relayée en cours : un
+    // événement d'un AUTRE projet (changement de projet mid-gen) est
+    // ignoré pour ne pas mélanger deux constructions (le done resync).
+    let relayBuildingProjectId = null;
     window.addEventListener('message', (ev) => {
       if (ev.origin !== location.origin) return;
       const d = ev.data || {};
       if (d.source !== 'vibecode-studio') return;
       if (typeof d.projectId === 'string' && d.projectId) builderProjectId = d.projectId;
-      if (d.command === 'sync-project') { syncProjectContent(); return; }
+      if (d.command === 'sync-project') {
+        // LOT VOLCO-1 — projectId vide = projet local sans équivalent serveur
+        // (tout nouveau projet du Studio) : reset accueil volcan + oubli de
+        // l'ancien pid suivi (sinon la sync suivante retomberait dessus).
+        if (!d.projectId) {
+          builderProjectId = null;
+          if (realSource) return; // pas de reset pendant un build réel
+          if (relayBuildingProjectId) return;
+          showVolcanoWelcome();
+          return;
+        }
+        syncProjectContent(); return;
+      }
       // RELAI (plus de 2e génération) : le flux du chat est rejoué dans le
       // moteur (démarrage paresseux au 1er événement moteur, jamais sur une
       // génération manuelle en cours). Le bouton GÉNÉRER manuel garde SON flux.
       if (d.command === 'builder-event' && d.event && typeof d.event === 'object') {
         if (realSource) return;
+        // BLOC 4 — suivi de projet PENDANT la génération (avant : seul le
+        // start portait le projectId, le Builder restait aveugle ensuite).
+        const relayPid = (typeof d.projectId === 'string' && d.projectId) ? d.projectId : null;
+        if (d.event.type === 'start') relayBuildingProjectId = relayPid;
+        if (relayPid && relayBuildingProjectId && state.status === 'building' && relayPid !== relayBuildingProjectId) return;
         try {
+          livePaintRelay(d.event); // VIBE_LIVE_PAINT : peinture live élément par élément (best-effort)
           const norm = normalizeGenerationEvent(d.event);
           if (!norm || norm.events.length === 0) return;
           if (state.status !== 'building') {
             state = createPreviewBuildState();
+            relayBuildingProjectId = relayPid;
             consume({ kind: 'BUILD_STARTED', stage: 'structure', timestamp: Date.now() });
           }
-          for (const e of norm.events) consume(e);
+          for (const e of norm.events) {
+            consume(e);
+            // BLOC 4 — fin attribuée au bon projet (un done tardif de l'ancien
+            // ne doit pas libérer le suivi du nouveau).
+            if (e.kind === 'BUILD_COMPLETED' || e.kind === 'BUILD_FAILED' || e.kind === 'BUILD_CANCELLED') {
+              if (!relayPid || relayPid === relayBuildingProjectId) relayBuildingProjectId = null;
+            }
+          }
         } catch (e) { /* frame malformée : le flux continue */ }
         return;
       }
@@ -1102,8 +1414,18 @@
     });
     // Recharge le projet suivi depuis le serveur — jamais pendant une
     // génération réelle en cours (le flux en livrera le contenu).
+    // BLOC 4 — une sync vers un AUTRE projet abandonne la construction
+    // suivie (adoptée : les événements tardifs de l'ancien sont ignorés
+    // par pid) ; vers le MÊME projet en cours de build : refusée.
     async function syncProjectContent() {
       if (realSource) return;
+      if (relayBuildingProjectId) {
+        if (builderProjectId && builderProjectId !== relayBuildingProjectId) {
+          relayBuildingProjectId = builderProjectId;
+        } else if (state.status === 'building') {
+          return;
+        }
+      }
       await resumeSession(builderProjectId || undefined);
     }
 
@@ -1325,6 +1647,144 @@
     // SOURCE UNIQUE : avec un projectId explicite (sync du Studio), on
     // recharge CE projet même si le canvas n'est pas vide — c'est un ordre,
     // pas une devinette (le bail anti-écrasement ne vaut que pour le boot).
+    /* ===== FIDÉLITÉ BUILDER = ONGLET : styles + polices du <head> =====
+     * Le canvas rejouait les corps de sections SANS le <head> (polices,
+     * <style> de la page) et retombait sur ses bases sombres (.pvz-real :
+     * titres blancs, liens violets) — invisibles sur fond clair, là où
+     * l'onglet (HTML brut complet) affichait le vrai design.
+     * refreshPageStyles extrait polices + styles du HTML sauvegardé et les
+     * injecte SCOPÉS au canvas (préfixe `.canvas`, body/html/:root remappés) :
+     * à spécificité égale la page gagne (ordre), sans fuiter dans l'UI.
+     * Best-effort : remplacé à chaque refresh, jamais de casse. */
+    function scopeBuilderSelector(sel, scope) {
+      const s = sel.trim();
+      if (!s || s.indexOf(scope) === 0) return s;
+      // :root (variables) et body/html -> le conteneur canvas.
+      const mapped = s.replace(/(^|[\s>+~])(html|body|:root)(?=[\s>+~.:#\[{]|$)/gi, '$1' + scope);
+      if (mapped !== s) return mapped;
+      return scope + ' ' + s;
+    }
+    function scopeBuilderCss(cssText, scope) {
+      const clean = String(cssText || '').replace(/\/\*[\s\S]*?\*\//g, '');
+      function parse(src) {
+        let out = '';
+        let i = 0;
+        const n = src.length;
+        function block() { // appelé APRES le '{' : contenu jusqu'au '}' équilibré
+          let depth = 1;
+          const start = i;
+          while (i < n && depth > 0) {
+            if (src[i] === '{') depth += 1;
+            else if (src[i] === '}') depth -= 1;
+            i += 1;
+          }
+          return src.slice(start, Math.max(start, i - 1));
+        }
+        while (i < n) {
+          while (i < n && /\s/.test(src[i])) i += 1;
+          if (i >= n || src[i] === '}') break;
+          if (src[i] === '@') {
+            const start = i;
+            while (i < n && src[i] !== '{' && src[i] !== ';') i += 1;
+            const header = src.slice(start, i).trim();
+            if (i < n && src[i] === ';') { out += header + ';'; i += 1; continue; }
+            i += 1; // saute '{'
+            const body = block();
+            if (/^@(media|supports|container)\b/i.test(header)) out += header + '{' + parse(body) + '}';
+            else out += header + '{' + body + '}'; // keyframes, font-face… intacts
+            continue;
+          }
+          const start = i;
+          while (i < n && src[i] !== '{' && src[i] !== '}') i += 1;
+          const selectors = src.slice(start, i).trim();
+          if (i >= n || src[i] !== '{') { out += selectors; break; }
+          i += 1;
+          const body = block();
+          if (!selectors) continue;
+          const scoped = selectors.split(',').map((s) => scopeBuilderSelector(s, scope)).filter(Boolean).join(', ');
+          if (scoped) out += scoped + '{' + body + '}';
+        }
+        return out;
+      }
+      return parse(clean);
+    }
+
+    /* Neutraliseur typographique : quand la page apporte ses propres styles,
+     * les bases .pvz-real (14px, marges/headers custom, liens/boutons violets)
+     * sont ramenées aux défauts navigateur (revert = vérité onglet) — SANS
+     * toucher aux animations (reveal) ni à la structure Placé AVANT les
+     * styles page : la page gagne toujours quand elle s'exprime. */
+    // LOT VOLCO-1 : la CONSTANTE est déclarée en tête de module (voir plus
+    // haut) — au boot, refreshPageStyles la lit AVANT que cette ligne ne
+    // s'exécute ; const ici = TDZ au premier accueil volcanique.
+    /* Injecte polices + styles du <head> sauvegardé, scopés au canvas.
+     * Remplace l'injection précédente à chaque refresh (jamais d'empilement).
+     * Best-effort : toute anomalie est ignorée, le canvas garde ses bases. */
+    function refreshPageStyles(html) {
+      try {
+        if (typeof html !== 'string' || html.length === 0) return;
+        const headMatch = /<head>([\s\S]*?)<\/head>/i.exec(html);
+        const head = headMatch ? headMatch[1] : '';
+        if (!head) return;
+        // 1. Polices (+ Font Awesome du document) : <link rel=stylesheet>,
+        // dédupliquées par href. Jamais de <script> (CSP + comportement).
+        const seen = new Set();
+        document.querySelectorAll('link[data-vibe-font]').forEach((l) => {
+          seen.add(l.getAttribute('href') || '');
+        });
+        const linkRe = /<link\b[^>]*>/gi;
+        let lm = linkRe.exec(head);
+        while (lm) {
+          const tag = lm[0];
+          if (/rel\s*=\s*["']stylesheet["']/i.test(tag)) {
+            const hrefM = /href\s*=\s*"([^"]*)"/i.exec(tag) || /href\s*=\s*'([^']*)'/i.exec(tag);
+            const href = hrefM ? hrefM[1] : '';
+            if (href && !seen.has(href)) {
+              seen.add(href);
+              const link = document.createElement('link');
+              link.setAttribute('rel', 'stylesheet');
+              link.setAttribute('href', href);
+              link.setAttribute('data-vibe-font', '1');
+              document.head.appendChild(link);
+            }
+          }
+          lm = linkRe.exec(head);
+        }
+        // 2. Styles : <style> du head, scopés au canvas.
+        const cssParts = [];
+        const styleRe = /<style[^>]*>([\s\S]*?)<\/style>/gi;
+        let sm = styleRe.exec(head);
+        while (sm) {
+          cssParts.push(sm[1] || '');
+          sm = styleRe.exec(head);
+        }
+        let styleEl = document.getElementById('vibe-page-styles');
+        if (!styleEl) {
+          styleEl = document.createElement('style');
+          styleEl.id = 'vibe-page-styles';
+          document.head.appendChild(styleEl);
+        }
+        const scoped = scopeBuilderCss(cssParts.join('\n'), '.canvas');
+        // Neutraliseur d'abord (bases revert), styles page ensuite (gagnent).
+        // Page sans <style> : chaîne vide = fallback Builder intact.
+        styleEl.textContent = scoped.trim() ? PVZ_NEUTRALIZER + scoped : '';
+      } catch (e) { /* fidélité best-effort : jamais de casse */ }
+    }
+
+    // ===== LOT VOLCO-1 : écran d'accueil « nouveau projet », effusion volcanique =====
+    // Un projet SANS site (ou sans projet explicite) doit montrer une page
+    // Volaco qui défile — JAMAIS projects[0] (le vieux site persistant :
+    // cuisine, boucherie…) ni un canvas figé. Page 100 % CSS, zéro ressource
+    // externe : hors-ligne, déterministe, hors radar images.
+    function showVolcanoWelcome(label) {
+      // NB : realSource est initialisé plus bas (TDZ au boot) — la garde
+      // état 'building' couvre déjà tout build réel/manuel en cours.
+      if (state.status === 'building') return;
+      try { refreshPageStyles(VOLACO_WELCOME_HTML); } catch (e) { /* styles best-effort */ }
+      rebuildCanvasFromHtml(VOLACO_WELCOME_HTML);
+      if (v2Status) v2Status.textContent = label || 'Nouveau projet — l\'éruption attend ton idée : décris-la dans le chat 🌋';
+    }
+
     async function resumeSession(explicitProjectId) {
       try {
         let proj = null;
@@ -1334,10 +1794,10 @@
           proj = (pdata.projects || pdata).find((p) => p && p.id === explicitProjectId) || null;
           if (!proj) return;
         } else {
-          const pres = await fetch('/api/v1/projects', { headers: H });
-          const pdata = await pres.json();
-          proj = (pdata.projects || pdata)[0];
-          if (!proj) return;
+          // LOT VOLCO-1 — plus de projects[0] (le vieux site qui s'affichait
+          // « toujours par défaut ») : nouveau projet = page Volaco animée.
+          showVolcanoWelcome();
+          return;
         }
         currentProjectId = proj.id;
         // P3 — si le projet est au format react-vite : recharger le BUNDLE
@@ -1352,10 +1812,16 @@
           }
         }
         const fres = await fetch('/api/v1/projects/' + proj.id + '/files/content?path=index.html', { headers: H });
-        if (!fres.ok) return;
+        if (!fres.ok) { showVolcanoWelcome(); return; }
         const fdata = await fres.json();
         const content = fdata && fdata.file ? fdata.file.content : null;
-        if (typeof content !== 'string' || content.length === 0) return;
+        if (typeof content !== 'string' || content.length === 0) { showVolcanoWelcome(); return; }
+        // LOT VOLCO-1 — coquille vide (seedIfEmpty) ou page sans section ≠ site :
+        // c'est un projet neuf → écran d'accueil Volaco, pas un canvas figé.
+        if (extractSections(content).length === 0) { showVolcanoWelcome('Nouveau projet — décris ton idée dans le chat, je construis ici 🌋'); return; }
+        // FIDÉLITÉ : le <head> sauvegardé (polices + styles) rejoint le
+        // canvas scopé — le preview affiche le vrai design, comme l'onglet.
+        refreshPageStyles(content);
         // Ordre explicite du Studio : on recharge même si le canvas affiche
         // déjà autre chose (c'est exactement le bug panneau≠onglet).
         const explicit = typeof explicitProjectId === 'string' && !!explicitProjectId;
@@ -1479,7 +1945,11 @@
       if (!message) { if (v2Status) v2Status.textContent = "Décris d'abord l'application à générer."; return; }
       const pres = await fetch('/api/v1/projects', { headers: H });
       const pdata = await pres.json();
-      const proj = (pdata.projects || pdata)[0];
+      // LOT VOLCO-1 — plus de projects[0] aveugle : priorité au projet SUIVI
+      // (sync Studio / dernière génération), fallback historique [0] sinon.
+      const appList = (pdata.projects || pdata);
+      const wanted = currentProjectId || builderProjectId || null;
+      const proj = (wanted && appList.find((p) => p && p.id === wanted)) || appList[0];
       if (!proj) { if (v2Status) v2Status.textContent = 'Aucun projet serveur.'; return; }
       currentProjectId = proj.id;
       if (v2Status) v2Status.textContent = 'Génération du projet React en cours…';

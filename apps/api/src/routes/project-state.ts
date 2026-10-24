@@ -12,6 +12,7 @@ import { ValidationError } from '../../../../packages/core/src/errors.js';
 import type { RequestContext } from '../middleware/auth.js';
 
 import { readBody } from '../middleware/body.js';
+import { runValidationChain } from './validation.js';
 export const workspaceServiceInstance = new WorkspaceService(projectStore, auditStore, fileStore, revisionStore);
 export const projectStateService = new ProjectStateService(
   projectStore,
@@ -87,9 +88,14 @@ export async function handleProjectStateRoutes(
   }
 
   // 3. POST /api/v1/projects/:projectId/validate
+  //    LOT 2 (§25) : la validation passe désormais d'abord par la CHAÎNE
+  //    UNIQUE réelle (structure → parse réel → a11y WCAG → design → tests) ;
+  //    la mise à jour de statut historique reste en place pour la
+  //    rétro-compatibilité (mêmes clés `checks`), et la réponse porte
+  //    { validation, report, requestId }.
   if (req.method === 'POST' && subRoute === 'validate') {
     const bodyText = await readBody(req);
-    let payload: { checks?: any } = {};
+    let payload: { checks?: any; entryFile?: unknown } = {};
     if (bodyText && bodyText.trim().length > 0) {
       try {
         payload = JSON.parse(bodyText);
@@ -97,6 +103,23 @@ export async function handleProjectStateRoutes(
         throw new ValidationError('JSON invalide dans le corps de la requête', undefined, requestId);
       }
     }
+    if (payload.entryFile !== undefined) {
+      if (typeof payload.entryFile !== 'string' || payload.entryFile.trim().length === 0) {
+        throw new ValidationError('Le champ "entryFile" doit être une chaîne non vide', undefined, requestId);
+      }
+    }
+
+    // Chaîne réelle EN PREMIER : une entrée imposée introuvable lève une
+    // erreur AVANT toute mutation de statut (pas d'effet de bord prématuré).
+    const report = await runValidationChain(
+      {
+        tenantId: context.tenantId,
+        projectId,
+        ...(typeof payload.entryFile === 'string' ? { entryFile: payload.entryFile } : {})
+      },
+      context.role,
+      requestId
+    );
 
     const validation = projectStateService.runProjectValidation(
       context.tenantId,
@@ -108,7 +131,7 @@ export async function handleProjectStateRoutes(
 
     res.statusCode = 200;
     res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ validation, requestId }));
+    res.end(JSON.stringify({ validation, report, requestId }));
     return true;
   }
 

@@ -60,7 +60,10 @@ async function handleBatch(
   req: IncomingMessage, res: ServerResponse, pathname: string,
   context: RequestContext, requestId: string
 ): Promise<boolean> {
-  assertPermission(context.role, 'PROJECT_READ', requestId);
+  // E3 — cette branche EXÉCUTE des agents (mutations réelles) : elle exige
+  // donc PROJECT_MUTATE, comme orchestrate.ts. PROJECT_READ était insuffisant
+  // (un VIEWER pouvait déclencher une exécution mutante).
+  assertPermission(context.role, 'PROJECT_MUTATE', requestId);
   if (!orchestratorRef) {
     sendJson(res, 503, { message: 'AIOrchestratorService non configure', requestId });
     return true;
@@ -81,9 +84,10 @@ async function handleBatch(
     const tasks = body.tasks.map((t, idx) => {
       const taskBody = t.task;
       const taskId = String(t.taskId || `task-${idx + 1}`);
+      const agentId = String(t.agentId || '');
       return {
         taskId,
-        agentId: String(t.agentId || ''),
+        agentId,
         dependencies: Array.isArray(t.dependencies) ? t.dependencies.map(String) : [],
         order: typeof t.order === 'number' ? t.order : idx + 1,
         task: {
@@ -93,7 +97,12 @@ async function handleBatch(
           domain: 'ARCHITECTURE' as const,
           priority: 1,
           dependencies: Array.isArray(t.dependencies) ? t.dependencies.map(String) : [],
-          requiredContext: { targetFiles: taskBody && Array.isArray(taskBody.targetFiles) ? taskBody.targetFiles : [] },
+          requiredContext: {
+            targetFiles: taskBody && Array.isArray(taskBody.targetFiles) ? taskBody.targetFiles : [],
+            // CDC V8 §11 — les tâches de l'UI Agent lisent le Design DNA réel
+            // du projet (rapport Design Harmony persisté) avant génération.
+            ...(agentId === 'agent-ui-specialist' ? { includeDna: true } : {})
+          },
           requiredCapabilities: (taskBody && Array.isArray(taskBody.requiredCapabilities) ? taskBody.requiredCapabilities : []) as never,
           status: 'READY' as const,
           operation: ((taskBody && taskBody.operation) || 'CREATE') as never,
@@ -218,7 +227,7 @@ export async function handleAgentExecutionRoutes(
       sendJson(res, 400, { message: 'projectId et executionId obligatoires', requestId });
       return true;
     }
-    console.error('[DBG-ROUTE] tenant:', context.tenantId, '| project:', projectId, '| exec:', executionId, '| query count:', agentTraceStore.query(context.tenantId, projectId).length, '| get:', JSON.stringify(!!agentTraceStore.get(context.tenantId, projectId, executionId)));
+
     const batch = agentTraceStore.get(context.tenantId, projectId, executionId);
     if (!batch || batch.kind !== 'BATCH') {
       // 404 canonique identique : inexistant / autre tenant / autre projet /
@@ -272,7 +281,9 @@ export async function handleAgentExecutionRoutes(
     return handleBatch(req, res, pathname, context, requestId);
   }
   if (!pathname.includes('/agents/execute') || req.method !== 'POST') return false;
-  assertPermission(context.role, 'PROJECT_READ', requestId);
+  // E3 — exécution unitaire d'agent = opération MUTANTE (le résultat peut
+  // appliquer des modifications de fichiers). PROJECT_MUTATE requis.
+  assertPermission(context.role, 'PROJECT_MUTATE', requestId);
   if (!orchestratorRef) {
     sendJson(res, 503, { message: 'AIOrchestratorService non configure (ÉTAPE 32)', requestId });
     return true;
@@ -313,20 +324,30 @@ export async function handleAgentExecutionRoutes(
     domain: 'ARCHITECTURE',
     priority: 1,
     dependencies: [],
-    requiredContext: { targetFiles },
+    requiredContext: {
+      targetFiles,
+      // CDC V8 §11 — l'exécution unitaire de l'UI Agent est design-aware :
+      // le contexte assemblé ci-dessous injecte le Design DNA réel du projet
+      // (tokens/direction/règles du dernier rapport Design Harmony).
+      ...(body.agentId === 'agent-ui-specialist' ? { includeDna: true } : {})
+    },
     requiredCapabilities: Array.isArray(body.task.requiredCapabilities) ? body.task.requiredCapabilities as never[] : [],
     status: 'READY',
     operation: operation as AgentTask['operation'],
     retryCount: 0,
     maxRetries: 0
   };
-  const execContext: TaskContextPayload = {
-    relevantFiles: {},
-    relevantSymbols: [],
-    decisions: [],
-    constraints: [],
-    recentHistory: []
-  };
+  // CDC V8 §11 — contexte assemblé par LA MÊME source que le scheduler
+  // (ContextOrchestrator) : assainissement des cibles, slice sémantique,
+  // Design DNA réel quand includeDna. Sans fichier transmis ni rapport, le
+  // contexte reste identique à l'ancien (payload vide).
+  const execContext: TaskContextPayload = orchestratorRef.assembleTaskContext({
+    tenantId: context.tenantId,
+    projectId,
+    task,
+    userRole: context.role,
+    requestId
+  });
 
   logger.info('Exécution d agent demandée (ÉTAPE 32)', {
     component: 'agent-execution-route',

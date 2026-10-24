@@ -19,6 +19,12 @@ export class PlanGenerator {
     assumptions?: readonly ConversationAssumption[] | undefined;
     semanticModel?: ApplicationSemanticModel | undefined;
     contextConstraints?: readonly string[] | undefined;
+    /**
+     * Cibles explicites fournies par l'appelant quand l'intent ou le modèle
+     * ne permettent pas de déduire un fichier. Le flux Studio fournit
+     * `index.html` ; le moteur conversationnel générique peut l'omettre.
+     */
+    defaultTargetFiles?: readonly string[] | undefined;
   }): EngineeringPlan {
     const { intent, semanticModel } = params;
 
@@ -39,6 +45,14 @@ export class PlanGenerator {
       );
       if (matchingDomain && matchingDomain.relatedFiles.length > 0) {
         targetFiles.push(...matchingDomain.relatedFiles.slice(0, 3));
+      }
+    }
+
+    if (targetFiles.length === 0) {
+      for (const file of params.defaultTargetFiles ?? []) {
+        if (!targetFiles.includes(file)) {
+          targetFiles.push(file);
+        }
       }
     }
 
@@ -76,6 +90,7 @@ export class PlanGenerator {
       title: `Verify changes and ensure zero regressions`,
       description: `Run automated checks, type checks and integration verifications.`,
       targetDomain,
+      targetFiles: targetFiles.length > 0 ? targetFiles : undefined,
       operation: 'VERIFY',
       requiresApproval: false
     });

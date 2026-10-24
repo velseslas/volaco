@@ -138,6 +138,27 @@ describe('AINT-013 : Application Audit HTTP API Integration Tests', () => {
     assert.ok(body.report.overallScore >= 90);
   });
 
+  it('4bis. POST /api/v1/audit : sans fichier, aucune dimension ne doit être inventée (score global null, statuts UNKNOWN)', async () => {
+    const res = await fetch(`${baseUrl}/api/v1/audit`, {
+      method: 'POST',
+      headers: {
+        'x-tenant-id': tenantId,
+        'x-user-role': 'VIEWER',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({ files: [] })
+    });
+
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as any;
+    assert.equal(body.success, true);
+    assert.equal(body.report.overallScore, null);
+    assert.equal(body.report.coverage, 0);
+    assert.equal(body.report.dimensionScores.security, null);
+    assert.equal(body.report.dimensionScores.accessibility, null);
+    assert.equal(body.report.dimensionStatus.DESIGN_HARMONY, 'UNKNOWN');
+  });
+
   it('5. Isolation Multi-Tenant : doit renvoyer 404 pour un locataire étranger non autorisé', async () => {
     const res = await fetch(`${baseUrl}/api/v1/projects/${projectId}/audit`, {
       method: 'POST',

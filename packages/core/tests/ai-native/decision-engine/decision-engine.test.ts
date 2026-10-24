@@ -224,6 +224,53 @@ describe('PHASE 9.5 — Decision Engine', () => {
       assert.equal(onlyA.length, 1);
       assert.equal(onlyA[0]?.projectId, 'proj_A');
     });
+
+    it('borne le ledger en LRU et persiste les survivantes', () => {
+      const fileName = `decisions-lru-${randomUUID().slice(0, 8)}`;
+      const ledger = new DecisionLedger({ fileName, maxEntries: 3 });
+      const makeDecision = (decisionId: string): Decision => ({
+        decisionId,
+        sessionId: 'sess_lru',
+        projectId: 'proj_lru',
+        tenantId: 't',
+        intentGoal: `goal ${decisionId}`,
+        intentCategory: 'CREATE',
+        verdict: 'READY',
+        alternatives: [],
+        constraints: [],
+        contradictingDecisions: [],
+        rationale: 'lru test',
+        requiredClarifications: [],
+        intelligenceSources: [],
+        createdAt: new Date().toISOString(),
+        status: 'PROPOSED'
+      });
+
+      ledger.recordDecision(makeDecision('dec-lru-1'));
+      ledger.recordDecision(makeDecision('dec-lru-2'));
+      ledger.recordDecision(makeDecision('dec-lru-3'));
+      assert.equal(ledger.count(), 3);
+
+      // 1 redevient la plus récente ; 2 devient la plus ancienne.
+      assert.ok(ledger.getById('dec-lru-1'));
+      ledger.recordDecision(makeDecision('dec-lru-4'));
+
+      assert.equal(ledger.count(), 3, 'la borne est respectée');
+      assert.ok(ledger.getById('dec-lru-1'), 'la décision récemment lue survit');
+      assert.equal(ledger.getById('dec-lru-2'), undefined, 'la moins récemment utilisée est évincée');
+      assert.ok(ledger.getById('dec-lru-3'));
+      assert.ok(ledger.getById('dec-lru-4'));
+
+      // Persistance : un nouveau ledger relit exactement les survivantes.
+      const reloaded = new DecisionLedger({ fileName, maxEntries: 3 });
+      assert.equal(reloaded.count(), 3);
+      assert.equal(reloaded.getById('dec-lru-2'), undefined);
+      assert.ok(reloaded.getById('dec-lru-1'));
+      assert.ok(reloaded.getById('dec-lru-3'));
+      assert.ok(reloaded.getById('dec-lru-4'));
+
+      reloaded.clear();
+    });
   });
 
   describe('AlternativeGenerator', () => {
@@ -296,6 +343,21 @@ describe('PHASE 9.5 — Decision Engine', () => {
       const before = ledger.count();
       await engine.decide(makeContext('proj_persist'));
       assert.equal(ledger.count(), before + 1, 'Decision should be persisted');
+    });
+
+    it('mode consultatif (record:false) : décision réelle SANS écriture dans le ledger', async () => {
+      const ledger = new DecisionLedger({ fileName: `decisions-test-${randomUUID().slice(0, 8)}` });
+      const engine = new DecisionEngine({
+        constraintRegistry: new ConstraintRegistry({ adrDir: '/nonexistent' }),
+        decisionLedger: ledger,
+        alternativeGenerator: new AlternativeGenerator()
+      });
+      const before = ledger.count();
+      const decision = await engine.decide(makeContext('proj_advisory'), { record: false });
+      assert.equal(ledger.count(), before, 'advisory decision must not grow the ledger');
+      assert.equal(decision.status, 'PROPOSED');
+      assert.match(decision.decisionId, /^dec-/);
+      assert.ok(decision.alternatives.length >= 1);
     });
 
     it('doit accepter une décision via acceptDecision', async () => {

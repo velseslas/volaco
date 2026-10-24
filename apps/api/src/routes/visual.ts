@@ -12,7 +12,12 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { renderProjectPreview } from '../../../../packages/core/src/ai-native/visual-intelligence/real-renderer.js';
+import type { MobileOverflowResult } from '../../../../packages/core/src/ai-native/visual-intelligence/real-renderer.js';
 import { VisualIntelligenceService } from '../../../../packages/core/src/ai-native/visual-intelligence/service.js';
+import { extractDocumentCss } from '../../../../packages/core/src/ai-native/visual-intelligence/engine/css-parser.js';
+import type { VisualSnapshot } from '../../../../packages/core/src/ai-native/visual-intelligence/types.js';
+import { DesignCriticEngine } from '../../../../packages/core/src/ai-native/design-harmony/engine/design-critic.js';
+import type { DesignCritique } from '../../../../packages/core/src/ai-native/design-harmony/types.js';
 import { fileStore } from '../../../../packages/core/src/file-explorer/store.js';
 import { projectStore } from '../../../../packages/core/src/identity/project.js';
 import { assertPermission } from '../../../../packages/core/src/identity/permissions.js';
@@ -21,6 +26,7 @@ import { logger } from '../../../../packages/core/src/logger.js';
 import type { RequestContext } from '../middleware/auth.js';
 
 const visualService = new VisualIntelligenceService();
+const designCritic = new DesignCriticEngine();
 
 interface CriticFinding {
   severity: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
@@ -40,13 +46,74 @@ export function computeCriticScore(findings: readonly CriticFinding[]): number {
   return Math.max(0, Math.min(100, 100 - total));
 }
 
+/**
+ * B1 — finding de troncature : le flux IA s'est terminé avec une section
+ * ouverte jamais refermée (sortie coupée à maxTokens ou marqueur oublié).
+ * CRITICAL (-25) : la page est incomplète par construction, jamais à valider.
+ */
+export function truncationFinding(): CriticFinding {
+  return {
+    severity: 'CRITICAL',
+    source: 'RUNTIME',
+    title: 'Génération incomplète (tronquée)',
+    detail: 'Le flux IA s\'est terminé avec une section ouverte jamais refermée (sortie coupée ou marqueur </SECTION> manquant) : la page est incomplète. Relancez la génération.'
+  };
+}
+
 export interface VisualAnalysisResult {
   score: number;
+  passed: boolean;
   findings: CriticFinding[];
   stats: { colors: number; fonts: number; interactiveElements: number };
   renderAvailable: boolean;
   screenshotBase64?: string;
   consoleMessages: { type: string; text: string }[];
+  /** CDC V8 §13 — critique dédiée (hiérarchie/composition/esthétique/UX/perçu). */
+  critique?: DesignCritique | undefined;
+}
+
+/**
+ * B4-gate — finding de débordement mobile à partir d'une mesure réelle
+ * (390 px). Null si pas de mesure ou pas de débordement : jamais de
+ * pénalité devinée.
+ */
+export function mobileOverflowFinding(mob: MobileOverflowResult | null): CriticFinding | null {
+  if (!mob || !mob.overflowX) return null;
+  return {
+    severity: 'MEDIUM',
+    source: 'DESIGN',
+    title: `Débordement horizontal sur mobile (${mob.wideElements} élément(s) trop large(s))`,
+    detail: 'À 390 px de large, du contenu dépasse : la moitié du trafic mobile scrolle horizontalement.'
+  };
+}
+export function genericImageFindings(htmlContent: string, pageTitle: string): CriticFinding[] {
+  const out: CriticFinding[] = [];
+  const imgs = [...htmlContent.matchAll(/<img\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi)].map((m) => m[0]);
+  if (imgs.length === 0) return out;
+  const attr = (tag: string, name: string): string => {
+    const mt = new RegExp(`\\b${name}\\s*=\\s*("[^"]*"|'[^']*'|[^\\s>]+)`, 'i').exec(tag)?.[1] ?? '';
+    return mt.replace(/^["']|["']$/g, '').trim();
+  };
+  const noAlt = imgs.filter((tag) => attr(tag, 'alt').length === 0);
+  if (noAlt.length > 0) {
+    out.push({
+      severity: 'LOW',
+      source: 'DESIGN',
+      title: `Image(s) sans texte alternatif (${noAlt.length})`,
+      detail: 'Sans alt, impossible de juger la pertinence du sujet — et les lecteurs d\'écran sont perdus.'
+    });
+  }
+  const themed = pageTitle.trim().length >= 3 && !/vibecode studio/i.test(pageTitle);
+  const generic = imgs.filter((tag) => /picsum\.photos\/seed\//i.test(attr(tag, 'src')));
+  if (themed && generic.length > 0 && generic.length * 2 >= imgs.length) {
+    out.push({
+      severity: 'LOW',
+      source: 'DESIGN',
+      title: `Images génériques sur page à thème (${generic.length}/${imgs.length})`,
+      detail: `« ${pageTitle} » mériterait des photos à sujet (réservoir vérifié) plutôt que des placeholders génériques.`
+    });
+  }
+  return out;
 }
 
 /**
@@ -71,12 +138,19 @@ export async function analyzeProjectVisual(
   let screenshotBase64: string | undefined;
   let renderAvailable = true;
   let consoleMessages: { type: string; text: string }[] = [];
+  let mobileOverflow: MobileOverflowResult | null = null;
+  // CDC V8 Lot A — CSS documentaire (<style>) lu par le pipeline statique et
+  // DOM réel du rendu (styles calculés + positions) quand Chromium répond.
+  const cssContent = extractDocumentCss(htmlContent);
+  let runtimeDom: unknown | undefined;
 
   // 1. Rendu réel (peut échouer si Chromium absent — non bloquant)
   try {
     const render = await renderProjectPreview(files);
     screenshotBase64 = render.screenshotBase64;
     consoleMessages = render.consoleMessages.map((m) => ({ type: m.type, text: m.text }));
+    if (render.mobileOverflow) mobileOverflow = render.mobileOverflow;
+    if (render.runtimeDom !== undefined) runtimeDom = render.runtimeDom;
     for (const err of render.pageErrors) {
       findings.push({
         severity: 'CRITICAL',
@@ -104,15 +178,27 @@ export async function analyzeProjectVisual(
     });
   }
 
-  // 2. Analyse visuelle déterministe du DOM (AINT-012)
+  // 2. Analyse visuelle déterministe du DOM (AINT-012) — sur le DOM RÉEL
+  //    quand le rendu a fourni ses styles calculés, sinon sur le HTML + CSS
+  //    documentaire (<style>). Les deux cas sont tracés (layoutSource).
   let colors: string[] = [];
   let fonts: string[] = [];
   let interactiveCount = 0;
+  let snapshot: VisualSnapshot | undefined;
   try {
     const analysis = await visualService.analyzeVisuals(
-      { tenantId, projectId, htmlContent, screenshotBase64, requestId },
+      {
+        tenantId,
+        projectId,
+        htmlContent,
+        cssContent,
+        ...(runtimeDom !== undefined ? { runtimeDom } : {}),
+        screenshotBase64,
+        requestId
+      },
       role
     );
+    snapshot = analysis.snapshot;
     colors = [...analysis.snapshot.extractedColors];
     fonts = [...analysis.snapshot.extractedFonts];
     interactiveCount = analysis.snapshot.interactiveElements.length;
@@ -188,6 +274,8 @@ export async function analyzeProjectVisual(
       detail: 'Des <img> sans src affichent une icône cassée à coup sûr — repli ou suppression requis.'
     });
   }
+  // B4-gate — pertinence des images sans vision (alt + génériques).
+  for (const f of genericImageFindings(htmlContent, titleText)) findings.push(f);
   const deadLinks = [...htmlContent.matchAll(/<a\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi)]
     .map((m) => m[0])
     .filter((tag) => {
@@ -246,14 +334,26 @@ export async function analyzeProjectVisual(
       detail: 'Une page cohérente ne contient qu un seul header et un seul footer — des doublons signifient que des blocs ont été empilés par des fusions successives.'
     });
   }
+  // B4-gate — débordement horizontal MESURÉ à 390 px (rendu réel, pas deviné).
+  // Null quand la page mobile n'a pas pu être évaluée : pas de finding.
+  const mobFinding = mobileOverflowFinding(mobileOverflow);
+  if (mobFinding) findings.push(mobFinding);
 
+  const score = computeCriticScore(findings);
+  const passed = score >= 90;
+  // CDC V8 §13 — critique dédiée calculée sur le snapshot réel. Elle est
+  // ADDITIVE : le score historique v1 conserve ses règles (les gates Lot B
+  // migreront sur l'AQS, pas ce lot).
+  const critique = snapshot ? designCritic.critique(snapshot) : undefined;
   return {
-    score: computeCriticScore(findings),
+    score,
+    passed,
     findings,
     stats: { colors: uniqueColors.length, fonts: uniqueFonts.length, interactiveElements: interactiveCount },
     renderAvailable,
     ...(screenshotBase64 ? { screenshotBase64 } : {}),
-    consoleMessages
+    consoleMessages,
+    ...(critique ? { critique } : {})
   };
 }
 
@@ -284,11 +384,13 @@ export async function handleVisualRoutes(
   res.setHeader('Content-Type', 'application/json');
   res.end(JSON.stringify({
     score: result.score,
+    passed: result.passed,
     findings: result.findings,
     stats: result.stats,
     renderAvailable: result.renderAvailable,
     screenshotBase64: result.screenshotBase64,
     consoleMessages: result.consoleMessages,
+    critique: result.critique,
     analyzedAt: new Date().toISOString(),
     requestId
   }));

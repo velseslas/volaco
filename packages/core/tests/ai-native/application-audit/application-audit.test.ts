@@ -557,11 +557,49 @@ describe('AINT-013 : Application Audit & Global Quality Intelligence Engine', ()
   describe('9. Score Engine & Clamping', () => {
     const scoreEngine = new ApplicationAuditScoreEngine();
 
-    it('doit retourner 100/100 si aucun finding n\'est présent', () => {
+    it('doit retourner 100/100 si aucun finding n\'est présent (mode rétrocompatible : toutes dimensions mesurées)', () => {
       const result = scoreEngine.computeScores([]);
       assert.equal(result.overallScore, 100);
       assert.equal(result.dimensionScores.architecture, 100);
       assert.equal(result.dimensionScores.security, 100);
+      assert.equal(result.coverage, 1);
+    });
+
+    it('doit retourner UNKNOWN/null pour toute dimension sans preuve et exclure ces dimensions du score global', () => {
+      const result = scoreEngine.computeScores([], undefined, {
+        ARCHITECTURE: 'MEASURED',
+        CODE_QUALITY: 'MEASURED',
+        SECURITY: 'MEASURED',
+        PERFORMANCE: 'PARTIAL',
+        UX: 'PARTIAL',
+        ACCESSIBILITY: 'UNKNOWN',
+        AI_CONFIG: 'MEASURED',
+        DESIGN_HARMONY: 'UNKNOWN'
+      });
+
+      assert.equal(result.dimensionScores.accessibility, null, 'Accessibilité sans snapshot doit être NON MESURÉE');
+      assert.equal(result.dimensionScores.designHarmony, null, 'Design harmony sans rapport doit être NON MESURÉE');
+      assert.equal(result.overallScore, 100, 'Le score global ne doit porter que sur les dimensions mesurées');
+      assert.equal(result.coverage, 0.65, 'Couverture : 4 mesurées (0,55) + 2 partielles à 0,5 (0,10) = 0,65');
+      assert.equal(result.dimensionStatus.ACCESSIBILITY, 'UNKNOWN');
+      assert.equal(result.dimensionStatus.PERFORMANCE, 'PARTIAL');
+    });
+
+    it('doit retourner un score global null quand aucune dimension ne dispose de preuve', () => {
+      const result = scoreEngine.computeScores([], undefined, {
+        ARCHITECTURE: 'UNKNOWN',
+        CODE_QUALITY: 'UNKNOWN',
+        SECURITY: 'UNKNOWN',
+        PERFORMANCE: 'UNKNOWN',
+        UX: 'UNKNOWN',
+        ACCESSIBILITY: 'UNKNOWN',
+        AI_CONFIG: 'UNKNOWN',
+        DESIGN_HARMONY: 'UNKNOWN'
+      });
+
+      assert.equal(result.overallScore, null);
+      assert.equal(result.coverage, 0);
+      assert.equal(result.dimensionScores.security, null);
     });
 
     it('doit borner strictement les scores dans [0, 100] même avec accumulation massive', () => {
@@ -581,7 +619,7 @@ describe('AINT-013 : Application Audit & Global Quality Intelligence Engine', ()
 
       const result = scoreEngine.computeScores(criticalFindings);
       assert.equal(result.dimensionScores.security, 0, 'Le score sécurité doit être borné à 0');
-      assert.ok(result.overallScore >= 0 && result.overallScore <= 100);
+      assert.ok(result.overallScore !== null && result.overallScore >= 0 && result.overallScore <= 100);
     });
   });
 
@@ -773,6 +811,17 @@ describe('AINT-013 : Application Audit & Global Quality Intelligence Engine', ()
           aiConfig: 90,
           designHarmony: 90
         },
+        dimensionStatus: {
+          ARCHITECTURE: 'MEASURED',
+          CODE_QUALITY: 'MEASURED',
+          SECURITY: 'MEASURED',
+          PERFORMANCE: 'MEASURED',
+          UX: 'MEASURED',
+          ACCESSIBILITY: 'MEASURED',
+          AI_CONFIG: 'MEASURED',
+          DESIGN_HARMONY: 'MEASURED'
+        },
+        coverage: 1,
         summary: {
           totalFindings: 0,
           criticalCount: 0,
@@ -824,7 +873,7 @@ describe('AINT-013 : Application Audit & Global Quality Intelligence Engine', ()
 
       assert.equal(report.tenantId, 'tenant-alpha');
       assert.equal(report.projectId, 'proj-001');
-      assert.ok(report.overallScore < 100, 'Des findings réels doivent réduire le score');
+      assert.ok(report.overallScore !== null && report.overallScore < 100, 'Des findings réels doivent réduire le score');
       assert.ok(report.summary.totalFindings > 0);
       assert.ok(report.summary.criticalCount >= 2, 'Doit compter eval et hardcoded secret');
       assert.ok(report.auditHash.startsWith('aar:'));
@@ -840,7 +889,10 @@ describe('AINT-013 : Application Audit & Global Quality Intelligence Engine', ()
       };
 
       const report = await service.auditApplication(request);
-      assert.equal(report.overallScore, 100);
+      assert.equal(report.overallScore, null, 'Aucune preuve : le score global doit être NON MESURÉ, pas 100');
+      assert.equal(report.coverage, 0);
+      assert.equal(report.dimensionScores.security, null);
+      assert.equal(report.dimensionStatus.ACCESSIBILITY, 'UNKNOWN');
       assert.equal(report.summary.totalFindings, 0);
     });
 
@@ -898,7 +950,7 @@ describe('AINT-013 : Application Audit & Global Quality Intelligence Engine', ()
 
       const comparison = service.compareAuditReports(rep1, rep2);
       assert.ok(comparison.resolvedFindingIds.length > 0, 'Des findings doivent être résolus');
-      assert.ok(comparison.scoreDelta > 0, 'Le score doit s\'améliorer');
+      assert.ok(comparison.scoreDelta !== null && comparison.scoreDelta > 0, 'Le score doit s\'améliorer');
       assert.equal(comparison.previousReportId, rep1.reportId);
       assert.equal(comparison.currentReportId, rep2.reportId);
     });

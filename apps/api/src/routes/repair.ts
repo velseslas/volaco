@@ -16,6 +16,9 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { renderProjectPreview } from '../../../../packages/core/src/ai-native/visual-intelligence/real-renderer.js';
 import { computeCriticScore } from './visual.js';
+import { measureProjectAesthetics } from './design-measure.js';
+import { evaluateAqsNonRegression } from '../../../../packages/core/src/ai-native/design-harmony/engine/regression-guard.js';
+import type { AestheticQualityScore } from '../../../../packages/core/src/ai-native/design-harmony/types.js';
 import { fileStore } from '../../../../packages/core/src/file-explorer/store.js';
 import { projectStore } from '../../../../packages/core/src/identity/project.js';
 import { assertPermission } from '../../../../packages/core/src/identity/permissions.js';
@@ -23,11 +26,50 @@ import { aiProviderRegistry } from '../../../../packages/core/src/ai/providers/r
 import { revisionStore } from '../../../../packages/core/src/model/revision-store.js';
 import { executionStore } from '../../../../packages/core/src/ai-native/execution/store.js';
 import { logger } from '../../../../packages/core/src/logger.js';
+import {
+  buildImageBrief,
+  buildSectorContract,
+  detectImageTheme,
+  pageTitleHint,
+  type ImageTheme,
+} from '../../../../packages/core/src/image/theme.js';
+// P1-A — filet images de la réparation : mêmes fonctions que le pipeline
+// principal (conversation.ts), aucune logique dupliquée.
+import { addImageFallbacks, sanitizeImageSources } from './conversation.js';
 import type { RequestContext } from '../middleware/auth.js';
 import { readBody } from '../middleware/body.js';
 
+/**
+ * Prompts purs de la réparation (contrat de thème global + brief images en
+ * rappel — testables sans IA). La réparation réécrit le HTML complet : sans
+ * ce rappel, le patch pouvait changer de secteur ou réintroduire des images
+ * hors sujet. Thème déduit du titre existant (aucune demande sectorielle
+ * dans cette route), préservation exigée dans les deux cas.
+ */
+export interface RepairPrompts {
+  readonly systemPrompt: string;
+  readonly userPrompt: string;
+  readonly imageTheme: ImageTheme;
+}
+
+export function buildRepairPrompts(html: string, runtimeErrors: string[]): RepairPrompts {
+  const imageTheme = detectImageTheme('', pageTitleHint(html));
+  const systemPrompt = "Tu es l'ingénieur de réparation de VibeCode Studio. On te donne le code HTML complet d'une application et la LISTE DES ERREURS RUNTIME réelles observées au chargement. Corrige UNIQUEMENT ces erreurs, sans changer le reste de l'application (Pareto-Safe). Réponds UNIQUEMENT avec le code HTML complet corrigé dans un bloc ```html ... ```."
+    + '\n\n' + buildSectorContract(imageTheme, 'modify')
+    + '\n\n' + buildImageBrief(imageTheme, 'modify');
+  const userPrompt = `Erreurs runtime observées :\n${runtimeErrors.map((e) => '- ' + e).join('\n')}\n\nCode HTML actuel :\n\`\`\`html\n${html}\n\`\`\``;
+  return { systemPrompt, userPrompt, imageTheme };
+}
+
 const MAX_REPAIR_ITERATIONS = 3;
 const REPAIR_TARGET_SCORE = 90;
+/**
+ * LOT B (§19) — tolérance de régression AQS d'un patch de réparation : un
+ * patch qui corrige les erreurs runtime mais fait chuter le design de plus de
+ * 5 points est refusé (la fonctionnalité ne se répare pas en cassant le
+ * design). Le gate s'abstient si l'AQS n'est pas mesurable des deux côtés.
+ */
+const REPAIR_AQS_TOLERANCE = 5;
 
 interface RepairIteration {
   iteration: number;
@@ -35,6 +77,11 @@ interface RepairIteration {
   scoreAfter: number | null;
   action: string;
   errorsDiagnosed: string[];
+  /** LOT B — AQS global avant/après le patch (null = non mesurable). */
+  aqsBefore?: number | null;
+  aqsAfter?: number | null;
+  /** LOT B — garde déclenché ('AQS_REGRESSION') le cas échéant. */
+  guard?: string;
 }
 
 interface CriticFinding {
@@ -51,11 +98,16 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 }
 
 /** DIAGNOSIS : score + erreurs runtime réelles du rendu headless. */
-async function diagnose(tenantId: string, projectId: string): Promise<{ score: number; runtimeErrors: string[] }> {
+async function diagnose(
+  tenantId: string,
+  projectId: string,
+  role: RequestContext['role'],
+  requestId: string
+): Promise<{ score: number; runtimeErrors: string[]; aqs: AestheticQualityScore | null }> {
   const findings: CriticFinding[] = [];
   const files = fileStore.getAllProjectFiles(tenantId, projectId);
-  const html = files['index.html'] || '';
   let runtimeErrors: string[] = [];
+  let aqs: AestheticQualityScore | null = null;
   try {
     const render = await renderProjectPreview(files);
     runtimeErrors = [...render.pageErrors];
@@ -65,12 +117,28 @@ async function diagnose(tenantId: string, projectId: string): Promise<{ score: n
     for (const ce of render.consoleMessages.filter((m) => m.type === 'error').slice(0, 10)) {
       findings.push({ severity: 'HIGH', source: 'CONSOLE', title: 'Erreur console', detail: ce.text });
     }
+    // LOT B (§19) — l'état design courant est mesuré sur le DOM runtime DÉJÀ
+    // capturé (aucun rendu supplémentaire) : substance du gate design du patch.
+    try {
+      const measurement = await measureProjectAesthetics({
+        tenantId,
+        projectId,
+        requestId,
+        role,
+        files,
+        ...(render.runtimeDom !== undefined ? { runtimeDom: render.runtimeDom } : {}),
+        ...(render.mobileRuntimeDom !== undefined ? { mobileRuntimeDom: render.mobileRuntimeDom } : {}),
+        ...(render.mobileOverflow !== undefined ? { mobileOverflow: render.mobileOverflow } : {})
+      });
+      aqs = measurement.aqs;
+    } catch {
+      aqs = null; // mesure design impossible : le gate s'abstiendra
+    }
   } catch {
     // Chromium indisponible : aucune erreur runtime observable -> pas de réparation possible
-    return { score: 100, runtimeErrors: [] };
+    return { score: 100, runtimeErrors: [], aqs: null };
   }
-  void html;
-  return { score: computeCriticScore(findings), runtimeErrors };
+  return { score: computeCriticScore(findings), runtimeErrors, aqs };
 }
 
 export async function handleRepairRoutes(
@@ -124,8 +192,9 @@ export async function handleRepairRoutes(
     return true;
   }
 
-  let diagnosis = await diagnose(context.tenantId, projectId);
+  let diagnosis = await diagnose(context.tenantId, projectId, context.role, requestId);
   let currentScore = diagnosis.score;
+  let currentAqs = diagnosis.aqs;
 
   if (repairEvents) {
     executionStore.appendEvent(repairEvents, {
@@ -138,17 +207,34 @@ export async function handleRepairRoutes(
   }
 
   for (let i = 1; i <= maxIterations; i++) {
-    iterations.push({ iteration: i, scoreBefore: currentScore, scoreAfter: null, action: 'diagnosis', errorsDiagnosed: diagnosis.runtimeErrors.slice(0, 10) });
+    iterations.push({
+      iteration: i,
+      scoreBefore: currentScore,
+      scoreAfter: null,
+      action: 'diagnosis',
+      errorsDiagnosed: diagnosis.runtimeErrors.slice(0, 10),
+      aqsBefore: currentAqs?.overall ?? null
+    });
 
     if (diagnosis.runtimeErrors.length === 0) {
       iterations[iterations.length - 1]!.action = 'no-repair-needed';
       break;
     }
 
-    // PATCH par LLM
+    // PATCH par LLM — prompts purs testables (contrat de thème + brief
+    // images) : voir buildRepairPrompts. La réparation réécrit le HTML
+    // complet ; sans ce rappel, le patch pouvait changer de secteur.
     const previousHtml = html;
-    const systemPrompt = "Tu es l'ingénieur de réparation de VibeCode Studio. On te donne le code HTML complet d'une application et la LISTE DES ERREURS RUNTIME réelles observées au chargement. Corrige UNIQUEMENT ces erreurs, sans changer le reste de l'application (Pareto-Safe). Réponds UNIQUEMENT avec le code HTML complet corrigé dans un bloc ```html ... ```.";
-    const userPrompt = `Erreurs runtime observées :\n${diagnosis.runtimeErrors.map((e) => '- ' + e).join('\n')}\n\nCode HTML actuel :\n\`\`\`html\n${html}\n\`\`\``;
+    const repairPrompts = buildRepairPrompts(html, diagnosis.runtimeErrors.slice(0, 10));
+    logger.info('Contrat de thème (réparation)', {
+      component: 'repair-route',
+      tenantId: context.tenantId,
+      projectId,
+      imageTheme: repairPrompts.imageTheme,
+      requestId
+    });
+    const systemPrompt = repairPrompts.systemPrompt;
+    const userPrompt = repairPrompts.userPrompt;
 
     let patched: string | null = null;
     try {
@@ -176,23 +262,67 @@ export async function handleRepairRoutes(
       break;
     }
 
-    // TEST/VALIDATE : re-critique du patch
-    fileStore.saveFile(context.tenantId, projectId, 'index.html', patched);
-    diagnosis = await diagnose(context.tenantId, projectId);
+    // P1-A — FILET IMAGES AVANT SAUVEGARDE : le HTML réinventé par le patch
+    // passe par les MÊMES fonctions que le pipeline principal —
+    // sanitizeImageSources (URLs hors réservoir réécrites vers le THÈME)
+    // puis addImageFallbacks (onerror de repli) — avec le thème calculé
+    // pour cette itération (celui du projet réparé). En cas d'échec du
+    // traitement : le patch est refusé (action 'patch-failed' existante),
+    // le HTML brut n'est JAMAIS sauvegardé.
+    let treated: string;
+    try {
+      const sanitizedRepair = sanitizeImageSources(patched, repairPrompts.imageTheme);
+      treated = addImageFallbacks(sanitizedRepair.html, repairPrompts.imageTheme);
+    } catch {
+      logger.warn('Self-Repair : traitement images échoué — patch refusé (HTML brut non sauvegardé)', {
+        component: 'repair-route',
+        projectId,
+        requestId
+      });
+      iterations[iterations.length - 1]!.action = 'patch-failed';
+      break;
+    }
+
+    // TEST/VALIDATE : re-critique du patch TRAITÉ
+    fileStore.saveFile(context.tenantId, projectId, 'index.html', treated);
+    diagnosis = await diagnose(context.tenantId, projectId, context.role, requestId);
     const afterScore = diagnosis.score;
-    iterations[iterations.length - 1]!.scoreAfter = afterScore;
+    const afterAqs = diagnosis.aqs;
+    const currentIteration = iterations[iterations.length - 1]!;
+    currentIteration.scoreAfter = afterScore;
+    currentIteration.aqsAfter = afterAqs?.overall ?? null;
 
     if (afterScore > currentScore) {
-      iterations[iterations.length - 1]!.action = 'patch-applied';
-      html = patched;
+      // LOT B (§19) — GATE AQS : le patch ne doit pas casser le design
+      // au-delà de la tolérance, même s'il améliore le score fonctionnel.
+      // Le gate s'abstient si l'AQS n'est pas mesurable des deux côtés.
+      const gate = currentAqs && afterAqs
+        ? evaluateAqsNonRegression(currentAqs, afterAqs, REPAIR_AQS_TOLERANCE)
+        : null;
+      if (gate && gate.regressed) {
+        fileStore.saveFile(context.tenantId, projectId, 'index.html', previousHtml);
+        currentIteration.action = 'patch-rolled-back';
+        currentIteration.guard = 'AQS_REGRESSION';
+        currentIteration.scoreAfter = currentScore;
+        logger.warn('Self-Repair : patch refusé par le gate AQS (§19)', {
+          component: 'repair-route',
+          projectId,
+          reasons: gate.reasons,
+          requestId
+        });
+        break;
+      }
+      currentIteration.action = 'patch-applied';
+      html = treated;
       currentScore = afterScore;
+      currentAqs = afterAqs;
       if (currentScore >= REPAIR_TARGET_SCORE) break;
     } else {
       // Pareto-Safe : aucune amélioration -> rollback et arrêt
       fileStore.saveFile(context.tenantId, projectId, 'index.html', previousHtml);
-      diagnosis = await diagnose(context.tenantId, projectId);
-      iterations[iterations.length - 1]!.action = 'patch-rolled-back';
-      iterations[iterations.length - 1]!.scoreAfter = currentScore;
+      diagnosis = await diagnose(context.tenantId, projectId, context.role, requestId);
+      currentIteration.action = 'patch-rolled-back';
+      currentIteration.scoreAfter = currentScore;
       break;
     }
   }

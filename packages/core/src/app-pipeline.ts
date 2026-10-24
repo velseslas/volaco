@@ -21,6 +21,10 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, r
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AppError, ValidationError } from './errors.js';
+// PATCH L1 — barrière terminale d'images de buildApp : le checker est celui
+// partagé par toutes les barrières existantes (routes B1/B2/B3, rollback
+// PATCH-2, pipeline P1-B, garde MCP) — aucune politique dupliquée ici.
+import { formatImageViolations, inspectAppImageSources, isInspectableAppFile, type AppImageInspection } from './image/app-policy.js';
 
 // ----------------------------------------------------------------------------
 // PERF : Vite + plugins React/Tailwind chargés PARESSEUSEMENT. Leur import
@@ -307,6 +311,48 @@ export interface AppBuildResult {
   errors: string[];
   /** Identifiant de build (cache-buster du preview). */
   buildId: string;
+  /** PATCH L1 — présent uniquement quand le build est REFUSÉ par la barrière d'images terminale. */
+  refused?: 'images' | 'inspection-error';
+  /**
+   * PATCH L1 — nombre de références d'images dynamiques (`undetermined`) dans
+   * les sources construites : NON bloquant (politique inchangée — décision
+   * distincte à part), comptabilisé à titre de diagnostic.
+   */
+  undeterminedCount?: number;
+}
+
+/**
+ * PATCH L1 — seams d'inspection de la barrière terminale. `undefined` dans
+ * tout usage de production : le défaut est le scanner RÉEL `inspectAppImageSources`
+ * sur le DISQUE réellement construit. Les fonctions injectables ne servent
+ * qu'aux tests du fail-closed (même motif que ImageGateInspector de
+ * middleware/image-gate.ts) : la barrière reste obligatoire, seule l'implémentation
+ * du point de contrôle est remplacable en test.
+ */
+export interface BuildImageGateOptions {
+  imageInspector?: (files: ReadonlyArray<{ path: string; content: string }>) => AppImageInspection;
+  buildSourcesCollector?: (projectId: string) => ReadonlyArray<{ path: string; content: string }>;
+}
+
+/**
+ * PATCH L1 — collection EXACTE des sources que le build va consommer :
+ * `listAppFiles` (workspace DISQUE, node_modules/dist/.git exclus — c'est ce
+ * répertoire que vite.build lit) ∩ `isInspectableAppFile`, chaque fichier
+ * RELU au moment de l'inspection. Fail-closed : un fichier listé mais
+ * devenu illisible/effacé entre liste et lecture => exception => refus du
+ * build (aucune source non vérifiée n'entre dans le bundle).
+ */
+function collectWorkspaceImageSources(projectId: string): Array<{ path: string; content: string }> {
+  const sources: Array<{ path: string; content: string }> = [];
+  for (const file of listAppFiles(projectId)) {
+    if (!isInspectableAppFile(file.path)) continue;
+    const content = readAppFile(projectId, file.path);
+    if (content === null) {
+      throw new Error(`source du workspace introuvable ou illisible : ${file.path}`);
+    }
+    sources.push({ path: file.path, content });
+  }
+  return sources;
 }
 
 /**
@@ -333,10 +379,54 @@ function inlineBundleIntoSingleFile(distDir: string): void {
 }
 
 /** Build Vite programmatique du projet (alias react → copies du serveur). */
-export async function buildApp(projectId: string): Promise<AppBuildResult> {
+export async function buildApp(
+  projectId: string,
+  gate: BuildImageGateOptions = {}
+): Promise<AppBuildResult> {
   const ws = ensureWorkspace(projectId);
   const startedAt = Date.now();
   const buildId = 'b' + startedAt.toString(36) + Math.random().toString(36).slice(2, 6);
+  // ---------------------------------------------------------------------------
+  // PATCH L1 — BARRIÈRE TERMINALE D'IMAGES.
+  // Le bundle est assemblé depuis le DISQUE du workspace : l'inspection porte
+  // donc sur EXACTEMENT les sources qu'il va consommer (listées + relues sur
+  // disque au moment du contrôle), et s'exécute ICI — pour TOUS les appelants
+  // (génération, édition, /images/generate, rollback, MCP app_build), même
+  // quand un appelant a déjà fait son propre contrôle (défense terminale, pas
+  // une politique dupliquée).
+  // Fail-closed :
+  //  - violation(s) => refus AVANT tout assemblage : ni vite.build, ni
+  //    dist-next-<id>, ni swap — le dernier bundle valide reste servi tel quel ;
+  //  - exception d'inspection OU de collection (fichier illisible) => refus ;
+  //  - `undetermined` reste NON bloquant (politique inchangée pour ce lot) et
+  //    est comptabilisé dans le résultat à titre de diagnostic.
+  // ---------------------------------------------------------------------------
+  let imageUndetermined = 0;
+  try {
+    const sources = (gate.buildSourcesCollector ?? collectWorkspaceImageSources)(projectId);
+    const inspection = (gate.imageInspector ?? inspectAppImageSources)(sources);
+    if (inspection.violations.length > 0) {
+      return {
+        ok: false,
+        durationMs: Date.now() - startedAt,
+        errors: ['Images interdites dans les sources — build refusé (ancien bundle préservé) :']
+          .concat(formatImageViolations(inspection, 25)),
+        buildId,
+        refused: 'images',
+        undeterminedCount: inspection.undetermined.length
+      };
+    }
+    imageUndetermined = inspection.undetermined.length;
+  } catch (inspectionErr) {
+    return {
+      ok: false,
+      durationMs: Date.now() - startedAt,
+      errors: ['Inspection des images impossible (fail-closed) — build refusé : '
+        + (inspectionErr instanceof Error ? inspectionErr.message : String(inspectionErr)).slice(0, 500)],
+      buildId,
+      refused: 'inspection-error'
+    };
+  }
   const errors: string[] = [];
   // P1-masse — BASCULE ATOMIQUE : le build écrit dans `dist-next-<id>/`, et
   // `dist/` n'est remplacé qu'en cas de succès (rename). Un build raté ne
@@ -394,7 +484,13 @@ export async function buildApp(projectId: string): Promise<AppBuildResult> {
   if (existsSync(distDir)) renameSync(distDir, prevDir);
   renameSync(nextDir, distDir);
   rmBestEffort(prevDir); // pas de consommateur de rollback : pas de rétention disque
-  return { ok: true, durationMs: Date.now() - startedAt, errors, buildId };
+  return {
+    ok: true,
+    durationMs: Date.now() - startedAt,
+    errors,
+    buildId,
+    undeterminedCount: imageUndetermined
+  };
 }
 
 export { repoRoot as appRepoRoot, templateDir as appTemplateDir };

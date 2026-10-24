@@ -236,7 +236,7 @@ export async function handleFeedbackRoutes(
       }
     }
 
-    const tenantId = payload.tenantId || context.tenantId;
+    const tenantId = context.tenantId; // SÉCURITÉ (SEC-TENANT) : le tenant ne vient JAMAIS du corps — un client ne choisit pas son locataire.
     const projectId = payload.projectId || 'in-memory-feedback';
 
     const analysisRequest: FeedbackAnalysisRequest = {

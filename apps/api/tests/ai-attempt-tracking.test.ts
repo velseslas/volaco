@@ -111,6 +111,49 @@ describe('ÉTAPE 48 Phase 4 — tracking des attempts IA (J-6)', () => {
     }
   });
 
+  it('D (J-6b): generateStream avec usage final réel → SUCCESS au coût réel, sans double terminal', async () => {
+    const tenant = 'tenant_attempt_d';
+    const sse = 'data: {"choices":[{"delta":{"content":"Sali"}}]}\n\n' +
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":130,"total_tokens":230}}\n\n' +
+      'data: [DONE]\n\n';
+    const adapter = new MistralProviderAdapter(async () => new Response(sse, { status: 200 }));
+    const req = { tenantId: tenant, projectId: 'proj_sec', prompt: 'stream avec usage', requestId: 'req-D', maxTokens: 10 } as unknown as AIProviderGenerateRequest;
+    let out = '';
+    for await (const chunk of adapter.generateStream!(req, CREDS)) out += chunk;
+    assert.equal(out, 'Sali');
+
+    const records = aiUsageTracker.getRecordsFor(tenant);
+    assert.deepEqual(records.map((r) => r.kind), ['START', 'SUCCESS'], 'START + un seul terminal SUCCESS');
+    const terminal = records[1]!;
+    assert.equal(terminal.promptTokens, 100, 'tokens prompt réels transmis');
+    assert.equal(terminal.completionTokens, 130, 'tokens complétion réels transmis');
+    assert.equal(terminal.totalTokens, 230);
+    assert.ok(terminal.estimatedCostUsd > 0, 'coût réel calculé, pas 0');
+    const summary = aiUsageTracker.getUsageSummary(tenant);
+    assert.equal(summary.totalTokens, 230, 'les totaux comptent le réel');
+    assert.ok(summary.totalCostUsd > 0);
+    assert.equal(summary.recordCount, 2, 'aucune double écriture du terminal');
+  });
+
+  it('E (J-6b): generateStream avec usage malformé → ignoré, SUCCESS 0-coût (absence ≠ zéro factuel)', async () => {
+    const tenant = 'tenant_attempt_e';
+    const sse = 'data: {"choices":[{"delta":{"content":"Sali"}}]}\n\n' +
+      'data: {"choices":[{"delta":{}}],"usage":{"prompt_tokens":"beaucoup","completion_tokens":-5}}\n\n' +
+      'data: [DONE]\n\n';
+    const adapter = new MistralProviderAdapter(async () => new Response(sse, { status: 200 }));
+    const req = { tenantId: tenant, projectId: 'proj_sec', prompt: 'stream usage invalide', requestId: 'req-E', maxTokens: 10 } as unknown as AIProviderGenerateRequest;
+    let out = '';
+    for await (const chunk of adapter.generateStream!(req, CREDS)) out += chunk;
+    assert.equal(out, 'Sali');
+
+    const records = aiUsageTracker.getRecordsFor(tenant);
+    assert.deepEqual(records.map((r) => r.kind), ['START', 'SUCCESS']);
+    for (const r of records) {
+      assert.equal(r.totalTokens, 0, 'usage invalide ignoré, rien inventé');
+      assert.equal(r.estimatedCostUsd, 0);
+    }
+  });
+
   it('C-bis: generateStream erreur → START puis ERROR (et pas deux terminaux)', async () => {
     const tenant = 'tenant_attempt_cb';
     const adapter = new MistralProviderAdapter(async () => errResponse(500));

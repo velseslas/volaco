@@ -17,6 +17,7 @@
 import type { IntentResult } from '../conversation-intelligence/types.js';
 import type { ProjectMemory } from '../conversation-intelligence/types.js';
 import type { IntelligenceRecommendation } from '../intelligence-pool/types.js';
+import type { MemorySignals } from './memory-signals.js';
 
 export type DecisionVerdict =
   | 'READY'
@@ -67,6 +68,8 @@ export interface Decision {
   readonly chosenAlternative?: DecisionAlternative | undefined;
   readonly alternatives: readonly DecisionAlternative[];
   readonly constraints: readonly DecisionConstraint[];
+  /** Signaux mémoire réellement pris en compte (V7). */
+  readonly memorySignals?: MemorySignals | undefined;
   readonly contradictingDecisions: readonly string[];
   readonly rationale: string;
   readonly requiredClarifications: readonly string[];

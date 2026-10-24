@@ -51,3 +51,6 @@ export * from './ai-native/application-audit/index.js';
 export * from './ai-native/feature-intelligence/index.js';
 export * from './ai-native/user-feedback/index.js';
 export * from './ai-native/strategy/index.js';
+export * from './ai-native/evolution/index.js';
+export * from './ai-native/validation/index.js';
+export * from './ai-native/application-model/index.js';

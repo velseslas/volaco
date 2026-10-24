@@ -154,6 +154,43 @@ export interface ContradictionRecord {
   readonly resolution?: string | undefined;
 }
 
+/**
+ * Impact préparé par le moteur conversationnel avant toute génération.
+ * Vue minimale et stable, indépendante du service d'impact concret.
+ */
+export interface PreparedImpact {
+  readonly riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  readonly affectedFiles: readonly string[];
+  readonly requiresConfirmation: boolean;
+  readonly blastRadiusSummary: string;
+}
+
+/**
+ * Résultat de la phase de préparation d'un tour.
+ *
+ * Contrat : aucun appel provider, aucune écriture de session, aucun audit,
+ * aucun enregistrement de tour. Le moteur expose simplement l'état calculé
+ * pour que le flux SSE puisse générer, muter et persister avec ses propres
+ * services, sans dupliquer la logique de compréhension.
+ */
+export interface PreparedTurn {
+  readonly cleanUserText: string;
+  readonly latestModel?: ApplicationSemanticModel | undefined;
+  readonly latestSnapshot: ApplicationSnapshot;
+  readonly isStale: boolean;
+  readonly intent: IntentResult;
+  readonly contradictions: readonly ContradictionRecord[];
+  readonly assumptions: readonly ConversationAssumption[];
+  readonly clarifications: readonly ClarificationItem[];
+  readonly plan?: EngineeringPlan | undefined;
+  readonly planAssessment?: PlanAssessment | undefined;
+  readonly impact?: PreparedImpact | undefined;
+  readonly nextState: ConversationState;
+  readonly context: ConversationContext;
+  /** Mémoire projet au moment de la préparation (référence, non modifiée). */
+  readonly projectMemory: ProjectMemory;
+}
+
 export interface ContextDelta {
   readonly addedRequirements: readonly string[];
   readonly removedRequirements: readonly string[];

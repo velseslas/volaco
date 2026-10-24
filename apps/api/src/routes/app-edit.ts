@@ -22,9 +22,11 @@ import { projectStore } from '../../../../packages/core/src/identity/project.js'
 import { acquireProjectLock, isSafeProjectId } from '../../../../packages/core/src/app-pipeline.js';
 import { logger } from '../../../../packages/core/src/logger.js';
 import { aiProviderRegistry } from '../../../../packages/core/src/ai/providers/registry.js';
+import { preferredAiProvider } from '../../../../packages/core/src/ai/providers/provider-catalog.js';
 import { runToolLoop } from '../../../../packages/core/src/ai/tool-loop.js';
 import type { AIProviderTool } from '../../../../packages/core/src/ai/providers/types.js';
 import { revisionStore } from '../../../../packages/core/src/model/revision-store.js';
+import { withProjectDesignContext } from '../../../../packages/core/src/ai-native/design-harmony/design-context.js';
 import {
   buildApp,
   ensureWorkspace,
@@ -37,6 +39,22 @@ import type { RequestContext } from '../middleware/auth.js';
 
 import { readBody } from '../middleware/body.js';
 import { fileStore } from '../../../../packages/core/src/file-explorer/index.js';
+// P1-B — images en édition React : brief thématique 'modify' dans le prompt
+// réel + inspection du contenu FINAL projeté avant toute écriture (aucune
+// transformation du TSX, refus par apply-skip si violation).
+import {
+  buildImageBrief,
+  detectImageTheme,
+  imageThemeOfContent,
+  thematicImageRewrite,
+  type ImageTheme
+} from '../../../../packages/core/src/image/theme.js';
+import {
+  formatImageViolations,
+  inspectAppImageSources,
+  type AppImageInspection
+} from '../../../../packages/core/src/image/app-policy.js';
+import { adoptedImageIds } from '../../../../packages/core/src/image/image-adoptions.js';
 
 /** FileStore : les sources modifiées sont aussi versionnées (révisions). */
 function persistSource(tenantId: string, projectId: string, path: string, content: string): void {
@@ -45,6 +63,42 @@ function persistSource(tenantId: string, projectId: string, path: string, conten
   } catch (err) {
     logger.warn('Persistance source app impossible', { component: 'app-edit', projectId, path, error: err instanceof Error ? err.message : String(err) });
   }
+}
+
+/**
+ * PATCH PERTINENCE — thème dominant des images VÉRIFIÉES déjà présentes dans
+ * le projet React : l'édition/réparation conserve l'IDENTITÉ du site (une
+ * demande sans secteur explicite ne bascule pas les photos existantes vers
+ * le neutre ; inversement, une réintroduction pizza sur un site clinique est
+ * réécrite vers le réservoir du site). Fonction pure : aucun thème inventé.
+ */
+function projectImageTheme(projectId: string): ImageTheme | null {
+  const counts = new Map<ImageTheme, number>();
+  for (const file of listAppFiles(projectId)) {
+    const content = readAppFile(projectId, file.path);
+    if (content === null) continue;
+    const theme = imageThemeOfContent(content);
+    if (theme !== null) counts.set(theme, (counts.get(theme) ?? 0) + 1);
+  }
+  let best: ImageTheme | null = null;
+  let bestCount = 0;
+  for (const [theme, count] of counts) {
+    if (count > bestCount) { best = theme; bestCount = count; }
+  }
+  return best;
+}
+
+/**
+ * P1-B — synthèse courte des violations d'images d'un contenu, pour un
+ * apply-skip lisible ou un retour d'erreur au LLM (fichier, ligne, référence).
+ */
+function violationReason(path: string, inspection: AppImageInspection): string | null {
+  const lines = formatImageViolations(inspection, 10)
+    .filter((line) => line.startsWith('- ' + path + ' '))
+    .map((line) => line.replace(/^- /, ''))
+    .slice(0, 2);
+  if (lines.length === 0) return null;
+  return lines.join(' ; ').slice(0, 240);
 }
 
 const EDIT_SYSTEM_PROMPT = [
@@ -227,8 +281,30 @@ export async function handleAppEditRoutes(
       throw new ValidationError('Le champ "instruction" est obligatoire', undefined, requestId);
     }
 
+    // P1-B — le même contrat de réservoir que la génération, mode 'modify' :
+    // l'IA d'édition connaît les IDs vérifiés et la règle de préservation ;
+    // l'inspection serveur à l'application complète ce filet (prompt-only.
+    // pas de réécriture du code par le serveur).
+    const editTheme = detectImageTheme(instruction);
+    // P0 (audit 2026-10) — contexte Design réel du projet ajouté au prompt
+    // d'édition ; sans rapport persisté, texte strictement inchangé.
+    const editSystemPrompt = withProjectDesignContext(
+      EDIT_SYSTEM_PROMPT + '\n\n' + buildImageBrief(editTheme, 'modify'),
+      { tenantId: context.tenantId, projectId }
+    );
+    logger.info('Contrat de thème (édition React)', {
+      component: 'app-edit',
+      tenantId: context.tenantId,
+      projectId,
+      imageTheme: editTheme,
+      requestId
+    });
+
     const { send, signal } = startSSE(req, res);
-    const adapter = aiProviderRegistry.resolve({ preferredProviderId: process.env.MISTRAL_API_KEY ? 'mistral' : undefined });
+    const adapter = aiProviderRegistry.resolve({
+      // LOT MULTI-MODÈLES — fournisseur actif du tableau de bord ; héritage sinon.
+      preferredProviderId: preferredAiProvider() ?? (process.env.MISTRAL_API_KEY ? 'mistral' : undefined)
+    });
     if (!adapter) {
       send({ type: 'error', error: 'Aucun fournisseur IA disponible (Mistral requis).' });
       res.end();
@@ -245,7 +321,7 @@ export async function handleAppEditRoutes(
           tenantId: context.tenantId,
           projectId,
           prompt: 'Demande de modification : ' + instruction,
-          systemPrompt: EDIT_SYSTEM_PROMPT,
+          systemPrompt: editSystemPrompt,
           temperature: 0.2,
           maxTokens: 8192,
           timeoutMs: 120000,
@@ -289,34 +365,104 @@ export async function handleAppEditRoutes(
     const { send, signal } = startSSE(req, res);
     try {
       ensureWorkspace(projectId);
-      const changedFiles: Record<string, string> = {};
-      let applied = 0;
-      send({ type: 'apply-start', count: edits.length });
-      for (const edit of edits) {
+      // P1-B — PRÉ-SIMULATION DE L'ENSEMBLE (aucune écriture) : chaque fichier
+      // est mis en chaîne dans l'ordre des edits (find/replace, même
+      // sémantique d'occurrence unique que l'ancienne boucle), puis le
+      // contenu FINAL de chaque fichier est inspecté. Un fichier dont l'état
+      // final viole la politique d'images n'est PAS appliqué du tout (aucune
+      // écriture partielle) — refus explicite par apply-skip (hôte/ligne/
+      // référence) ; les autres fichiers restent applicables. Révisions et
+      // bundle précédents restent préservés tant qu'aucune écriture n'a lieu.
+      interface SimEdit { index: number; skip: boolean; reason: string | null; content: string | null; }
+      interface SimFile { content: string | null; violation: string | null; edits: SimEdit[]; }
+      const simulated = new Map<string, SimFile>();
+      for (let i = 0; i < edits.length; i++) {
+        const edit = edits[i]!;
         const path = String(edit.path ?? '');
+        let state = simulated.get(path);
+        if (state === undefined) {
+          state = { content: null, violation: null, edits: [] };
+          simulated.set(path, state);
+          if (edit.action !== 'create') {
+            state.content = readAppFile(projectId, path);
+            if (state.content === null) state.violation = 'fichier introuvable';
+          }
+        }
+        if (state.violation === 'fichier introuvable') {
+          state.edits.push({ index: i, skip: true, reason: 'fichier introuvable', content: null });
+          continue;
+        }
         if (edit.action === 'create') {
           const content = String(edit.content ?? '');
-          const res2 = writeAppFile(projectId, path, content);
-          if (!res2.ok) { send({ type: 'apply-skip', path, reason: res2.reason }); continue; }
-          changedFiles['app/' + path] = content;
-          persistSource(context.tenantId, projectId, path, content);
-          applied += 1;
-          send({ type: 'applied', path, action: 'create' });
+          if (content.trim().length === 0) {
+            state.edits.push({ index: i, skip: true, reason: 'contenu vide', content: null });
+            continue;
+          }
+          const check = validatePath(path);
+          if (!check.ok) {
+            state.edits.push({ index: i, skip: true, reason: check.reason ?? 'chemin non autorisé', content: null });
+            continue;
+          }
+          state.content = content;
+          state.edits.push({ index: i, skip: false, reason: null, content });
         } else if (edit.action === 'edit') {
           const find = String(edit.find ?? '');
           const replace = String(edit.replace ?? '');
-          const current = readAppFile(projectId, path);
-          if (current === null) { send({ type: 'apply-skip', path, reason: 'fichier introuvable' }); continue; }
-          const occurrences = current.split(find).length - 1;
-          if (find.length === 0 || occurrences !== 1) { send({ type: 'apply-skip', path, reason: 'find non unique ou absent' }); continue; }
-          const updated = current.replace(find, replace);
-          const res2 = writeAppFile(projectId, path, updated);
-          if (!res2.ok) { send({ type: 'apply-skip', path, reason: res2.reason }); continue; }
-          changedFiles['app/' + path] = updated;
-          persistSource(context.tenantId, projectId, path, updated);
-          applied += 1;
-          send({ type: 'applied', path, action: 'edit' });
+          if (state.content === null) {
+            state.edits.push({ index: i, skip: true, reason: 'fichier introuvable', content: null });
+            continue;
+          }
+          if (find.length === 0 || state.content.split(find).length - 1 !== 1) {
+            state.edits.push({ index: i, skip: true, reason: 'find non unique ou absent', content: null });
+            continue;
+          }
+          const updated = state.content.replace(find, replace);
+          state.content = updated;
+          state.edits.push({ index: i, skip: false, reason: null, content: updated });
+        } else {
+          state.edits.push({ index: i, skip: true, reason: 'action inconnue', content: null });
         }
+      }
+      // P1-B — inspection du contenu FINAL par fichier (celui qui serait
+      // écrit si l'ensemble était appliqué). Violation ? Le fichier est mis
+      // sur liste de refus GLOBALE (tous ses edits).
+      for (const [path, state] of simulated) {
+        const content = state.content;
+        if (content === null || content.trim().length === 0) continue;
+        const violation = violationReason(path, inspectAppImageSources([{ path, content }], { adoptedIds: adoptedImageIds() }));
+        if (violation !== null) state.violation = violation;
+      }
+
+      const changedFiles: Record<string, string> = {};
+      let applied = 0;
+      send({ type: 'apply-start', count: edits.length });
+      for (let i = 0; i < edits.length; i++) {
+        const edit = edits[i]!;
+        const path = String(edit.path ?? '');
+        const state = simulated.get(path);
+        const step = state?.edits.find((e) => e.index === i);
+        if (!state || !step) { send({ type: 'apply-skip', path, reason: 'action inconnue' }); continue; }
+        if (step.skip) { send({ type: 'apply-skip', path, reason: step.reason ?? 'non applicable' }); continue; }
+        if (state.violation !== null) {
+          send({ type: 'apply-skip', path, reason: 'images interdites — ' + state.violation });
+          continue;
+        }
+        const content = step.content;
+        if (content === null) { send({ type: 'apply-skip', path, reason: 'contenu indisponible' }); continue; }
+        // PATCH PERTINENCE — l'édition ne réintroduit PAS les images hors
+        // secteur : réécriture thématique du contenu final AVANT écriture.
+        // Thème = identité du FICHIER courant, sinon du projet, sinon NEUTRE
+        // (thème insuffisamment identifié → réservoir neutre). Seed 0 (ordre
+        // historique) : aucune rotation à chaque edit.
+        const fileTheme = imageThemeOfContent(readAppFile(projectId, path) ?? '')
+          ?? projectImageTheme(projectId) ?? 'autre';
+        const themed = thematicImageRewrite(content, fileTheme, 0);
+        const res2 = writeAppFile(projectId, path, themed.content);
+        if (!res2.ok) { send({ type: 'apply-skip', path, reason: res2.reason }); continue; }
+        changedFiles['app/' + path] = themed.content;
+        persistSource(context.tenantId, projectId, path, themed.content);
+        applied += 1;
+        send({ type: 'applied', path, action: String(edit.action ?? '') });
       }
 
       // Révision multi-fichiers (rollback possible via l'historique)
@@ -348,7 +494,10 @@ export async function handleAppEditRoutes(
       while (!build.ok && repairRounds < 2 && !signal.aborted) {
         repairRounds += 1;
         send({ type: 'repair', round: repairRounds });
-        const adapter = aiProviderRegistry.resolve({ preferredProviderId: process.env.MISTRAL_API_KEY ? 'mistral' : undefined });
+        const adapter = aiProviderRegistry.resolve({
+      // LOT MULTI-MODÈLES — fournisseur actif du tableau de bord ; héritage sinon.
+      preferredProviderId: preferredAiProvider() ?? (process.env.MISTRAL_API_KEY ? 'mistral' : undefined)
+    });
         if (!adapter) break;
         const credentials = aiProviderRegistry.getTenantCredentials(context.tenantId, adapter.descriptor.providerId);
         const repairProposals: ProposedEdit[] = [];
@@ -359,7 +508,7 @@ export async function handleAppEditRoutes(
             projectId,
             prompt: 'Le build TypeScript/Vite échoue avec ces erreurs :\n\n' + build.errors.join('\n---\n').slice(0, 3000)
               + '\n\nCorrige les fichiers nécessaires (edit_file pour des corrections ciblées). Ne touche à rien d\'autre.',
-            systemPrompt: EDIT_SYSTEM_PROMPT,
+            systemPrompt: withProjectDesignContext(EDIT_SYSTEM_PROMPT, { tenantId: context.tenantId, projectId }),
             temperature: 0.2,
             maxTokens: 8192,
             timeoutMs: 120000,
@@ -379,11 +528,30 @@ export async function handleAppEditRoutes(
                 const current = readAppFile(projectId, path);
                 if (current === null || find.length === 0) return 'ERREUR: fichier ou find invalide.';
                 if (current.split(find).length - 1 !== 1) return 'ERREUR: find non unique — élargis le contexte.';
-                const res2 = writeAppFile(projectId, path, current.replace(find, replace));
+                // PATCH PERTINENCE — la réparation ne réintroduit pas les
+                // images hors secteur : réécriture thématique du contenu
+                // final (identité = fichier courant, sinon projet/demande)
+                // avant le contrôle de politique images.
+                const repairTheme = imageThemeOfContent(current)
+                  ?? projectImageTheme(projectId) ?? 'autre';
+                const updated = thematicImageRewrite(current.replace(find, replace), repairTheme, 0).content;
+                // P1-B — la réparation directe respecte la politique images :
+                // aucune URL interdite n'est écrite ; le LLM reçoit l'erreur
+                // précise et corrige autrement (aucune réécriture serveur).
+                const violation = violationReason(path, inspectAppImageSources([{ path, content: updated }], { adoptedIds: adoptedImageIds() }));
+                if (violation !== null) return 'ERREUR: images interdites (' + violation + ') — remplace par un ID vérifié du RÉSERVOIR (voir brief) ou https://picsum.photos/seed/….';
+                const res2 = writeAppFile(projectId, path, updated);
                 return res2.ok ? 'OK — corrigé.' : 'ERREUR: ' + (res2.reason || 'écriture impossible');
               },
               create_file: (a) => {
-                const res2 = writeAppFile(projectId, String(a.path ?? ''), String(a.content ?? ''));
+                const path = String(a.path ?? '');
+                // PATCH PERTINENCE — idem : le nouveau fichier suit l'identité
+                // du projet (sinon le thème de la demande) avant le contrôle.
+                const repairTheme = projectImageTheme(projectId) ?? 'autre';
+                const content = thematicImageRewrite(String(a.content ?? ''), repairTheme, 0).content;
+                const violation = violationReason(path, inspectAppImageSources([{ path, content }], { adoptedIds: adoptedImageIds() }));
+                if (violation !== null) return 'ERREUR: images interdites (' + violation + ') — remplace par un ID vérifié du RÉSERVOIR (voir brief) ou https://picsum.photos/seed/….';
+                const res2 = writeAppFile(projectId, path, content);
                 return res2.ok ? 'OK — créé.' : 'ERREUR: ' + (res2.reason || 'écriture impossible');
               }
             },

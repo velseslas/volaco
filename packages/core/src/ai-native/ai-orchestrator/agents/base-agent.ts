@@ -5,6 +5,7 @@
  */
 
 import { computeArtifactHash, deepFreeze } from '../canonical.js';
+import { preferredAiProvider } from '../../../ai/providers/provider-catalog.js';
 import type {
   AgentArtifact,
   SpecializedAgentDefinition,
@@ -38,7 +39,8 @@ export abstract class BaseSpecializedAgent {
     const adapter = this.registry.resolve({
       capabilities: this.definition.requiredProviderCapabilities,
       taskKind: this.definition.domain === 'UI' || this.definition.domain === 'BACKEND' ? 'CODE_GENERATION' : 'FAST_CONVERSATION',
-      preferredProviderId: process.env.MISTRAL_API_KEY ? 'mistral' : 'gemini'
+      // LOT MULTI-MODÈLES — fournisseur actif du tableau de bord ; héritage sinon.
+      preferredProviderId: preferredAiProvider() ?? (process.env.MISTRAL_API_KEY ? 'mistral' : 'gemini')
     });
 
     const credentials = this.registry.getTenantCredentials(tenantId, adapter?.descriptor.providerId || '');
@@ -54,11 +56,22 @@ export abstract class BaseSpecializedAgent {
       .map(([path, content]) => `--- Fichier: ${path} ---\n${content}`)
       .join('\n\n');
 
+    // CDC V8 §11 — quand un Design DNA réel accompagne la tâche (includeDna),
+    // le bloc est injecté tel quel dans le prompt ; sans contexte design, le
+    // prompt reste identique octet pour octet au comportement historique.
+    // CDC V8 §9/§10 — le bloc SYSTÈME DE COMPOSANTS suit le bloc design :
+    // l'UI Agent ne doit pas recréer un composant existant. Absent → prompt
+    // strictement identique à l'historique.
+    const designBlock = context.designContext
+      ? `\n${context.designContext.promptBlock}\n${context.designContext.componentsPromptBlock ? `${context.designContext.componentsPromptBlock}\n` : ''}`
+      : '';
+
     const prompt =
       `Tâche : ${task.title}\n` +
       `Description : ${task.description}\n` +
       `Domaine : ${task.domain}\n\n` +
       (fileEntries ? `Fichiers concernés (Lecture Seule) :\n${fileEntries}\n\n` : '') +
+      designBlock +
       `Produis les modifications nécessaires ou conclusions d'ingénierie sous forme structurée.`;
 
     // P2 — HONNÊTETÉ : sans IA (ou en cas d'échec), la tâche est marquée

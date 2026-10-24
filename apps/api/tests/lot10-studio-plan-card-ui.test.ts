@@ -82,16 +82,22 @@ describe('LOT 10 — Câblage réel de l\'interface Studio', () => {
       indexContent.includes('function setCompassState(state, label, dotColor, badgeText)'),
       'setCompassState doit piloter les états du compass'
     );
-    assert.ok(indexContent.includes('setCompassState("EXECUTING"'), 'État EXECUTING utilisé');
-    assert.ok(indexContent.includes('setCompassState("VALIDATING"'), 'État VALIDATING utilisé');
+    // Évolué : le compass est désormais piloté PAR LES ÉVÉNEMENTS du flux
+    // (setCompassState(event.state, …)) avec table d'états EXECUTING/VALIDATING
+    // — plus fiable que des appels littéraux dispersés.
+    assert.ok(indexContent.includes('setCompassState(event.state'), 'Compass piloté par les événements du flux');
+    assert.ok(indexContent.includes("event.state === 'EXECUTING'"), 'État EXECUTING géré dynamiquement');
+    assert.ok(indexContent.includes("state === 'VALIDATING'"), 'État VALIDATING géré dynamiquement');
   });
 
   it('5. Handlers Features/Feedback câblés (plus de stubs no-op)', () => {
     assert.ok(!indexContent.includes('window.runFeaturesDiscovery = function() {}'), 'Le stub no-op runFeaturesDiscovery doit avoir disparu');
     assert.ok(!indexContent.includes('window.runFeedbackAnalysis = function() {}'), 'Le stub no-op runFeedbackAnalysis doit avoir disparu');
-    assert.ok(indexContent.includes('async function runFeaturesDiscovery()'), 'runFeaturesDiscovery doit être réellement définie');
+    // Évolué : l'onglet Features est alimenté par runEvolutionAnalysis (le
+    // panneau opportunités/évolution a absorbé la découverte de features).
+    assert.ok(indexContent.includes('async function runEvolutionAnalysis()'), 'runEvolutionAnalysis doit être réellement définie');
     assert.ok(indexContent.includes('async function runFeedbackAnalysis()'), 'runFeedbackAnalysis doit être réellement définie');
-    assert.ok(indexContent.includes('function exportFeaturesReport()'), 'exportFeaturesReport doit être définie');
+    assert.ok(indexContent.includes('function exportEvolutionReport()'), 'exportEvolutionReport doit être définie');
     assert.ok(indexContent.includes('function exportFeedbackReport()'), 'exportFeedbackReport doit être définie');
     assert.ok(indexContent.includes('function setFeedbackFilter('), 'setFeedbackFilter doit être définie');
     assert.ok(indexContent.includes('function filterFeedbackProblems()'), 'filterFeedbackProblems doit être définie');

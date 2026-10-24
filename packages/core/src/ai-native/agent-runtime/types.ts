@@ -371,7 +371,9 @@ export type AuditEventType =
   | 'REPAIR_COMPLETED'
   | 'RUN_COMPLETED'
   | 'RUN_FAILED'
-  | 'RUN_CANCELLED';
+  | 'RUN_CANCELLED'
+  // P0-PROD — traçabilité de la levée des gates HIGH/CRITICAL.
+  | 'HUMAN_APPROVAL_GRANTED';
 
 export interface AgentAuditEvent {
   readonly id: string;

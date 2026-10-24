@@ -17,6 +17,16 @@ export interface ReasoningStepOutput {
   readonly plan: AgentPlan;
 }
 
+/** Sérialisation bornée pour l'estimation de tokens (jamais de throw). */
+function safePreview(value: unknown): string {
+  try {
+    const text = typeof value === 'string' ? value : JSON.stringify(value);
+    return (text ?? '').slice(0, 250_000);
+  } catch {
+    return String(value).slice(0, 250_000);
+  }
+}
+
 export class ReasoningLoop {
   constructor(
     private readonly toolRegistry: ToolRegistry,
@@ -42,6 +52,8 @@ export class ReasoningLoop {
       if (toolDef && toolDef.isReadonly) {
         budgetTracker.recordToolCall();
         const res = await this.toolRegistry.execute(sel.tool, sel.input, context);
+        // P0-PROD — alimente le budget tokens/coût (voir BudgetTracker.recordToolIo).
+        budgetTracker.recordToolIo(safePreview(sel.input), safePreview(res));
         toolResults.push(res);
       }
     }

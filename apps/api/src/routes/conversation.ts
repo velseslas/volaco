@@ -11,21 +11,65 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { ConversationIntelligenceService } from '../../../../packages/core/src/ai-native/conversation-intelligence/service.js';
 import { assertPermission } from '../../../../packages/core/src/identity/permissions.js';
+import type { Role } from '../../../../packages/core/src/identity/permissions.js';
+import type { ImpactAnalysisRequest, ImpactRiskLevel } from '../../../../packages/core/src/ai-native/impact-intelligence/types.js';
 import { NotFoundError, ValidationError } from '../../../../packages/core/src/errors.js';
 import { projectStore } from '../../../../packages/core/src/identity/project.js';
 import { fileStore } from '../../../../packages/core/src/file-explorer/store.js';
 import { revisionStore } from '../../../../packages/core/src/model/revision-store.js';
-import { analyzeProjectVisual } from './visual.js';
+import { analyzeProjectVisual, computeCriticScore, truncationFinding } from './visual.js';
+import { runValidationChain } from './validation.js';
+import {
+  runEngineeringPreflight,
+  type EngineeringPreflightReport
+} from '../../../../packages/core/src/ai-native/validation/engineering-preflight.js';
+import {
+  applyStreamFileMutation,
+  STREAM_MUTATION_PATH,
+  type StreamMutationEngine,
+  type StreamMutationInput,
+  type StreamMutationOutcome
+} from './stream-mutation.js';
 import { aiProviderRegistry } from '../../../../packages/core/src/ai/providers/registry.js';
+import {
+  preferredAiProvider,
+  providerStoredKey
+} from '../../../../packages/core/src/ai/providers/provider-catalog.js';
+import type { TenantProviderCredentials } from '../../../../packages/core/src/ai/providers/types.js';
 import { logger } from '../../../../packages/core/src/logger.js';
-import type { EngineeringPlan, IntentResult } from '../../../../packages/core/src/ai-native/conversation-intelligence/types.js';
+import type { EngineeringPlan, IntentResult, PreparedTurn, ProjectMemory } from '../../../../packages/core/src/ai-native/conversation-intelligence/types.js';
 import { PlanGenerator } from '../../../../packages/core/src/ai-native/conversation-intelligence/engine/plan-generator.js';
+import { buildEngineeringBrief, withEngineeringBrief } from '../../../../packages/core/src/ai-native/conversation-intelligence/engine/generation-brief.js';
+import type { MemorySignals } from '../../../../packages/core/src/ai-native/decision-engine/memory-signals.js';
 import { executionStore, activeCancelFlags } from '../../../../packages/core/src/ai-native/execution/store.js';
 import { ExecutionRecorder, type RecordableEvent } from '../../../../packages/core/src/ai-native/execution/recorder.js';
+import { withProjectDesignContext } from '../../../../packages/core/src/ai-native/design-harmony/design-context.js';
 import type { RequestContext } from '../middleware/auth.js';
 
 import { readBody } from '../middleware/body.js';
 import { setProjectFormat } from '../../../../packages/core/src/app-pipeline.js';
+import {
+  allVerifiedUnsplashIds,
+  buildImageBrief,
+  buildSectorContract,
+  detectImageTheme,
+  extractSectionImages,
+  pageTitleHint,
+  poolRotationSeed,
+  reconcilePageTitle,
+  rotatePool,
+  THEME_IMAGE_RESOURCES,
+  thematicImageRewrite,
+  type ImageTheme,
+  type SectionImage,
+} from '../../../../packages/core/src/image/theme.js';
+import {
+  searchThemedUnsplashPhotos,
+  THEME_PHOTO_QUERY,
+  UNSPLASH_SEARCH_TIMEOUT_MS,
+} from '../../../../packages/core/src/image/unsplash-dynamic.js';
+import { recordAdoptedImageIds } from '../../../../packages/core/src/image/image-adoptions.js';
+import { deriveSectorPhotoQuery } from '../../../../packages/core/src/image/sector-queries.js';
 import { classifyIntent } from '../../../../packages/core/src/ai-native/conversation-intelligence/engine/intent-engine.js';
 /**
  * Instance unique du service de conversation pour tout le serveur.
@@ -42,6 +86,291 @@ export function configureConversationIntelligenceService(service: ConversationIn
   conversationIntelligenceService = service;
 }
 
+/**
+ * Résolution des credentials provider pour le flux conversationnel.
+ * Priorité : credentials du tenant, puis clé enregistrée dans la carte Studio,
+ * puis l'adaptateur retombe sur sa variable d'environnement. La clé n'est
+ * jamais journalisée ni renvoyée au client.
+ */
+function resolveProviderCredentials(
+  tenantId: string,
+  providerId: string
+): TenantProviderCredentials | undefined {
+  const tenantCredentials = aiProviderRegistry.getTenantCredentials(tenantId, providerId);
+  if (tenantCredentials) return tenantCredentials;
+  const storedKey = providerStoredKey(providerId);
+  return storedKey ? { tenantId, providerId, apiKey: storedKey } : undefined;
+}
+
+/**
+ * FIX CARTE MISTRAL — la clé saisie dans la carte Réglages du Studio (header
+ * X-Mistral-Api-Key) doit piloter le flux de génération : avant ce correctif,
+ * elle n'était lue que sur /turns/execute et le proxy ; le stream principal
+ * retombait sur la clé .env (potentiellement révoquée) voire un autre
+ * fournisseur (ex. Gemini actif via la grille) — d'où le ressenti « clé
+ * Mistral reliée à Gemini » et les 401/404 inexplicables.
+ */
+function resolveStreamCredentials(
+  req: IncomingMessage,
+  tenantId: string,
+  providerId: string
+): TenantProviderCredentials | undefined {
+  const header = req.headers['x-mistral-api-key'];
+  if (providerId === 'mistral' && typeof header === 'string' && header.trim().length > 0) {
+    return { tenantId, providerId: 'mistral', apiKey: header.trim() };
+  }
+  return resolveProviderCredentials(tenantId, providerId);
+}
+
+/**
+ * Sélection du provider de streaming : Mistral reste prioritaire quand sa clé
+ * d'environnement est présente ; sinon Gemini (clé d'environnement ou carte
+ * active) ; sinon le premier adaptateur disponible du registre.
+ */
+function resolveStreamingAdapter() {
+  const preferredProviderId = process.env.MISTRAL_API_KEY
+    ? 'mistral'
+    : process.env.GEMINI_API_KEY
+      ? 'gemini'
+      : preferredAiProvider();
+  const resolved = aiProviderRegistry.resolve(
+    preferredProviderId ? { preferredProviderId } : {}
+  );
+  if (resolved && 'generateStream' in resolved) return resolved;
+  for (const fallbackId of ['mistral', 'gemini']) {
+    const fb = aiProviderRegistry.resolve({ preferredProviderId: fallbackId });
+    if (fb && 'generateStream' in fb) return fb;
+  }
+  return resolved;
+}
+
+/**
+ * V7 — IMPACT INTELLIGENCE sur le flux principal : le service réel
+ * (ImpactIntelligenceService, alimenté par le graphe sémantique) est injecté
+ * au démarrage. Contrat structurel minimal : un test peut fournir un double
+ * sans construire tout le graphe.
+ *
+ * Absent = aucune analyse (jamais un résultat fabriqué). Une analyse en échec
+ * est journalisée puis ignorée : elle ne casse jamais une génération.
+ */
+export interface StreamImpactAnalyzer {
+  analyzeImpact(
+    request: ImpactAnalysisRequest,
+    userRole: Role,
+    requestId?: string | undefined
+  ): {
+    readonly overallRisk: ImpactRiskLevel;
+    readonly impactedNodes: readonly unknown[];
+    readonly durationMs: number;
+    readonly metrics: {
+      readonly totalImpactedNodes: number;
+      readonly breakingCount: number;
+      readonly routesAffectedCount: number;
+      readonly layersCrossedCount: number;
+    };
+  };
+}
+
+let streamImpactAnalyzer: StreamImpactAnalyzer | undefined;
+
+export function configureStreamImpactService(analyzer: StreamImpactAnalyzer): void {
+  streamImpactAnalyzer = analyzer;
+}
+
+export interface StreamImpactSummary {
+  readonly riskLevel: ImpactRiskLevel;
+  readonly requiresConfirmation: boolean;
+  readonly totalImpactedNodes: number;
+  readonly breakingCount: number;
+  readonly routesAffectedCount: number;
+  readonly layersCrossed: number;
+  readonly durationMs: number;
+  readonly targetFiles: readonly string[];
+}
+
+export type StreamImpactOutcome =
+  | { readonly available: true; readonly summary: StreamImpactSummary }
+  | { readonly available: false; readonly reason: string };
+
+/**
+ * Analyse d'impact du fichier cible d'une modification, sans effet de bord.
+ * La politique de confirmation est celle de l'ImpactBridge V7 : HIGH/CRITICAL
+ * exige une validation humaine (le stream, lui, reste consultatif pour ce lot).
+ */
+export function assessStreamImpact(
+  analyzer: StreamImpactAnalyzer | undefined,
+  request: ImpactAnalysisRequest,
+  userRole: Role,
+  requestId?: string | undefined
+): StreamImpactOutcome {
+  if (!analyzer) {
+    return { available: false, reason: 'service-non-configure' };
+  }
+  try {
+    const analysis = analyzer.analyzeImpact(request, userRole, requestId);
+    const riskLevel = analysis.overallRisk;
+    return {
+      available: true,
+      summary: {
+        riskLevel,
+        requiresConfirmation: riskLevel === 'HIGH' || riskLevel === 'CRITICAL',
+        totalImpactedNodes: analysis.metrics.totalImpactedNodes,
+        breakingCount: analysis.metrics.breakingCount,
+        routesAffectedCount: analysis.metrics.routesAffectedCount,
+        layersCrossed: analysis.metrics.layersCrossedCount,
+        durationMs: analysis.durationMs,
+        targetFiles: request.targetFiles ?? []
+      }
+    };
+  } catch (error) {
+    return {
+      available: false,
+      reason: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
+/**
+ * V7 — APPLICATION MODEL : rafraîchi après chaque mutation persistée pour que
+ * la racine ApplicationModel reste la vérité courante (et non un instantané
+ * uniquement recalculé à la demande). Le rappel est fourni par server.ts ;
+ * toute erreur est avalée ici : la mutation déjà persistée reste valide.
+ */
+export interface ApplicationModelRefreshInput {
+  readonly tenantId: string;
+  readonly projectId: string;
+  readonly role: Role;
+  readonly requestId: string;
+}
+
+export type ApplicationModelRefresher = (input: ApplicationModelRefreshInput) => void;
+
+let applicationModelRefresher: ApplicationModelRefresher | undefined;
+
+export function configureApplicationModelRefresher(refresher: ApplicationModelRefresher): void {
+  applicationModelRefresher = refresher;
+}
+
+export function refreshApplicationModelAfterMutation(
+  input: ApplicationModelRefreshInput
+): { readonly refreshed: boolean; readonly reason?: string } {
+  if (!applicationModelRefresher) {
+    return { refreshed: false, reason: 'service-non-configure' };
+  }
+  try {
+    applicationModelRefresher(input);
+    return { refreshed: true };
+  } catch (error) {
+    return {
+      refreshed: false,
+      reason: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
+/**
+ * V7-WIRE-2 — MUTATION ORCHESTRATOR (AINT-006) sur le flux principal.
+ *
+ * Le moteur réel est injecté par server.ts (même instance que les routes
+ * d'ingénierie). Il n'est jamais construit ici : sans injection, le pont
+ * retourne `stage: 'engine'` et le flux applique un repli direct TRACÉ.
+ */
+let streamMutationEngine: StreamMutationEngine | undefined;
+
+export function configureStreamMutationEngine(engine: StreamMutationEngine | undefined): void {
+  streamMutationEngine = engine;
+}
+
+export function applyStreamFileMutationWithStreamEngine(
+  input: StreamMutationInput
+): StreamMutationOutcome {
+  return applyStreamFileMutation(streamMutationEngine, input);
+}
+
+/**
+ * V7-WIRE-3 — DECISION ENGINE consultatif sur le flux principal.
+ *
+ * Le DecisionEngine réel est injecté par server.ts (même instance que la route
+ * `/decide`), mais le flux l'appelle en mode `record: false` : décision réelle
+ * (contraintes + alternatives + contradictions), SANS écriture dans le ledger.
+ * Le ledger reste réservé aux décisions de la route /decide et aux décisions
+ * humainement confirmées — pas de pollution ni de croissance par génération.
+ */
+export interface StreamDecisionSummary {
+  readonly decisionId: string;
+  readonly verdict: 'READY' | 'NEEDS_CONFIRMATION' | 'BLOCKED' | 'DEFERRED';
+  readonly intentCategory: string;
+  readonly alternatives: number;
+  readonly viableAlternatives: number;
+  readonly chosenAlternative: {
+    readonly label: string;
+    readonly riskScore: number;
+    readonly reversible: boolean;
+    readonly estimatedEffort: 'LOW' | 'MEDIUM' | 'HIGH';
+  } | null;
+  readonly requiredClarifications: readonly string[];
+  readonly contradictingDecisions: number;
+  readonly rationale: string;
+  /** Optionnel pour compatibilité avec les conseillers de test/anciens. */
+  readonly memory?: MemorySignals | undefined;
+  readonly recorded: false;
+}
+
+export interface StreamDecisionInput {
+  readonly tenantId: string;
+  readonly projectId: string;
+  readonly sessionId: string;
+  readonly intent: IntentResult;
+  /** Mémoire projet préparée par le moteur ; absente = mémoire vide. */
+  readonly memory?: ProjectMemory | undefined;
+}
+
+export type StreamDecisionAdvisor = (
+  input: StreamDecisionInput
+) => Promise<StreamDecisionSummary | null>;
+
+let streamDecisionAdvisor: StreamDecisionAdvisor | undefined;
+
+export function configureStreamDecisionAdvisor(advisor: StreamDecisionAdvisor | undefined): void {
+  streamDecisionAdvisor = advisor;
+}
+
+export type StreamDecisionOutcome =
+  | { readonly available: true; readonly summary: StreamDecisionSummary }
+  | { readonly available: false; readonly reason: string };
+
+/**
+ * Appelle l'avis décisionnel sans jamais casser la génération : absence de
+ * moteur ou erreur = `available: false` explicite, jamais de verdict inventé.
+ */
+export async function assessStreamDecision(
+  advisor: StreamDecisionAdvisor | undefined,
+  input: StreamDecisionInput
+): Promise<StreamDecisionOutcome> {
+  if (!advisor) {
+    return { available: false, reason: 'service-non-configure' };
+  }
+  try {
+    const summary = await advisor(input);
+    if (!summary) {
+      return { available: false, reason: 'decision-indisponible' };
+    }
+    return { available: true, summary };
+  } catch (error) {
+    return {
+      available: false,
+      reason: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
+/** Variante branchée sur l'instance injectée par le bootstrap. */
+export function assessConfiguredStreamDecision(
+  input: StreamDecisionInput
+): Promise<StreamDecisionOutcome> {
+  return assessStreamDecision(streamDecisionAdvisor, input);
+}
+
 // LOT 4 — Plan First (§17 CDC) : génération déterministe d'un plan d'ingénierie
 // affiché dans le chat, sans appel LLM supplémentaire.
 const planGenerator = new PlanGenerator();
@@ -53,6 +382,39 @@ const planGenerator = new PlanGenerator();
  * aucune persistance) en cas de besoin de rollback instantané.
  */
 const executionTimelineEnabled = process.env.VOLACO_EXECUTION_TIMELINE !== 'off';
+
+/**
+ * V7 — préparation moteur dans le flux stream.
+ *
+ * Désactivé par défaut : le flux actuel reste la référence. Quand le flag est
+ * actif, `/stream` récupère du moteur conversationnel l'intention enrichie, le
+ * plan, l'impact et le contexte borné, puis conserve sa génération, sa mutation
+ * et sa persistance. Toute erreur de préparation retombe sur le chemin actuel.
+ */
+let streamPreparationEnabled = process.env.VOLACO_UNIFIED_PIPELINE === '1';
+
+export function configureStreamPreparation(enabled: boolean): void {
+  streamPreparationEnabled = enabled;
+}
+
+export function isStreamPreparationEnabled(): boolean {
+  return streamPreparationEnabled;
+}
+
+/**
+ * Fichiers cibles réels du plan pour l'analyse d'impact du stream.
+ * Repli explicite sur index.html si le plan n'en déclare aucun : on ne
+ * fabrique jamais une liste vide qui masquerait l'absence de cible.
+ */
+export function resolveStreamImpactTargets(plan?: EngineeringPlan | undefined): string[] {
+  const targets = new Set<string>();
+  for (const step of plan?.steps ?? []) {
+    for (const file of step.targetFiles ?? []) {
+      targets.add(file);
+    }
+  }
+  return targets.size > 0 ? [...targets] : [STREAM_MUTATION_PATH];
+}
 
 /**
  * AUDIT PREVIEW — déduplication des blocs data-section : les générations
@@ -284,6 +646,38 @@ export function escapeHtmlText(text: string): string {
 }
 
 /**
+ * LOT POLISH (21/10) — applique la réconciliation de titre à un document
+ * COMPLET (mode modification) : le shell n'est pas reconstruit, on remplace
+ * uniquement `<title>` (ou on l'insère dans `<head>` s'il manque). Un titre
+ * fourni par le LLM (`PAGE_TITLE`) prime, sinon le titre existant est
+ * confronté au contenu réel. Aucun autre octet du document n'est déplacé.
+ */
+export function applyReconciledPageTitle(html: string, candidateTitle?: string | null): string {
+  if (!/<html[\s>]/i.test(html)) return html;
+  const existing = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1] ?? '';
+  const source = candidateTitle !== undefined && candidateTitle !== null && candidateTitle.trim().length > 0
+    ? candidateTitle
+    : existing;
+  let reconciled = reconcilePageTitle(source, html);
+  if (reconciled.length === 0) {
+    const fallback = deriveFallbackTitle(html);
+    reconciled = fallback === null ? '' : reconcilePageTitle(fallback, html);
+  }
+  if (reconciled.length === 0) return html;
+  const titleTag = `<title>${escapeHtmlText(reconciled)}</title>`;
+  if (/<title[^>]*>[\s\S]*?<\/title>/i.test(html)) {
+    return html.replace(/<title[^>]*>[\s\S]*?<\/title>/i, titleTag);
+  }
+  if (/<\/head>/i.test(html)) {
+    return html.replace(/<\/head>/i, `${titleTag}</head>`);
+  }
+  if (/<head[^>]*>/i.test(html)) {
+    return html.replace(/<head([^>]*)>/i, `<head$1>${titleTag}`);
+  }
+  return html;
+}
+
+/**
  * ORDRE CANONIQUE des sections : le LLM émet parfois dans le désordre
  * (footer 2e constaté en production, rév. #54) et le serveur sauvegardait
  * tel quel. Tri stable : header/nav d'abord, hero ensuite, contenu, puis
@@ -316,6 +710,25 @@ export function canonicalSectionOrder<T extends { name: string }>(sections: read
 }
 
 /**
+ * B2 — ORDRE CANONIQUE EN MODIFICATION : le document fusionné contient des
+ * blocs `<div class="vibe-stitched" data-section="nom">` dans l'ordre
+ * d'arrivée (le LLM + le repli "avant </body>" placent les ajouts APRÈS
+ * le footer). On permute les blocs entre eux (contenu hors-blocs intact,
+ * doublons conservés dans l'ordre) : header → hero → contenu → closing →
+ * footer TOUJOURS dernier.
+ */
+export function canonicalSectionOrderBlocks(html: string): string {
+  const re = /<div[^>]*data-section="([^"]+)"[^>]*>[\s\S]*?(?=<div[^>]*data-section=|<\/body>|$)/gi;
+  const blocks: Array<{ name: string; html: string }> = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) blocks.push({ name: m[1] ?? '', html: m[0] });
+  if (blocks.length < 2) return html;
+  const sorted = canonicalSectionOrder(blocks);
+  let i = 0;
+  return html.replace(re, () => sorted[i++]!.html);
+}
+
+/**
  * Titre de REPLI quand le LLM omet PAGE_TITLE (constaté en prod : instruction
  * parfois ignorée). Déterministe : premier H1 textuel, sinon premier H2,
  * balises internes retirées, 70 car. max. Null si rien d'exploitable.
@@ -331,13 +744,58 @@ export function deriveFallbackTitle(html: string): string | null {
 }
 
 /**
+ * IDs du réservoir du thème déjà présents dans le HTML (toute source) :
+ * la rotation du repli ne les choisit pas en premier — une image réparée ne
+ * duplique pas une photo déjà affichée tant qu'un autre ID est disponible.
+ */
+function poolIdsAlreadyInUse(html: string): ReadonlySet<string> {
+  const used = new Set<string>();
+  for (const m of html.matchAll(/images\.unsplash\.com\/(photo-[A-Za-z0-9-]+)/gi)) {
+    if (m[1]) used.add(m[1]);
+  }
+  return used;
+}
+
+/**
+ * Filet de repli par thème (F1/F2 — stratégie unique, pur et déterministe) :
+ * d'abord les IDs du réservoir NON déjà présents dans le HTML, puis tout le
+ * réservoir (répétition assumée une fois le réservoir épuisé — jamais d'URL
+ * inventée). Depuis T0.5, même 'autre' possède un réservoir (ambiance
+ * neutre vérifiée) ; un réservoir vide n'existe plus qu'en théorie : dans ce
+ * cas l'appelant utilise son repli neutre historique.
+ */
+function themeFallbackQueue(html: string, theme: ImageTheme, rotationSeed = 0): readonly string[] {
+  // PATCH PERTINENCE — même rotation seedée que le brief et le sanitize :
+  // l'ordre de repli est stable au sein d'une génération, varié entre
+  // générations (rotationSeed = poolRotationSeed(requestId) ; 0 = historique).
+  const pool = rotatePool(THEME_IMAGE_RESOURCES[theme]?.unsplash ?? [], rotationSeed);
+  if (pool.length === 0) return [];
+  const used = poolIdsAlreadyInUse(html);
+  return [...pool.filter((id) => !used.has(id)), ...pool];
+}
+
+/** Seed picsum du repli NEUTRE : placeholder générique, déterministe. */
+function neutralPicsumSeed(tag: string, index: number): string {
+  const altMatch = /\balt\s*=\s*"([^"]*)"/i.exec(tag) || /\balt\s*=\s*'([^']*)'/i.exec(tag);
+  const base = (altMatch?.[1] ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30) || `sanitized-${index}`;
+  return `${base}-${index}`;
+}
+
+/**
  * Repli anti-images-cassées (E46 côté Builder, ici pour le HTML servi) :
  * chaque <img> http(s) sans gestionnaire d'erreur en reçoit un — en cas
- * d'échec de chargement chez le visiteur, bascule vers un placeholder
- * déterministe au lieu de l'icône cassée. Compteur = seed stable.
+ * d'échec de chargement chez le visiteur, bascule vers un repli du THÈME
+ * (F2 : ID vérifié du réservoir, rotation) au lieu d'une photo générique ;
+ * 'autre' possède depuis T0.5 un réservoir d'ambiance neutre vérifiée,
+ * tout comme les secteurs. À défaut (réservoir vide, théorique),
+ * placeholder picsum déterministe historique.
+ * `this.onerror=null` AVANT l'échange : si le repli échoue à son tour,
+ * aucune boucle onerror. Compteur = seed stable du repli neutre.
  */
-export function addImageFallbacks(html: string): string {
+export function addImageFallbacks(html: string, theme: ImageTheme = 'autre', rotationSeed = 0): string {
   let index = 0;
+  const queue = themeFallbackQueue(html, theme, rotationSeed);
+  let cursor = 0;
   // Tag complet même avec `>` dans un attribut quoté (alt="a > b").
   const IMG_TAG = /<img\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi;
   return html.replace(IMG_TAG, (tag: string) => {
@@ -346,9 +804,151 @@ export function addImageFallbacks(html: string): string {
     const src = srcMatch ? srcMatch[1] : '';
     if (!src || !/^https?:\/\//i.test(src)) return tag;
     index += 1;
-    const fallback = `this.onerror=null;this.src='https://picsum.photos/seed/vibe-${index}/800/520'`;
-    return tag.replace(/\/?>$/, (end: string) => ` onerror="${fallback}"${end}`);
+    const fallback = queue.length > 0
+      ? `https://images.unsplash.com/${queue[cursor % queue.length]}?auto=format&fit=crop&w=1200&q=80`
+      : `https://picsum.photos/seed/vibe-${index}/800/520`;
+    cursor += 1;
+    return tag.replace(/\/?>$/, (end: string) => ` onerror="this.onerror=null;this.src='${fallback}'"${end}`);
   });
+}
+
+/**
+ * IDs Unsplash vérifiés vivants — dérivés de la table thématique
+ * (packages/core/src/image/theme.ts) + IDs historiques conservés pour
+ * compatibilité (pages existantes). Source unique : allVerifiedUnsplashIds.
+ */
+export const VERIFIED_UNSPLASH_IDS: ReadonlySet<string> = new Set(allVerifiedUnsplashIds());
+
+/**
+ * B3 + F1 — SANITIZER IMAGES À LA SAUVEGARDE : le prompt seul ne suffit pas,
+ * le LLM récite parfois des URLs de mémoire (loremflickr 500 — prouvé rév 97).
+ * Toute <img> dont l'hôte n'est pas autorisé (Unsplash vérifié, picsum,
+ * data:) est réécrite VERS LE THÈME : ID vérifié du réservoir (rotation F1,
+ * sans dupliquer les IDs déjà affichés tant qu'il en reste). Depuis T0.5 le
+ * thème 'autre' a lui aussi un réservoir (ambiance neutre vérifiée) — le
+ * repli picsum seed stable n'intervient plus qu'à défaut de réservoir
+ * (théorique). Placeholder générique, JAMAIS présenté comme le produit. src vide : untouched (le gate
+ * le signale déjà). Retourne le HTML nettoyé + le nombre de réécritures
+ * (tracé en log, jamais d'exception) ; PATCH PERTINENCE : `thematicRewrites`
+ * compte les remplacements hors-secteur d'IDs pourtant vérifiés. Pur et
+ * déterministe.
+ */
+/**
+ * LOT UNSPLASH-DYN (18/10) — adoption des photos RÉELLES (recherche
+ * Unsplash avec clé usager) : IDs + URLs canoniques calculés UNE fois par
+ * exécution par l'API route (seule dépositaire de la clé). Les URLs
+ * dynamiques sont réelles et thématiques par construction de la requête :
+ * elles échappent à la vérification de table et sont la PREMIÈRE source de
+ * remplacement — la réserve déterministe prend le relais à l'épuisement.
+ * Absent : comportement strictement historique.
+ */
+export interface DynamicImageAdoption {
+  readonly dynamicIds: ReadonlySet<string>;
+  readonly dynamicUrls: readonly string[];
+}
+
+export function sanitizeImageSources(
+  html: string,
+  theme: ImageTheme = 'autre',
+  rotationSeed = 0,
+  dynamic?: DynamicImageAdoption
+): { html: string; replaced: number; thematicRewrites: number } {
+  let replaced = 0;
+  let index = 0;
+  const queue = themeFallbackQueue(html, theme, rotationSeed);
+  let cursor = 0;
+  // LOT UNSPLASH-DYN : filet dynamique roté comme le reste (seed unique de
+  // génération) ; null sans clé/usine → aucune branche historique modifiée.
+  const dynamicQueue = dynamic !== undefined && dynamic.dynamicUrls.length > 0
+    ? rotatePool(dynamic.dynamicUrls, rotationSeed)
+    : null;
+  let dynamicCursor = 0;
+  const IMG_TAG = /<img\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi;
+  const clean = html.replace(IMG_TAG, (tag: string) => {
+    const srcMatch = /\bsrc\s*=\s*"([^"]*)"/i.exec(tag) || /\bsrc\s*=\s*'([^']*)'/i.exec(tag);
+    const src = srcMatch ? srcMatch[1] : '';
+    if (!src) return tag;
+    if (/^data:image\//i.test(src)) return tag;
+    let allowed = false;
+    try {
+      const url = new URL(src);
+      if (/^https?:$/.test(url.protocol)) {
+        const host = url.hostname.toLowerCase();
+        if (host === 'picsum.photos') allowed = true;
+        else if (host === 'images.unsplash.com') {
+          const id = ((url.pathname.split('/').pop() || '').split('?')[0] ?? '');
+          allowed = VERIFIED_UNSPLASH_IDS.has(id)
+            || (dynamic !== undefined && dynamic.dynamicIds.has(id));
+        }
+      }
+    } catch {
+      allowed = false;
+    }
+    if (allowed) return tag;
+    index += 1;
+    replaced += 1;
+    // LOT UNSPLASH-DYN : photos réelles d'abord (épuisées → réserve thème).
+    const dynamicBase = dynamicQueue !== null && dynamicCursor < dynamicQueue.length
+      ? dynamicQueue[dynamicCursor % dynamicQueue.length]
+      : undefined;
+    let replacement: string;
+    if (dynamicBase !== undefined) {
+      replacement = dynamicBase;
+      dynamicCursor += 1;
+    } else {
+      replacement = queue.length > 0
+        ? `https://images.unsplash.com/${queue[cursor % queue.length]}?auto=format&fit=crop&w=1200&q=80`
+        : `https://picsum.photos/seed/${neutralPicsumSeed(tag, index)}/800/520`;
+      cursor += 1;
+    }
+    return tag.replace(/\bsrc\s*=\s*("[^"]*"|'[^']*')/i, `src="${replacement}"`);
+  });
+  // PATCH PERTINENCE — SÉCURITÉ D'ABORD (ci-dessus), PERTINENCE ensuite :
+  // une image LÉGALE mais d'un AUTRE secteur (ID vérifié d'un autre réservoir,
+  // ou LEGACY sans sujet garanti) est remplacée par une image du réservoir du
+  // thème courant — fonction commune theme.ts, idempotente, UN passage, seed
+  // de génération. La conformité d'un ID ne prouve pas sa pertinence.
+  // LOT UNSPLASH-DYN : les IDs dynamiques sont CONFORMES par construction
+  // (requête thématique) et servent de priorité de réécriture hors-secteur.
+  const thematic = thematicImageRewrite(
+    clean,
+    theme,
+    rotationSeed,
+    dynamic !== undefined
+      ? { trustedIds: dynamic.dynamicIds, poolOverride: [...dynamic.dynamicIds] }
+      : undefined
+  );
+  return { html: thematic.content, replaced, thematicRewrites: thematic.rewrites };
+}
+
+/**
+ * F4 — échantillon traçable « reçu → conservé », par section (paires par
+ * index : aucune étape entre les deux extractions ne change la structure du
+ * document). Borné à 20, srcs tronquées à 120 : URLs publiques uniquement,
+ * jamais de secret ni de contenu utilisateur. Différence only : quand la
+ * source a été réécrite, l'entrée porte `received`.
+ */
+export interface FinalImageTrace {
+  readonly section: string;
+  /** URL finale conservée dans le HTML sauvegardé. */
+  readonly final: string;
+  /** URL reçue du LLM quand elle a été remplacée par `final`. */
+  readonly received?: string;
+}
+
+export function buildFinalImageTrace(received: readonly SectionImage[], final: readonly SectionImage[], limit = 20): FinalImageTrace[] {
+  const out: FinalImageTrace[] = [];
+  const count = Math.min(final.length, limit);
+  for (let i = 0; i < count; i += 1) {
+    const f = final[i]!;
+    const r = received[i];
+    if (r !== undefined && (r.section !== f.section || r.src !== f.src)) {
+      out.push({ section: f.section, final: f.src.slice(0, 120), received: r.src.slice(0, 120) });
+    } else {
+      out.push({ section: f.section, final: f.src.slice(0, 120) });
+    }
+  }
+  return out;
 }
 
 export function buildStudioShell(sectionsHtml: string, dna?: StudioDesignDna, title?: string): string {
@@ -357,7 +957,8 @@ export function buildStudioShell(sectionsHtml: string, dna?: StudioDesignDna, ti
   const bg = dna?.palette.bg || '#070913';
   const fg = dna?.palette.fg || '#f1f5f9';
   const htmlClass = (dna?.mode === 'light' ? '' : 'dark ') + 'scroll-smooth';
-  const pageTitle = title && title.trim().length > 0 ? escapeHtmlText(title.trim().slice(0, 70)) : 'VibeCode Studio';
+  const pageTitleRaw = title && title.trim().length > 0 ? title.trim().slice(0, 70) : 'VibeCode Studio';
+  const pageTitle = escapeHtmlText(reconcilePageTitle(pageTitleRaw, sectionsHtml));
   return `<!DOCTYPE html>
 <html lang="fr" class="${htmlClass}">
 <head>
@@ -379,6 +980,63 @@ export function buildStudioShell(sectionsHtml: string, dna?: StudioDesignDna, ti
 ${sectionsHtml}
 </body>
 </html>`;
+}
+
+/**
+ * Prompts purs de la régénération post-plan (contrat de thème global +
+ * brief images — testables sans IA). Texte identique à l'ancien inline,
+ * plus l'annexe secteur (même brief que le stream).
+ */
+export interface RegeneratePrompts {
+  readonly systemPrompt: string;
+  readonly userPrompt: string;
+  readonly isModification: boolean;
+  readonly imageTheme: ImageTheme;
+}
+
+export function buildRegeneratePrompts(
+  userMessage: string,
+  currentHtml: string,
+  planSummary: string
+): RegeneratePrompts {
+  const isModification = currentHtml.trim().length > 200;
+  const imageTheme = detectImageTheme(userMessage || '', pageTitleHint(currentHtml));
+  const mode = isModification ? 'modify' : 'create';
+  const systemPrompt = isModification
+    ? "Tu es le Lead Ingénieur IA de VibeCode Studio. Tu dois MODIFIER l'application web existante selon le plan d'ingénierie approuvé et la demande de l'utilisateur.\n\n" +
+      "CONSIGNES ABSOLUES :\n" +
+      "1. Base-toi fidèlement sur le code HTML complet actuel fourni.\n" +
+      "2. Si la demande porte sur l'apparence (couleurs, thème, palette, style), applique VRAIMENT ce changement.\n" +
+      "3. Réponds UNIQUEMENT avec le code HTML complet mis à jour dans un bloc ```html ... ```, sans aucune explication."
+    : "Tu es le Lead Designer UI/UX et Ingénieur IA principal de VibeCode Studio. Conçois une application web complète, moderne et interactive avec Tailwind CSS.\n" +
+      "Réponds UNIQUEMENT avec le code HTML complet dans un bloc ```html ... ```, sans explication.";
+  const sectorAppendix = '\n\n' + buildSectorContract(imageTheme, mode)
+    + '\n\n' + buildImageBrief(imageTheme, mode)
+    + '\n\nTITRE : émets <!-- PAGE_TITLE: Vrai titre du site --> correspondant à la demande actuelle. Ne recopie jamais un titre hérité d’un autre secteur (ex. « Authentic Italian Cuisine » sur un site barbier).';
+  const userPrompt = isModification
+    ? `Voici le code HTML actuel de l'application :\n\`\`\`html\n${currentHtml}\n\`\`\`\n\nPlan d'ingénierie approuvé : ${planSummary}\n\nDemande initiale de l'utilisateur : ${userMessage}`
+    : `Génère l'application complète suivante : ${userMessage}`;
+  return { systemPrompt: systemPrompt + sectorAppendix, userPrompt, isModification, imageTheme };
+}
+
+/**
+ * SECTEUR-LIBRE — requête de recherche photo d'une exécution.
+ * Thème mappé → requête dédiée du thème (comportement historique intact).
+ * Thème 'autre' → requête DÉRIVÉE du texte (lexique métiers déterministe),
+ * et repli générique quand aucun métier n'est reconnu. Pure : ni réseau,
+ * ni clé — testable hors ligne.
+ */
+export function resolveDynamicSearchQuery(
+  imageTheme: ImageTheme,
+  userMessage: string,
+  titleHint: string
+): { readonly query: string; readonly derived: boolean } {
+  const themedQuery = THEME_PHOTO_QUERY[imageTheme];
+  if (imageTheme !== 'autre') return { query: themedQuery, derived: false };
+  const derivedQuery = deriveSectorPhotoQuery(`${userMessage} ${titleHint}`);
+  return derivedQuery === null
+    ? { query: themedQuery, derived: false }
+    : { query: derivedQuery, derived: true };
 }
 
 /**
@@ -406,7 +1064,7 @@ async function regenerateFileForPlan(
     ? 'mistral'
     : process.env.GEMINI_API_KEY
       ? 'gemini'
-      : undefined;
+      : preferredAiProvider();
   const adapter = aiProviderRegistry.resolve(preferredProviderId ? { preferredProviderId } : {});
   if (!adapter) {
     return { updated: false, error: "Aucun fournisseur IA réel (Gemini/Mistral) n'est disponible côté serveur." };
@@ -414,24 +1072,25 @@ async function regenerateFileForPlan(
 
   const existing = fileStore.getFile(tenantId, projectId, entryFile);
   const currentHtml = existing?.content || '';
-  const isModification = currentHtml.trim().length > 200;
 
-  const systemPrompt = isModification
-    ? "Tu es le Lead Ingénieur IA de VibeCode Studio. Tu dois MODIFIER l'application web existante selon le plan d'ingénierie approuvé et la demande de l'utilisateur.\n\n" +
-      "CONSIGNES ABSOLUES :\n" +
-      "1. Base-toi fidèlement sur le code HTML complet actuel fourni.\n" +
-      "2. Si la demande porte sur l'apparence (couleurs, thème, palette, style), applique VRAIMENT ce changement.\n" +
-      "3. Réponds UNIQUEMENT avec le code HTML complet mis à jour dans un bloc ```html ... ```, sans aucune explication."
-    : "Tu es le Lead Designer UI/UX et Ingénieur IA principal de VibeCode Studio. Conçois une application web complète, moderne et interactive avec Tailwind CSS.\n" +
-      "Réponds UNIQUEMENT avec le code HTML complet dans un bloc ```html ... ```, sans explication.";
-
-  const userPrompt = isModification
-    ? `Voici le code HTML actuel de l'application :\n\`\`\`html\n${currentHtml}\n\`\`\`\n\nPlan d'ingénierie approuvé : ${plan.summary}\n\nDemande initiale de l'utilisateur : ${userMessage}`
-    : `Génère l'application complète suivante : ${userMessage}`;
+  // Prompts purs et testables (contrat de thème global + brief images) :
+  // voir buildRegeneratePrompts — même texte qu'avant, plus l'annexe secteur.
+  const regen = buildRegeneratePrompts(userMessage, currentHtml, plan.summary);
+  const isModification = regen.isModification;
+  // P0 (audit 2026-10) — contexte Design réel ajouté au prompt de
+  // régénération ; sans rapport persisté, texte strictement identique.
+  const systemPrompt = withProjectDesignContext(regen.systemPrompt, { tenantId, projectId });
+  const userPrompt = regen.userPrompt;
+  logger.info('Contrat de thème (régénération plan)', {
+    component: 'conversation-route',
+    tenantId,
+    projectId,
+    imageTheme: regen.imageTheme
+  });
 
   const credentials = clientApiKey
     ? { tenantId, providerId: adapter.descriptor.providerId, apiKey: clientApiKey }
-    : aiProviderRegistry.getTenantCredentials(tenantId, adapter.descriptor.providerId);
+    : resolveProviderCredentials(tenantId, adapter.descriptor.providerId);
 
   try {
     const response = await adapter.generate(
@@ -565,11 +1224,16 @@ export async function handleConversationRoutes(
   const parts = afterPrefix.split('/');
   const projectId = parts[0];
   const subRoute = parts[1]; // 'conversation'
-  const subResource = parts[2]; // 'sessions'
+  const subResource = parts[2]; // 'sessions' | 'memory'
   const sessionId = parts[3];
   const action = parts[4]; // 'turns' | 'confirm' | 'execute'
 
-  if (!projectId || subRoute !== 'conversation' || subResource !== 'sessions') {
+  // ÉTAPE 5 — la mémoire projet vit à /conversation/memory (PAS sous
+  // /sessions) : sans cette branche, le parseur rejetait la route et le
+  // Studio recevait un 404 générique alors que la mémoire existait.
+  const isMemoryRoute = subResource === 'memory' && !sessionId;
+
+  if (!projectId || subRoute !== 'conversation' || (subResource !== 'sessions' && !isMemoryRoute)) {
     return false;
   }
 
@@ -591,7 +1255,7 @@ export async function handleConversationRoutes(
   }
 
   // GET /api/v1/projects/:projectId/conversation/memory -> mémoire projet réelle (ÉTAPE 5)
-  if (sessionId === 'memory' && !action && req.method === 'GET') {
+  if (isMemoryRoute && req.method === 'GET') {
     assertPermission(context.role, 'PROJECT_READ', requestId);
     const memory = conversationIntelligenceService.getLatestProjectMemory(context.tenantId, projectId, context.role, requestId);
     if (!memory) {
@@ -644,6 +1308,22 @@ export async function handleConversationRoutes(
     }
     const session = await conversationIntelligenceService.confirmPlan(
       { tenantId: context.tenantId, projectId, sessionId, planId: body.planId, approved: body.approved },
+      context.role,
+      requestId
+    );
+    sendJson(res, 200, { session, requestId });
+    return true;
+  }
+
+  // POST /api/v1/projects/:projectId/conversation/sessions/:sessionId/back
+  // → RETOUR ARRIÈRE (CDC §11) : annule le dernier tour par le VRAI moteur
+  // (ConversationCompass : l'état conversationnel est restauré, la trace du
+  // tour annulé est conservée). Avant, rollbackLastTurn existait et était
+  // testé mais n'était exposé par AUCUNE route.
+  if (sessionId && action === 'back' && req.method === 'POST') {
+    assertPermission(context.role, 'PROJECT_READ', requestId);
+    const session = conversationIntelligenceService.rollbackLastTurn(
+      { tenantId: context.tenantId, projectId, sessionId },
       context.role,
       requestId
     );
@@ -757,6 +1437,79 @@ export async function handleConversationRoutes(
     const currentHtml = existing?.content || '';
     const isModification = body.isModification ?? (currentHtml.trim().length > 200);
 
+    // P0 IMAGES — thème visuel détecté côté serveur (demande + titre de page
+    // en contexte) : le LLM n'est plus l'unique source du thème. Servi aux
+    // deux prompts (brief par section) et au log de traçabilité final.
+    const titleHint = pageTitleHint(currentHtml);
+    const imageTheme: ImageTheme = detectImageTheme(body.message || '', titleHint);
+    // PATCH PERTINENCE — seed de rotation déterministe : UNE valeur pour
+    // toute la génération (briefs, sanitize, replis onerror) — cohérence
+    // intra-génération garantie, variation seulement entre générations.
+    const imageSeed = poolRotationSeed(requestId);
+
+    // LOT UNSPLASH-DYN — clé usager fournie (carte Réglages → API) : UNE
+    // recherche réelle par exécution (thème → requête métier). Les photos
+    // adoptées servent au BRIEF (le LLM propose les vraies photos) puis au
+    // sanitizer (conformité). Sans clé ou en échec : zéro changement, la
+    // réserve déterministe reste la vérité. Jamais la clé dans les logs.
+    const unsplashKeyRaw = req.headers['x-unsplash-api-key'];
+    const unsplashApiKey = typeof unsplashKeyRaw === 'string' ? unsplashKeyRaw.trim() : '';
+    let dynamicImages: DynamicImageAdoption | undefined;
+    if (unsplashApiKey.length > 0) {
+      // SECTEUR-LIBRE : sujet non mappé ('autre') → requête DÉRIVÉE de la
+      // demande (« caserne de pompier » → firefighter fire station…) au lieu
+      // de la requête générique ; thème mappé = requête du thème, inchangé.
+      const searchSpec = resolveDynamicSearchQuery(imageTheme, body.message || '', titleHint);
+      const searchStartedAt = Date.now();
+      try {
+        const photos = await searchThemedUnsplashPhotos({
+          query: searchSpec.query,
+          count: 10,
+          apiKey: unsplashApiKey,
+          timeoutMs: UNSPLASH_SEARCH_TIMEOUT_MS,
+        });
+        if (photos.length > 0) {
+          dynamicImages = {
+            dynamicIds: new Set(photos.map((photo) => photo.id)),
+            dynamicUrls: photos.map((photo) => photo.url),
+          };
+          // LOT UNSPLASH-DYN (suite) — journal d'adoptions : ces photo-IDs
+          // réellement fetchés deviennent CONFORMES pour les portes d'écriture
+          // (édition, rollback, insertion) au même titre que le réservoir.
+          // Best-effort : une écriture en échec ne bloque JAMAIS la génération
+          // (mais les flux Studio refuseront alors ce HTML — cas journalisé).
+          try {
+            const adopted = recordAdoptedImageIds(photos.map((photo) => photo.id));
+            logger.info('Journal d adoptions images : inscription', {
+              component: 'conversation-route-stream',
+              imageTheme,
+              adopted,
+            });
+          } catch (error) {
+            logger.warn('Journal d adoptions images : ecriture impossible — les flux Studio refuseront ce HTML', {
+              component: 'conversation-route-stream',
+              imageTheme,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        logger.info('Unsplash dynamique : recherche réelle', {
+          component: 'conversation-route-stream',
+          imageTheme,
+          query: searchSpec.query,
+          derived: searchSpec.derived,
+          found: photos.length,
+          ms: Date.now() - searchStartedAt,
+        });
+      } catch (error) {
+        logger.warn('Unsplash dynamique indisponible : réserve déterministe', {
+          component: 'conversation-route-stream',
+          imageTheme,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
     // EXECUTION TRANSPARENCY : une exécution = un requestId. Toutes les frames
     // « milestone » passent par `emit` (enrichies executionId/seq/phase/status)
     // et les événements correspondants sont persistés dans executionStore.
@@ -778,6 +1531,8 @@ export async function handleConversationRoutes(
       recorder = new ExecutionRecorder(executionStore, executionId, sendSSE);
       activeCancelFlags.set(executionId, cancelFlag);
     }
+    // BLOC 1 — flag pour éviter boucle infinie de retry gate
+    let gateRetryAttempted = false;
     /** Frame SSE enrichie ; enregistre l'événement quand il est fourni. */
     const emit = (data: Record<string, unknown>, event?: RecordableEvent): void => {
       if (recorder) recorder.frame(data, event);
@@ -791,12 +1546,12 @@ export async function handleConversationRoutes(
     // par les parseurs qui ne lisent que `data:`) + JSON `data:` portant le
     // même nom en `type` (compatible parseur Studio actuel, qui ignore les
     // types inconnus). Le handshake reste lisible même sans `data:`.
-    const emitNamed = (name: string, payload: Record<string, unknown>): void => {
+    const emitNamed = (name: string, payload: Record<string, unknown>, event?: RecordableEvent): void => {
       if (clientGone) return;
       try {
         res.write(`event: ${name}\n`);
       } catch { /* socket déjà fermé */ }
-      emit({ type: name, ...payload });
+      emit({ type: name, ...payload }, event);
     };
 
     emit({ type: 'start', isModification }, {
@@ -848,10 +1603,9 @@ export async function handleConversationRoutes(
       && !BUILD_VERBS.test(body.message || '');
     if (wantsAnswerOnly) {
       const questionStart = Date.now();
-      const qPreferredProviderId = process.env.MISTRAL_API_KEY ? 'mistral' : process.env.GEMINI_API_KEY ? 'gemini' : undefined;
-      const qAdapter = aiProviderRegistry.resolve(qPreferredProviderId ? { preferredProviderId: qPreferredProviderId } : {});
+      const qAdapter = resolveStreamingAdapter();
       if (!qAdapter || !('generateStream' in qAdapter)) {
-        const providerError = "Aucun fournisseur IA streaming disponible (Mistral requis).";
+        const providerError = "Aucun fournisseur IA streaming disponible (Mistral ou Gemini requis).";
         emit({ type: 'error', error: providerError });
         if (recorder) executionStore.failExecution(executionId, providerError);
         activeCancelFlags.delete(executionId);
@@ -871,7 +1625,7 @@ export async function handleConversationRoutes(
         }
       }, 2000);
       try {
-        // @ts-expect-error — generateStream existe sur MistralProviderAdapter
+        // @ts-expect-error — generateStream existe sur les adaptateurs Mistral et Gemini
         const answerStream = qAdapter.generateStream(
           {
             tenantId: context.tenantId,
@@ -883,7 +1637,7 @@ export async function handleConversationRoutes(
             timeoutMs: 60000,
             requestId
           },
-          aiProviderRegistry.getTenantCredentials(context.tenantId, qAdapter.descriptor.providerId)
+          resolveStreamCredentials(req, context.tenantId, qAdapter.descriptor.providerId)
         );
         for await (const chunk of answerStream) {
           if (clientGone || cancelFlag.cancelled) break;
@@ -938,7 +1692,131 @@ export async function handleConversationRoutes(
       res.end();
       return true;
     }
-    const plan = planGenerator.generatePlan({ intent: realIntent });
+
+    // V7 — PRÉPARATION MOTEUR : une seule phase pure (aucun appel provider,
+    // aucune écriture) fournit l'intention enrichie, les hypothèses, le plan,
+    // l'impact et le contexte borné. Le flux conserve ensuite sa génération,
+    // sa mutation atomique et sa persistance habituelles.
+    let preparedTurn: PreparedTurn | undefined;
+    let preparationSummary: Record<string, unknown> | undefined;
+    if (streamPreparationEnabled) {
+      try {
+        preparedTurn = await conversationIntelligenceService.prepareTurn(
+          {
+            tenantId: context.tenantId,
+            projectId,
+            sessionId,
+            message: body.message || '',
+            intent: realIntent,
+            // Le flux Studio matérialise l'application dans index.html ;
+            // cette cible explicite évite un plan sans fichier réel.
+            targetFiles: [STREAM_MUTATION_PATH],
+            autoConfirmLowRisk: false
+          },
+          context.role,
+          requestId
+        );
+        const engineeringBrief = buildEngineeringBrief(preparedTurn);
+        preparationSummary = {
+          source: 'engine',
+          assumptions: preparedTurn.assumptions.length,
+          planRisk: preparedTurn.planAssessment?.riskLevel ?? null,
+          contextChars: preparedTurn.context.stats.totalChars,
+          briefChars: engineeringBrief.length,
+          impactTargets: preparedTurn.impact?.affectedFiles ?? []
+        };
+        emitNamed('on_preparation_completed', {
+          assumptions: preparedTurn.assumptions.length,
+          planRisk: preparedTurn.planAssessment?.riskLevel ?? null,
+          contextChars: preparedTurn.context.stats.totalChars,
+          briefChars: engineeringBrief.length,
+          impactTargets: preparedTurn.impact?.affectedFiles ?? []
+        });
+      } catch (preparationError) {
+        const reason = preparationError instanceof Error ? preparationError.message : String(preparationError);
+        preparationSummary = { source: 'fallback', reason: reason.slice(0, 200) };
+        logger.warn('Préparation moteur indisponible — repli sur le chemin stream actuel', {
+          component: 'conversation-route-stream',
+          tenantId: context.tenantId,
+          projectId,
+          error: reason.slice(0, 200)
+        });
+        emitNamed('on_preparation_fallback', { reason: reason.slice(0, 200) });
+      }
+    }
+
+    // V7-WIRE-3 — DECISION ENGINE (Phase 9.5) : avant de construire, le moteur
+    // réel compare l'intention aux contraintes, génère des alternatives et
+    // détecte les contradictions avec les décisions passées. Mode CONSULTATIF
+    // (`record: false`) : rien n'est écrit dans le Decision Ledger. Le verdict
+    // est affiché et persisté ; il ne bloque jamais la génération dans ce lot.
+    const decisionOutcome = await assessConfiguredStreamDecision({
+      tenantId: context.tenantId,
+      projectId,
+      sessionId,
+      intent: realIntent,
+      memory: preparedTurn?.projectMemory
+    });
+    let decisionSummary: StreamDecisionSummary | null = null;
+    if (decisionOutcome.available) {
+      decisionSummary = decisionOutcome.summary;
+      emitNamed('on_decision_assessed', {
+        verdict: decisionSummary.verdict,
+        decisionId: decisionSummary.decisionId,
+        intentCategory: decisionSummary.intentCategory,
+        alternatives: decisionSummary.alternatives,
+        viableAlternatives: decisionSummary.viableAlternatives,
+        chosen: decisionSummary.chosenAlternative?.label ?? null,
+        clarifications: [...decisionSummary.requiredClarifications],
+        contradictingDecisions: decisionSummary.contradictingDecisions,
+        memory: decisionSummary.memory ?? null
+      }, {
+        type: 'DECISION_ASSESSED',
+        phase: 'PLAN',
+        status: 'COMPLETED',
+        title: `Décision ${decisionSummary.verdict} — ${decisionSummary.alternatives} alternative(s)`,
+        detail: {
+          decisionId: decisionSummary.decisionId,
+          verdict: decisionSummary.verdict,
+          intentCategory: decisionSummary.intentCategory,
+          alternatives: decisionSummary.alternatives,
+          viableAlternatives: decisionSummary.viableAlternatives,
+          chosen: decisionSummary.chosenAlternative?.label ?? null,
+          riskScore: decisionSummary.chosenAlternative?.riskScore ?? null,
+          reversible: decisionSummary.chosenAlternative?.reversible ?? null,
+          requiredClarifications: decisionSummary.requiredClarifications.length,
+          contradictingDecisions: decisionSummary.contradictingDecisions,
+          memoryRisks: decisionSummary.memory?.matchedRisks.length ?? 0,
+          memoryConstraints: decisionSummary.memory?.matchedConstraints.length ?? 0,
+          memoryDecisions: decisionSummary.memory?.activeDecisions ?? 0,
+          recorded: false
+        }
+      });
+      if (decisionSummary.verdict !== 'READY') {
+        logger.warn('Décision consultative non READY (génération poursuivie)', {
+          component: 'conversation-route-stream',
+          tenantId: context.tenantId,
+          projectId,
+          verdict: decisionSummary.verdict,
+          clarifications: decisionSummary.requiredClarifications.length
+        });
+      }
+    } else if (decisionOutcome.reason !== 'service-non-configure') {
+      logger.warn('Decision Engine consultatif indisponible (génération poursuivie)', {
+        component: 'conversation-route-stream',
+        tenantId: context.tenantId,
+        projectId,
+        error: decisionOutcome.reason
+      });
+    }
+
+    // Le plan préparé par le moteur est la source quand elle est disponible ;
+    // le générateur local reste le repli exact du chemin historique.
+    const plan = preparedTurn?.plan ?? planGenerator.generatePlan({
+      intent: realIntent,
+      // Hors flag, le plan local garde exactement son comportement historique.
+      defaultTargetFiles: streamPreparationEnabled ? [STREAM_MUTATION_PATH] : undefined
+    });
     emit({ type: 'plan', plan }, {
       type: 'PLAN_CREATED',
       phase: 'PLAN',
@@ -946,6 +1824,65 @@ export async function handleConversationRoutes(
       title: `Plan créé — ${plan.steps.length} étape(s)`,
       detail: { planId: plan.planId, steps: plan.steps.length }
     });
+
+    // V7 — IMPACT INTELLIGENCE branchée sur le flux principal : avant toute
+    // modification, le moteur réel évalue le rayon d'impact de index.html
+    // (graphe sémantique + dépendances). Le résultat est TRACÉ (événement
+    // persistant + frame nommée + done) ; il est consultatif dans ce lot et
+    // ne bloque donc jamais la génération. HIGH/CRITICAL est signalé pour la
+    // politique de confirmation (planFirst) sans changer le comportement.
+    let impactSummary: StreamImpactSummary | null = null;
+    if (isModification) {
+      const impactOutcome = assessStreamImpact(
+        streamImpactAnalyzer,
+        { tenantId: context.tenantId, projectId, targetFiles: resolveStreamImpactTargets(plan) },
+        context.role,
+        requestId
+      );
+      if (impactOutcome.available) {
+        impactSummary = impactOutcome.summary;
+        // V7-WIRE-3 — l'impact entre dans le panneau Exécution LIVE : la frame
+        // nommée porte la vue `activity` normalisée (le Studio l'affiche sans
+        // code spécifique) ET l'événement persistant reste consultable au replay.
+        emitNamed('on_impact_assessed', {
+          riskLevel: impactSummary.riskLevel,
+          requiresConfirmation: impactSummary.requiresConfirmation,
+          totalImpactedNodes: impactSummary.totalImpactedNodes,
+          breakingCount: impactSummary.breakingCount,
+          targetFiles: [...impactSummary.targetFiles]
+        }, {
+          type: 'IMPACT_ASSESSED',
+          phase: 'PLAN',
+          status: 'COMPLETED',
+          title: `Impact évalué — risque ${impactSummary.riskLevel}`,
+          detail: {
+            riskLevel: impactSummary.riskLevel,
+            totalImpactedNodes: impactSummary.totalImpactedNodes,
+            breakingCount: impactSummary.breakingCount,
+            requiresConfirmation: impactSummary.requiresConfirmation,
+            targetFiles: [...impactSummary.targetFiles],
+            durationMs: impactSummary.durationMs
+          }
+        });
+        logger.info('Impact Intelligence : analyse réelle de la modification', {
+          component: 'conversation-route-stream',
+          tenantId: context.tenantId,
+          projectId,
+          riskLevel: impactSummary.riskLevel,
+          totalImpactedNodes: impactSummary.totalImpactedNodes,
+          breakingCount: impactSummary.breakingCount,
+          requiresConfirmation: impactSummary.requiresConfirmation,
+          durationMs: impactSummary.durationMs
+        });
+      } else if (impactOutcome.reason !== 'service-non-configure') {
+        logger.warn('Impact Intelligence : analyse indisponible (génération poursuivie)', {
+          component: 'conversation-route-stream',
+          tenantId: context.tenantId,
+          projectId,
+          error: impactOutcome.reason
+        });
+      }
+    }
     // P2-SIGNAUX — plan progressif : une frame par étape (index/total/titre)
     // au lieu d'un seul bloc statique. La frame `plan` complète est
     // conservée (carte de plan du Studio en dépend — non-régression).
@@ -992,7 +1929,11 @@ export async function handleConversationRoutes(
           error: stageError instanceof Error ? stageError.message : String(stageError)
         });
       }
-      emit({ type: 'done', awaitingConfirmation: true });
+      emit({
+        type: 'done',
+        awaitingConfirmation: true,
+        ...(preparationSummary ? { preparation: preparationSummary } : {})
+      });
       // Sortie anticipée : le finally du stream LLM ne passe pas ici —
       // le drapeau d'annulation doit partir avec l'exécution inactive.
       activeCancelFlags.delete(executionId);
@@ -1008,11 +1949,11 @@ export async function handleConversationRoutes(
       });
     }
 
-    // Sélectionne l'adaptateur Mistral (préfère le fournisseur dont la clé est env)
-    const preferredProviderId = process.env.MISTRAL_API_KEY ? 'mistral' : process.env.GEMINI_API_KEY ? 'gemini' : undefined;
-    const adapter = aiProviderRegistry.resolve(preferredProviderId ? { preferredProviderId } : {});
+    // Sélectionne l'adaptateur de streaming : Mistral si sa clé env est
+    // présente, sinon Gemini (clé env ou carte Studio active).
+    const adapter = resolveStreamingAdapter();
     if (!adapter || !('generateStream' in adapter)) {
-      const providerError = "Aucun fournisseur IA streaming disponible (Mistral requis).";
+      const providerError = "Aucun fournisseur IA streaming disponible (Mistral ou Gemini requis).";
       emit({ type: 'error', error: providerError });
       if (recorder) executionStore.failExecution(executionId, providerError);
       activeCancelFlags.delete(executionId);
@@ -1038,65 +1979,45 @@ export async function handleConversationRoutes(
       "RÔLE : Tu construis le site EN LIVE devant l'utilisateur, section par section, dans le preview. L'utilisateur doit VOIR le site se construire sous ses yeux — chaque section apparaît l'une après l'autre avec un effet de pulse.\n\n" +
       "NARRATION VIVANTE (très important) : Avant CHAQUE section, raconte en 1-2 phrases chaleureuses et concrètes ce que tu construis et POURQUOI, comme un designer qui parle à son client (ex: « Je pose un header translucide avec le logo à gauche, ça donne tout de suite une impression de pro. » / « Maintenant le hero : une grande image chaleureuse et un gros titre qui claque. »). Utilise le tutoiement, sois naturel, jamais technique.\n\n" +
       "QUALITÉ DESIGN (obligatoire) : une palette limitée et cohérente, des dégradés subtils, des ombres douces, des hover states sur chaque bouton, une vraie hiérarchie typographique (grands titres, textes lisibles) et un espacement généreux. Le résultat doit avoir l'air conçu par un designer senior.\n\n" +
-      "IMAGES (obligatoire) : chaque photo DOIT montrer le sujet de sa section — jamais de photo hors-sujet. Tu choisis EXCLUSIVEMENT dans ce RÉSERVOIR vérifié (IDs testés vivants, sujet connu), selon le thème — jamais d'autre adresse inventée de mémoire (c'est comme ça qu'un café illustrait des tapis) :\n" +
-      "   pizza/burger: photo-1513104890138-7c749659a591, photo-1568901346375-23c9450c58cd | boulangerie: photo-1509440159596-0249088772ff, photo-1555507036-ab1f4038808a | clinique: photo-1576091160399-112ba8d25d1d | plombier: photo-1585704032915-c3400ca199e7 | animaux: photo-1543466835-00a7907e9de1 | fleurs: photo-1490750967868-88aa4486c946 | auto: photo-1494976388531-d1058494cdd8 | café: photo-1509042239860-f550ce710b93, photo-1511920170033-f8396924c348 | sport: photo-1534438327276-14e5300c3a48 | bureau: photo-1497366216548-37526070297c | salon: photo-1560066984-138dadb4c035\n" +
-      "   Format : https://images.unsplash.com/<ID>?auto=format&fit=crop&w=1200&q=80. Si AUCUN sujet du réservoir ne convient : https://picsum.photos/seed/<mot-sujet>-<N>/800/520 (joli mais générique — à éviter si un sujet du réservoir colle). Chaque <img> porte un alt qui décrit ce qu'on doit voir.\n\n" +
+      buildSectorContract(imageTheme, 'create') + "\n\n" +
+      buildImageBrief(imageTheme, 'create', imageSeed, dynamicImages !== undefined ? { poolOverride: [...dynamicImages.dynamicIds] } : undefined) + "\n\n" +
       "FORMAT OBLIGATOIRE de ta réponse :\n\n" +
       "0. EMPREINTE DESIGN (OBLIGATOIRE, PREMIÈRE LIGNE de ta réponse) : un commentaire HTML avec ton brief design en JSON — palette hex RÉELLE (fond, texte, accent) cohérente avec la demande, UNE police Google Fonts (ex: \"Fraunces\", \"Space Grotesk\", \"Playfair Display\", \"Inter\", \"Poppins\"), et le mode d'ambiance :\n" +
-      "   <!-- DESIGN_DNA: {\"palette\":{\"bg\":\"#fff8f0\",\"fg\":\"#3b2a1e\",\"accent\":\"#d97706\"},\"font\":\"Fraunces\",\"mode\":\"light\"} -->\n" +
-      "   Cette empreinte est l'IDENTITÉ du site : le fond de page et la police principale sont posés à partir d'elle, et tu DOIS réutiliser bg/fg/accent dans TOUTES tes sections (fonds, textes, boutons, bordures, accents). Adapte-la à la demande : « site fun pour enfants » ≠ « dashboard corporate » ≠ « boulangerie chaleureuse ».\n\n" +
-      "0b. TITRE (OBLIGATOIRE, avec l'empreinte) : le vrai nom du commerce/site, jamais \"VibeCode Studio\" :\n" +
-      "   <!-- PAGE_TITLE: Bella Italia — Pizzeria artisanale -->\n\n" +
-      "0c. VARIÉTÉ DE MISE EN PAGE (anti-recette unique) : choisis UN gabarit selon le sujet et annonce-le d'un mot — « centré » (hero classique + sections empilées, pour corporate), « éditorial » (asymétrique, gros titre latéral, blocs décalés, pour fun/enfants/culture), « plein-bleed » (sections edge-to-edge, cartes larges, pour resto/portfolio). Même sujet + même gabarit deux fois de suite = INTERDIT.\n\n" +
-      "1. Commence par 1-2 phrases conversationnelles pour annoncer ce que tu vas créer (ambiance, sections prévues)\n" +
-      "   Ex: \"Salut ! Je te construis ta landing page pour restaurant italien avec une ambiance terracotta. Je commence par le Header, puis Hero, Menu, Réservation et Footer.\"\n\n" +
-      "2. Pour CHAQUE section du site (commence par Header, finis par Footer), écris un bloc au format EXACT suivant :\n\n" +
-      "   <SECTION name=\"header\">\n" +
-      "   Phrase courte décrivant ce que tu fais (ex: \"Maintenant le Header avec la navigation sticky.\")\n" +
-      "   <header>... code HTML de la section ...</header>\n" +
+      "   <!-- DESIGN_DNA: {\"palette\":{\"bg\":\"#f8fafc\",\"fg\":\"#0f172a\",\"accent\":\"#0284c7\"},\"font\":\"Inter\",\"mode\":\"light\"} -->\n" +
+      "   Cette empreinte est l'IDENTITÉ du site : le fond de page et la police principale sont posés à partir d'elle, et tu DOIS réutiliser bg/fg/accent dans TOUTES tes sections (fonds, textes, boutons, bordures, accents). Adapte-la à la demande : « site fun pour enfants » ≠ « dashboard corporate » ≠ « vitrine élégante et neutre ».\n\n" +
+      "0b. TITRE (OBLIGATOIRE, avec l'empreinte) : le vrai nom du commerce/site, jamais \"VibeCode Studio\" et jamais un titre hérité d'un autre secteur/projet :\n" +
+      "   <!-- PAGE_TITLE: Nom Réel du Site — sous-titre du projet -->\n\n" +
+      "0c. CONCEPTION PRODUIT AVANT LE CODE (obligatoire) : avant la première section, consacre ta narration d'ouverture (3-5 phrases) à CONCEVOIR le produit demandé — pas à réciter une structure passe-partout : QUI sont les utilisateurs, QUEL problème le produit résout, QUELS parcours essentiels (découvrir → comparer → agir ? administrer ? acheter ?), QUELLES pages/sections tu construis et POURQUOI elles sont justifiées pour CE produit, QUELLES interactions réelles tu vas câbler (filtres, onglets, formulaires, états). Choisis ensuite UN archétype de départ et annonce-le d'un mot — « vitrine » (identité + preuve + contact), « application » (navigation multi-vues : tableau de bord, listes, fiches, formulaires), « catalogue » (grille produits + fiches + panier/parcours d'achat), « éditorial » (narration immersive, typographie dominante), « immersion » (plein écran, visuels forts, scroll narratif). Les archétypes sont des POINTS DE DÉPART à adapter, jamais des moules : compose la structure que le produit mérite — une seule section si une seule suffit, dix si le parcours l'exige, navigation à onglets ou vues multiples si c'est une application.\n\n" +
+      "1. Commence par ta narration de CONCEPTION (3-5 phrases, tutoiement, chaleureuse mais concrète) : le produit, ses utilisateurs, le parcours essentiel, les sections que tu construis et pourquoi, l'archétype choisi.\n" +
+      "   Ex: \"Salut ! Pour ta boutique de céramiques, je pars sur un catalogue : les visiteurs viennent CHOISIR une pièce. Grille des collections d'abord, puis matière-atelier, chaque produit avec sa fiche, et un panier simple. Direction artistique terre cuite, sobre.\"\n\n" +
+      "2. Pour CHAQUE section que TA CONCEPTION justifie, écris un bloc au format EXACT suivant :\n\n" +
+      "   <SECTION name=\"nom-court-metier\">\n" +
+      "   Phrase courte décrivant ce que tu fais (ex: \"Maintenant la grille des collections avec filtres matière.\")\n" +
+      "   ... code HTML complet de la section ...\n" +
       "   </SECTION>\n\n" +
-      "3. Continue ainsi pour chaque section dans l'ordre logique : Header → Hero → Sections contenu → Footer (4-6 sections max)\n\n" +
+      "3. Structure LIBRE et JUSTIFIÉE : le nombre de sections, leurs noms et leur ordre viennent de ta conception du produit — pas d'une recette. Un tableau de bord aura des vues données (indicateurs, tableaux, filtres) ; une boutique une grille + fiches + panier ; un site de rencontres des profils + découverte + critères ; un laboratoire ses essais et équipements. Interdits : sections fourre-tout « features génériques », cartes répétées pour remplir, boutons décoratifs sans comportement.\n\n" +
       "4. Termine par une phrase de conclusion après la dernière section\n" +
-      "   Ex: \"Voilà, ta landing page pour Bella Italia est prête ! Tu peux cliquer sur les boutons Réserver pour tester.\"\n\n" +
+      "   Ex: \"Voilà, ta boutique est prête ! Les fiches produits et le panier sont cliquables.\"\n\n" +
       "RÈGLES CRITIQUES :\n" +
       "- Utilise TOUJOURS le marqueur <SECTION name=\"nom-court\"> pour délimiter chaque section\n" +
       "- Le name doit être en minuscules avec tirets : \"header\", \"hero\", \"menu\", \"testimonials\", \"pricing\", \"reservation\", \"contact\", \"footer\"\n" +
       "- Le HTML de chaque section doit être COMPLET et AUTONOME (peut être rendu seul dans une page)\n" +
-      "- L'ordre des sections est important : Header d'abord, Footer en dernier\n" +
+      "- Chaque section doit avoir une RAISON d'être métier (si tu ne peux pas dire pourquoi elle existe pour CE produit, ne la génère pas) ; pas de header/footer obligatoires — mets-les seulement si le produit en a besoin\n" +
       "- Le texte décrivant chaque section doit être COURT (1 phrase max) et conversationnel (\"Maintenant...\", \"Ensuite...\", \"Je passe à...\", etc.)\n" +
       "- Utilise Tailwind CSS via CDN (https://cdn.tailwindcss.com) dans chaque section qui a besoin de styles\n" +
       "- RESPECTE TON EMPREINTE : fond de page bg, textes fg, boutons et accents accent — la police principale est déjà posée par le shell à partir de ton empreinte ; les couleurs arbitraires hors palette sont interdites\n" +
-      "- Adapte l'ambiance au thème (clair pour une boulangerie, sombre pour un dashboard crypto…) — ne force PAS un mode sombre si la demande appelle du clair\n" +
+      "- Adapte l'ambiance au thème (clair pour une vitrine élégante, sombre pour un dashboard financier…) — ne force PAS un mode sombre si la demande appelle du clair\n" +
       "- Pour les titres en dégradé : <span class=\"bg-gradient-to-r from-X via-Y to-Z bg-clip-text text-transparent\" style=\"-webkit-background-clip: text; -webkit-text-fill-color: transparent;\">\n" +
       "- Inclura du JS interactif quand pertinent (boutons cliquables, alertes, etc.)\n\n" +
-      "EXEMPLE de réponse attendue :\n" +
-      "<!-- DESIGN_DNA: {\"palette\":{\"bg\":\"#0c1220\",\"fg\":\"#e2e8f0\",\"accent\":\"#f59e0b\"},\"font\":\"Space Grotesk\",\"mode\":\"dark\"} -->\n" +
-      "Salut ! Je te construis ta landing page pour restaurant italien avec une ambiance terracotta élégante. Je vais faire 5 sections : Header, Hero, Menu, Réservation, Footer.\n\n" +
-      "<SECTION name=\"header\">\n" +
-      "Maintenant je commence par le Header avec la navigation sticky.\n" +
-      "<header class=\"sticky top-0 z-50 bg-slate-900/80 backdrop-blur-xl border-b border-slate-800\">\n" +
-      "  <nav class=\"max-w-6xl mx-auto px-6 py-4 flex items-center justify-between\">\n" +
-      "    <div class=\"flex items-center space-x-2\">\n" +
-      "      <i class=\"fa-solid fa-pizza-slice text-rose-400 text-xl\"></i>\n" +
-      "      <span class=\"font-bold text-lg text-white\">Bella Italia</span>\n" +
-      "    </div>\n" +
-      "    <div class=\"hidden md:flex space-x-8 text-sm text-slate-300\">\n" +
-      "      <a href=\"#home\" class=\"hover:text-white\">Accueil</a>\n" +
-      "      <a href=\"#menu\" class=\"hover:text-white\">Menu</a>\n" +
-      "      <a href=\"#reservation\" class=\"hover:text-white\">Réservations</a>\n" +
-      "    </div>\n" +
-      "    <button class=\"bg-rose-500 hover:bg-rose-400 text-white text-sm font-bold px-4 py-2 rounded-lg\">Réserver</button>\n" +
-      "  </nav>\n" +
-      "</header>\n" +
+      "EXEMPLE DE FORMAT (seul le FORMAT compte — la structure, le style et le contenu viennent de TA conception du produit demandé, jamais de cet exemple) :\n" +
+      "<!-- DESIGN_DNA: {\"palette\":{...},\"font\":\"...\",\"mode\":\"...\"} -->\n" +
+      "Narration de conception (3-5 phrases : produit, utilisateurs, parcours, sections choisies, archétype).\n\n" +
+      "<SECTION name=\"section-justifiée-par-le-produit\">\n" +
+      "Phrase courte.\n" +
+      "... HTML complet de la section, styles Tailwind, images du RÉSERVOIR du thème ...\n" +
       "</SECTION>\n\n" +
-      "<SECTION name=\"hero\">\n" +
-      "Ensuite je passe au Hero avec un titre impactant en dégradé.\n" +
-      "<section class=\"relative min-h-screen flex items-center justify-center overflow-hidden\">\n" +
-      "  ... (code HTML du Hero)\n" +
-      "</section>\n" +
-      "</SECTION>\n\n" +
-      "[... continues pour menu, reservation, footer ...]\n\n" +
-      "Voilà, ta landing page pour Bella Italia est prête ! Tu peux cliquer sur les boutons pour tester l'interactivité.";
+      "[... autant de sections que ta conception justifie, avec leurs interactions réelles ...]\n\n" +
+      "Phrase de conclusion.";
 
     // === SYSTÈME PROMPT MODE MODIFICATION ===
     // (nouveau : l'IA reçoit le HTML existant et modifie SEULEMENT les sections concernées)
@@ -1109,7 +2030,7 @@ export async function handleConversationRoutes(
       "FORMAT OBLIGATOIRE de ta réponse en mode modification :\n\n" +
       "1. Phrase courte pour annoncer ce que tu vas modifier (1 phrase max, conversationnelle)\n" +
       "   Ex: \"OK, je passe le bouton du Hero en bleu et j'ajoute une ombre.\"\n" +
-      "   Ex: \"Compris, j'ajoute une nouvelle section témoignages entre le Menu et la Réservation.\"\n\n" +
+      "   Ex: \"Compris, j'ajoute une nouvelle section témoignages entre le Hero et le Footer.\"\n\n" +
       "2. Pour CHAQUE section à modifier ou ajouter, écris un bloc au format EXACT :\n\n" +
       "   <SECTION name=\"nom-de-la-section\" mode=\"modify\">\n" +
       "   Phrase courte décrivant ce que tu modifies (ex: \"Je passe le bouton 'Réserver' du Hero en bleu.\")\n" +
@@ -1133,22 +2054,34 @@ export async function handleConversationRoutes(
       "- Ne renvoie QUE les sections modifiées/ajoutées — JAMAIS les sections non modifiées\n" +
       "- Garde le style et la structure globale de l'application (ne change pas la palette ou le thème si non demandé)\n" +
       "- Si la demande concerne plusieurs sections, renvoie-les toutes avec leur propre bloc <SECTION>\n" +
-      "- Le texte décrivant chaque modification doit être COURT (1 phrase max) et conversationnel\n\n" +
+      "- Le texte décrivant chaque modification doit être COURT (1 phrase max) et conversationnel\n" +
+      "- TITRE : si le <title> actuel ne décrit pas le projet ou la demande (titre hérité d'un autre secteur, ex. « Authentic Italian Cuisine » sur un site barbier), corrige-le en émettant le marqueur <!-- PAGE_TITLE: Vrai titre du site -->. Sinon, répète le titre actuel.\n\n" +
+      buildImageBrief(imageTheme, 'modify', imageSeed, dynamicImages !== undefined ? { poolOverride: [...dynamicImages.dynamicIds] } : undefined) + "\n\n" +
+      buildSectorContract(imageTheme, 'modify') + "\n\n" +
       "EXEMPLE pour demande \"change le bouton du Hero en bleu\" :\n\n" +
-      "OK, je passe le bouton 'Réserver' du Hero en bleu avec une ombre.\n\n" +
+      "OK, je passe le bouton du Hero en bleu avec une ombre.\n\n" +
       "<SECTION name=\"hero\" mode=\"modify\">\n" +
       "Je modifie le Hero — le bouton passe de rose à bleu.\n" +
       "<section class=\"relative min-h-screen flex items-center justify-center overflow-hidden\">\n" +
       "  <div class=\"absolute inset-0 bg-slate-900\"></div>\n" +
       "  <div class=\"relative z-10 max-w-4xl mx-auto px-6 text-center\">\n" +
       "    <h1>Bienvenue</h1>\n" +
-      "    <a href=\"#menu\" class=\"bg-blue-500 hover:bg-blue-400 text-white font-bold px-8 py-3 rounded-lg shadow-lg shadow-blue-500/50\">Voir le menu</a>\n" +
+      "    <a href=\"#services\" class=\"bg-blue-500 hover:bg-blue-400 text-white font-bold px-8 py-3 rounded-lg shadow-lg shadow-blue-500/50\">Découvrir</a>\n" +
       "  </div>\n" +
       "</section>\n" +
       "</SECTION>\n\n" +
       "Voilà, le bouton est maintenant bleu !";
 
-    const systemPrompt = isModificationMode ? modificationSystemPrompt : creationSystemPrompt;
+    // P0 (audit 2026-10) — le contexte Design RÉEL du projet (rapport
+    // persisté + artefact frais) est transmis aux voies de génération.
+    // Sans rapport : prompt strictement inchangé (non-régression).
+    const systemPrompt = withEngineeringBrief(
+      withProjectDesignContext(
+        isModificationMode ? modificationSystemPrompt : creationSystemPrompt,
+        { tenantId: context.tenantId, projectId }
+      ),
+      preparedTurn
+    );
 
     // Pour le mode modification, on inclut TOUJOURS le HTML actuel comme contexte
     const userPrompt = isModificationMode
@@ -1208,7 +2141,7 @@ export async function handleConversationRoutes(
           timeoutMs: 120000,
           requestId
         },
-        aiProviderRegistry.getTenantCredentials(context.tenantId, adapter.descriptor.providerId)
+        resolveStreamCredentials(req, context.tenantId, adapter.descriptor.providerId)
       );
 
       for await (const chunk of stream) {
@@ -1365,6 +2298,16 @@ export async function handleConversationRoutes(
 
       // === ASSEMBLE LE HTML FINAL ET SAUVEGARDE DANS FILESTORE ===
       // Pour que la prochaine demande de modification trouve un HTML existant.
+      // B1 — TRONCATURE : une section ouverte jamais refermée = sortie LLM
+      // coupée (maxTokens) ou marqueur oublié. Avant, la page incomplète
+      // était assemblée et notée sans prévenir.
+      const truncatedGeneration = inSection;
+      if (truncatedGeneration) {
+        logger.warn('Génération incomplète : section ouverte jamais refermée', {
+          component: 'conversation-route-stream',
+          sectionsClosed: serverSections.length
+        });
+      }
       let assembledHtml = '';
       // T4 — diffs réels par section, émis au client et persistés
       const sectionDiffs: Array<{ name: string; mode: string; applied: boolean; added: number; removed: number }> = [];
@@ -1497,6 +2440,9 @@ export async function handleConversationRoutes(
           const delta = countLineDelta(oldBlock, sec.mode === 'delete' ? '' : (sec.html || ''));
           sectionDiffs.push({ name: sec.name, mode: sec.mode, applied, added: delta.added, removed: delta.removed });
         }
+        // B2 — le merge préserve l'ordre d'arrivée : on réordonne les blocs
+        // (footer TOUJOURS dernier), sans toucher au reste du document.
+        modifiedHtml = canonicalSectionOrderBlocks(modifiedHtml);
         assembledHtml = modifiedHtml;
       } else {
         // Mode création : assemble dans l'ORDRE CANONIQUE (le LLM émet
@@ -1521,20 +2467,76 @@ export async function handleConversationRoutes(
       // pollués par les générations antérieures).
       assembledHtml = dedupeSectionBlocks(assembledHtml);
       // Images : repli anti-casse (même politique que le canvas Builder E46) —
-      // toute <img> http(s) sans onerror bascule vers un placeholder fiable
+      // toute <img> http(s) sans onerror bascule vers un repli fiable
       // si elle meurt DANS le navigateur du visiteur (zéro latence serveur,
       // zéro faux positif réseau : seul l'échec réel déclenche).
-      assembledHtml = addImageFallbacks(assembledHtml);
-      if (assembledHtml.trim().length > 100 && !/<!DOCTYPE|<html[\s>]/i.test(assembledHtml)) {
-        // É52 — DNA captée du préambule OU d'un bloc résiduel dans les sections
-        const assembledDna = extractDesignDna(assembledHtml);
-        assembledHtml = assembledDna.cleaned;
-        // Titre réel du commerce (marqueur PAGE_TITLE, sinon repli H1/H2),
-        // jamais générique.
+      // B3/F1 — sanitize D'ABORD, avec le THÈME déjà calculé (les URLs hors
+      // réservoir repartent dans le réservoir du thème, pas vers du
+      // générique), fallback ensuite.
+      const sanitized = sanitizeImageSources(assembledHtml, imageTheme, imageSeed, dynamicImages);
+      if (sanitized.replaced > 0) {
+        logger.warn('Sanitizer images : URLs non autorisées réécrites vers le thème', {
+          component: 'conversation-route-stream',
+          replaced: sanitized.replaced
+        });
+      }
+      if (sanitized.thematicRewrites > 0) {
+        logger.warn('Sanitizer thématique : images légales hors secteur remplacées', {
+          component: 'conversation-route-stream',
+          thematicRewrites: sanitized.thematicRewrites
+        });
+      }
+      // F4 — sources REÇUES (pré-sanitisation) : les URLs du LLM, avant toute
+      // réécriture. Pas de secret (URLs publiques), borné à 20 images.
+      let receivedSectionImages: ReturnType<typeof extractSectionImages> = [];
+      try {
+        receivedSectionImages = extractSectionImages(assembledHtml);
+        logger.info('Images reçues par section (pré-sanitisation P0)', {
+          component: 'conversation-route-stream',
+          projectId,
+          executionId,
+          imageTheme,
+          imageCount: receivedSectionImages.length,
+          images: receivedSectionImages.slice(0, 20)
+        });
+      } catch {
+        // traçabilité best-effort : jamais bloquante pour la sauvegarde
+      }
+      assembledHtml = addImageFallbacks(sanitized.html, imageTheme, imageSeed);
+      // F4 — trace concise : sources conservées dans le HTML qui va être
+      // sauvegardé, avec correspondance reçu → conservé (paires par index :
+      // ni le sanitizer ni les fallbacks ne changent la structure du doc).
+      try {
+        const finalSectionImages = extractSectionImages(assembledHtml);
+        logger.info('Images conservées dans le HTML final (F4)', {
+          component: 'conversation-route-stream',
+          projectId,
+          executionId,
+          imageTheme,
+          replacedBySanitizer: sanitized.replaced,
+          thematicRewrites: sanitized.thematicRewrites,
+          finalCount: finalSectionImages.length,
+          images: buildFinalImageTrace(receivedSectionImages, finalSectionImages)
+        });
+      } catch {
+        // traçabilité best-effort : jamais bloquante pour la sauvegarde
+      }
+      if (assembledHtml.trim().length > 100) {
+        // Titre réel du commerce (marqueur PAGE_TITLE, sinon titre/h1 existant),
+        // jamais générique. Le marqueur est retiré dans les deux modes.
         const assembledTitle = extractPageTitle(assembledHtml);
         assembledHtml = assembledTitle.cleaned;
-        const finalTitle = assembledTitle.title ?? deriveFallbackTitle(assembledHtml) ?? undefined;
-        assembledHtml = buildStudioShell(assembledHtml, streamDesignDna ?? assembledDna.dna ?? undefined, finalTitle);
+        if (!/<!DOCTYPE|<html[\s>]/i.test(assembledHtml)) {
+          // É52 — DNA captée du préambule OU d'un bloc résiduel dans les sections
+          const assembledDna = extractDesignDna(assembledHtml);
+          assembledHtml = assembledDna.cleaned;
+          const finalTitle = assembledTitle.title ?? deriveFallbackTitle(assembledHtml) ?? undefined;
+          assembledHtml = buildStudioShell(assembledHtml, streamDesignDna ?? assembledDna.dna ?? undefined, finalTitle);
+        } else {
+          // LOT POLISH — document existant : réconcilier le <title> avec le h1
+          // réel sans reconstruire le shell ni déplacer le contenu.
+          assembledHtml = applyReconciledPageTitle(assembledHtml, assembledTitle.title);
+        }
       }
 
       // LOT 3 — Compass : phase de validation avant la sauvegarde finale
@@ -1545,9 +2547,154 @@ export async function handleConversationRoutes(
       // Sauvegarde dans fileStore pour que la prochaine demande trouve le HTML
       let savedRevisionId: string | undefined;
       let gateEligible = false;
+      // V7-WIRE-2 — la persistance du HTML passe par le Mutation Orchestrator
+      // (AINT-006) : plan CREATE/UPDATE, validation, snapshot, diff,
+      // vérification post-écriture et rollback automatique. Si le moteur
+      // n'est pas injecté, le repli direct reste possible mais il est TRACÉ
+      // (MUTATION_FALLBACK) — jamais silencieux.
+      let persistenceError: string | undefined;
+      // V7-LOT5 — préflight d'ingénierie sur le contenu candidat, AVANT la
+      // mutation. Il bloque uniquement les défauts durs (enveloppe absente,
+      // contenu vide/nul, taille hors plafond) ; les alertes restent
+      // consultatives et le Quality Gate visuel garde l'autorité de score.
+      let engineeringValidation: EngineeringPreflightReport | null = null;
       if (assembledHtml.trim().length > 100) {
+        engineeringValidation = runEngineeringPreflight(assembledHtml, STREAM_MUTATION_PATH);
+        emitNamed('on_engineering_validated', {
+          verdict: engineeringValidation.verdict,
+          passed: engineeringValidation.passed,
+          path: engineeringValidation.path,
+          contentHash: engineeringValidation.contentHash,
+          byteLength: engineeringValidation.byteLength,
+          lineCount: engineeringValidation.lineCount,
+          blockers: [...engineeringValidation.blockers],
+          warnings: [...engineeringValidation.warnings],
+          checks: engineeringValidation.checks.map((item) => ({
+            id: item.id,
+            label: item.label,
+            status: item.status,
+            detail: item.detail
+          }))
+        }, {
+          type: engineeringValidation.passed ? 'VALIDATION_COMPLETED' : 'VALIDATION_FAILED',
+          phase: 'VALIDATE',
+          status: engineeringValidation.passed ? 'COMPLETED' : 'FAILED',
+          title: `Préflight d'ingénierie : ${engineeringValidation.verdict} (${engineeringValidation.checks.length} contrôles)`,
+          detail: {
+            stage: 'ENGINEERING_PREFLIGHT',
+            verdict: engineeringValidation.verdict,
+            contentHash: engineeringValidation.contentHash,
+            byteLength: engineeringValidation.byteLength,
+            checks: engineeringValidation.checks.length,
+            blockers: engineeringValidation.blockers.length,
+            warnings: engineeringValidation.warnings.length
+          }
+        });
+        if (!engineeringValidation.passed) {
+          persistenceError = `Préflight d'ingénierie refusé : ${engineeringValidation.blockers.join(' | ')}`;
+          logger.warn('Préflight d ingénierie refusé : aucune écriture tentée', {
+            component: 'conversation-route-stream',
+            tenantId: context.tenantId,
+            projectId,
+            blockers: engineeringValidation.blockers
+          });
+        } else {
         try {
-          fileStore.saveFile(context.tenantId, projectId, 'index.html', assembledHtml);
+          const fileExists = Boolean(
+            fileStore.getFile(context.tenantId, projectId, STREAM_MUTATION_PATH)
+          );
+          const mutationOutcome = applyStreamFileMutationWithStreamEngine({
+            tenantId: context.tenantId,
+            projectId,
+            requestId,
+            role: context.role,
+            content: assembledHtml,
+            mode: fileExists ? 'update' : 'create',
+            riskLevel: impactSummary?.riskLevel
+          });
+
+          if (mutationOutcome.applied) {
+            emit({
+              type: mutationOutcome.mode === 'create' ? 'file_created' : 'file_modified',
+              path: STREAM_MUTATION_PATH,
+              planId: mutationOutcome.planId,
+              transactionId: mutationOutcome.transactionId,
+              added: mutationOutcome.addedLines,
+              removed: mutationOutcome.removedLines
+            }, {
+              type: mutationOutcome.mode === 'create' ? 'FILE_CREATED' : 'FILE_MODIFIED',
+              phase: 'IMPLEMENT',
+              status: 'COMPLETED',
+              title: mutationOutcome.mode === 'create'
+                ? 'index.html créé (mutation atomique)'
+                : 'index.html mis à jour (mutation atomique)',
+              detail: {
+                path: STREAM_MUTATION_PATH,
+                engine: 'AINT-006',
+                planId: mutationOutcome.planId,
+                transactionId: mutationOutcome.transactionId,
+                transactionHash: mutationOutcome.transactionHash,
+                addedLines: mutationOutcome.addedLines,
+                removedLines: mutationOutcome.removedLines,
+                riskLevel: mutationOutcome.riskLevel,
+                warnings: mutationOutcome.warnings.length
+              }
+            });
+          } else if (mutationOutcome.stage === 'execution') {
+            // L'écriture a été TENTÉE puis annulée par le rollback : interdiction
+            // de rejouer un repli direct (on persisterait un contenu rejeté).
+            emit({
+              type: 'mutation_rolled_back',
+              path: STREAM_MUTATION_PATH,
+              reason: mutationOutcome.reason
+            }, {
+              type: 'MUTATION_ROLLED_BACK',
+              phase: 'IMPLEMENT',
+              status: 'FAILED',
+              title: 'Mutation annulée — fichier restauré',
+              detail: {
+                path: STREAM_MUTATION_PATH,
+                engine: 'AINT-006',
+                reason: mutationOutcome.reason
+              }
+            });
+            persistenceError = `La mutation de ${STREAM_MUTATION_PATH} a été annulée : ${mutationOutcome.reason}`;
+          } else {
+            // Repli explicite : moteur absent ou plan refusé AVANT toute écriture.
+            fileStore.saveFile(context.tenantId, projectId, STREAM_MUTATION_PATH, assembledHtml);
+            emit({
+              type: 'mutation_fallback',
+              path: STREAM_MUTATION_PATH,
+              stage: mutationOutcome.stage,
+              reason: mutationOutcome.reason
+            }, {
+              type: 'MUTATION_FALLBACK',
+              phase: 'IMPLEMENT',
+              status: 'COMPLETED',
+              title: 'Écriture directe — orchestrateur de mutation indisponible',
+              detail: {
+                path: STREAM_MUTATION_PATH,
+                stage: mutationOutcome.stage,
+                reason: mutationOutcome.reason
+              }
+            });
+            logger.warn('Mutation Orchestrator non appliqué : repli direct tracé', {
+              component: 'conversation-route-stream',
+              projectId,
+              stage: mutationOutcome.stage,
+              reason: mutationOutcome.reason
+            });
+          }
+        } catch (saveErr) {
+          persistenceError = saveErr instanceof Error ? saveErr.message : String(saveErr);
+          logger.warn('Échec sauvegarde HTML final dans fileStore', {
+            component: 'conversation-route-stream',
+            error: persistenceError
+          });
+        }
+        }
+
+        if (!persistenceError) {
           // P3-fix — le dernier format généré pour ce projet est HTML :
           // la reprise du preview ne doit pas réafficher un bundle React obsolète.
           setProjectFormat(projectId, 'html');
@@ -1569,6 +2716,38 @@ export async function handleConversationRoutes(
               error: revErr instanceof Error ? revErr.message : String(revErr)
             });
           }
+          // V7 — APPLICATION MODEL : après une mutation réellement persistée
+          // (fichier + révision), la racine applicative est recalculée depuis
+          // les sources réelles et upsertée. Best-effort : un échec du modèle
+          // n'annule jamais la mutation déjà écrite.
+          const modelRefresh = refreshApplicationModelAfterMutation({
+            tenantId: context.tenantId,
+            projectId,
+            role: context.role,
+            requestId
+          });
+          if (modelRefresh.refreshed) {
+            recordOnly({
+              type: 'APPLICATION_MODEL_REFRESHED',
+              phase: 'VALIDATE',
+              status: 'COMPLETED',
+              title: 'Application Model rafraîchi depuis les sources réelles',
+              detail: { revisionId: savedRevisionId ?? null }
+            });
+            logger.info('Application Model rafraîchi après mutation', {
+              component: 'conversation-route-stream',
+              tenantId: context.tenantId,
+              projectId,
+              revisionId: savedRevisionId
+            });
+          } else if (modelRefresh.reason !== 'service-non-configure') {
+            logger.warn('Application Model non rafraîchi (mutation conservée)', {
+              component: 'conversation-route-stream',
+              tenantId: context.tenantId,
+              projectId,
+              error: modelRefresh.reason
+            });
+          }
           // LOT 3 — Compass : l'état COMPLETED sera émis APRÈS le Quality Gate
           // (le client ne doit pas voir « Terminé » pendant la vérification).
           logger.info('HTML final sauvegardé dans fileStore après stream', {
@@ -1578,18 +2757,19 @@ export async function handleConversationRoutes(
             htmlLength: assembledHtml.length,
             sectionsCount: serverSections.length
           });
-        } catch (saveErr) {
-          logger.warn('Échec sauvegarde HTML final dans fileStore', {
-            component: 'conversation-route-stream',
-            error: saveErr instanceof Error ? saveErr.message : String(saveErr)
-          });
         }
+      }
+
+      // Une écriture tentée puis annulée n'est PAS un succès : le flux s'arrête
+      // honnêtement (le fichier existant reste intact grâce au snapshot).
+      if (persistenceError) {
+        throw new Error(`Persistance de ${STREAM_MUTATION_PATH} impossible : ${persistenceError}`);
       }
 
       // T6 (CDC §24/§31) — QUALITY GATE SERVEUR : source de vérité unique.
       // Le gate tourne sur le HTML EXACTEMENT sauvegardé (fin de la bifurcation
       // client/serveur) et son résultat part dans la frame done + le store.
-      let gateResult: { score: number; findings: Array<{ severity: string; title: string }>; stats: { colors: number; fonts: number; interactiveElements: number }; renderAvailable: boolean } | null = null;
+      let gateResult: { score: number; passed: boolean; truncated: boolean; findings: Array<{ severity: string; title: string }>; stats: { colors: number; fonts: number; interactiveElements: number }; renderAvailable: boolean } | null = null;
       if (recorder && gateEligible) {
         recordOnly({
           type: 'VALIDATION_STARTED',
@@ -1599,25 +2779,47 @@ export async function handleConversationRoutes(
         });
         try {
           const analysis = await analyzeProjectVisual(context.tenantId, context.role, projectId, requestId);
+          // B1 — la troncature est un finding CRITICAL (-25) : une page
+          // incomplète ne doit jamais passer le seuil de 90.
+          const allFindings = [...analysis.findings];
+          if (truncatedGeneration) allFindings.push(truncationFinding());
+          const finalScore = computeCriticScore(allFindings);
+          const finalPassed = finalScore >= 90;
           gateResult = {
-            score: analysis.score,
-            findings: analysis.findings,
+            score: finalScore,
+            passed: finalPassed,
+            truncated: truncatedGeneration,
+            findings: allFindings,
             stats: analysis.stats,
             renderAvailable: analysis.renderAvailable
           };
-          const criticals = analysis.findings.filter((f) => f.severity === 'CRITICAL').length;
+          const criticals = allFindings.filter((f) => f.severity === 'CRITICAL').length;
           recordOnly({
             type: 'VALIDATION_COMPLETED',
             phase: 'VALIDATE',
             status: 'COMPLETED',
-            title: `Quality Gate : ${analysis.score}/100`,
+            title: `Quality Gate : ${finalScore}/100${finalPassed ? ' ✅' : ' ❌'}${truncatedGeneration ? ' (tronquée)' : ''}`,
             detail: {
-              score: analysis.score,
+              score: finalScore,
+              passed: finalPassed,
+              truncated: truncatedGeneration,
               criticals,
-              findings: analysis.findings.length,
+              findings: allFindings.length,
               renderAvailable: analysis.renderAvailable
             }
           });
+          // BLOC 1 — auto-retry si score < 90 (création seulement, max 1 relance)
+          if (!finalPassed && !isModificationMode && !gateRetryAttempted) {
+            gateRetryAttempted = true;
+            recordOnly({
+              type: 'RETRY_STARTED',
+              phase: 'VALIDATE',
+              status: 'RUNNING',
+              title: `Score ${finalScore}/100 < 90 — relance génération (tentative 2/2)`
+            });
+            // La relance effective est pilotée par le client (frame done :
+            // gate.passed=false) — le serveur ne régénère jamais seul.
+          }
         } catch (gateErr) {
           logger.warn('Quality Gate serveur indisponible', {
             component: 'conversation-route-stream',
@@ -1629,6 +2831,73 @@ export async function handleConversationRoutes(
             status: 'FAILED',
             title: 'Vérification impossible — gate indisponible',
             detail: { error: gateErr instanceof Error ? gateErr.message : String(gateErr) }
+          });
+        }
+      }
+
+      // V7-WIRE-3 — VALIDATION CHAIN (CDC §25) branchée sur l'action
+      // d'ingénierie réelle : après la persistance, la chaîne unique exécute
+      // structure → syntaxe → a11y WCAG → harmonie design → tests. Elle est
+      // CONSULTATIVE (le Quality Gate visuel reste le score de référence),
+      // mais son verdict réel est persisté et renvoyé dans `done.validation`.
+      let validationChainSummary: {
+        readonly verdict: string;
+        readonly reportHash: string;
+        readonly stages: ReadonlyArray<{ readonly id: string; readonly status: string; readonly durationMs: number }>;
+      } | null = null;
+      if (gateEligible) {
+        recordOnly({
+          type: 'VALIDATION_STARTED',
+          phase: 'VALIDATE',
+          status: 'RUNNING',
+          title: 'Validation en chaîne (structure → syntaxe → a11y → design → tests)'
+        });
+        try {
+          const report = await runValidationChain(
+            {
+              tenantId: context.tenantId,
+              projectId,
+              entryFile: STREAM_MUTATION_PATH
+            },
+            context.role,
+            requestId
+          );
+          const passedCount = report.stages.filter((s) => s.status === 'PASS').length;
+          validationChainSummary = {
+            verdict: report.verdict,
+            reportHash: report.reportHash,
+            stages: report.stages.map((s) => ({
+              id: s.id,
+              status: s.status,
+              durationMs: s.durationMs
+            }))
+          };
+          recordOnly({
+            type: report.verdict === 'FAIL' ? 'VALIDATION_FAILED' : 'VALIDATION_COMPLETED',
+            phase: 'VALIDATE',
+            status: report.verdict === 'FAIL' ? 'FAILED' : 'COMPLETED',
+            title: `Validation en chaîne : ${report.verdict} (${passedCount}/${report.stages.length} étapes PASS)`,
+            detail: {
+              verdict: report.verdict,
+              reportHash: report.reportHash,
+              entryFile: report.entryFile,
+              stages: validationChainSummary.stages
+            }
+          });
+        } catch (chainErr) {
+          const chainMessage = chainErr instanceof Error ? chainErr.message : String(chainErr);
+          logger.warn('Validation en chaîne indisponible', {
+            component: 'conversation-route-stream',
+            tenantId: context.tenantId,
+            projectId,
+            error: chainMessage
+          });
+          recordOnly({
+            type: 'VALIDATION_FAILED',
+            phase: 'VALIDATE',
+            status: 'FAILED',
+            title: 'Validation en chaîne indisponible',
+            detail: { error: chainMessage }
           });
         }
       }
@@ -1737,7 +3006,12 @@ export async function handleConversationRoutes(
         closingPending: true,
         closingMessage,
         suggestions: quickSuggestions,
-        ...(gateResult ? { gate: gateResult } : {})
+        ...(gateResult ? { gate: gateResult } : {}),
+        ...(impactSummary ? { impact: impactSummary } : {}),
+        ...(decisionSummary ? { decision: decisionSummary } : {}),
+        ...(validationChainSummary ? { validation: validationChainSummary } : {}),
+        ...(engineeringValidation ? { engineeringValidation } : {}),
+        ...(preparationSummary ? { preparation: preparationSummary } : {})
       });
 
       // CLOTURE-LLM — synthèse rédigée + suggestions contextuelles, en frame
@@ -1757,7 +3031,7 @@ export async function handleConversationRoutes(
               timeoutMs: 8000,
               requestId
             },
-            aiProviderRegistry.getTenantCredentials(context.tenantId, adapter.descriptor.providerId)
+            resolveStreamCredentials(req, context.tenantId, adapter.descriptor.providerId)
           ).then((r) => r.text),
           {
             request: body.message || '',

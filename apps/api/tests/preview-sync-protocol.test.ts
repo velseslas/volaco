@@ -19,8 +19,12 @@ describe('SOURCE UNIQUE : panneau et onglet suivent le projet actif', () => {
     );
   });
 
-  it('2. fin de génération → ordre sync-project au Builder', () => {
-    assert.ok(studio.includes("command: 'sync-project', projectId: serverProjectId"), 'done resynchronise le panneau');
+  it('2. fin de génération → ordre sync-project vers le projet ACTIF', () => {
+    // BLOC 4 : resync vers le projet actif au done (avant : celui de la
+    // génération, dépassé après un switch mid-gen), avec repli.
+    assert.ok(studio.includes("command: 'sync-project', projectId: activePidNow"), 'done resynchronise le panneau');
+    assert.ok(studio.includes('userProjects.find(p => p.id === activeProjectId)'), 'résolution du projet actif');
+    assert.ok(studio.includes('|| serverProjectId'), 'repli sur le projet de la génération');
   });
 
   it('3. le Builder suit le projet (cible + recharge explicite)', () => {
@@ -49,5 +53,16 @@ describe('SOURCE UNIQUE : panneau et onglet suivent le projet actif', () => {
     assert.ok(builder.includes("d.command === 'builder-event'"), 'branche de relai présente');
     assert.ok(builder.includes('normalizeGenerationEvent(d.event)'), 'frames normalisées avant consommation');
     assert.ok(builder.includes('if (realSource) return;'), 'relai ignoré pendant une génération manuelle');
+  });
+
+  it('5. BLOC 4 : suivi de projet PENDANT la génération (anti-mélange)', () => {
+    // Chaque frame relayée porte le projet (avant : start seul).
+    assert.ok(studio.includes("command: 'builder-event', event,"), 'relai des frames vers le Builder');
+    assert.ok(studio.includes('projectId: serverProjectId'), 'projectId sur chaque frame relayée');
+    // Le Builder mémorise le projet en construction et ignore les frames
+    // d'un autre projet (switch mid-gen) au lieu de mélanger deux builds.
+    assert.ok(builder.includes('let relayBuildingProjectId = null'), 'projet en construction suivi');
+    assert.ok(builder.includes('relayPid !== relayBuildingProjectId'), 'frames d’un autre projet ignorées');
+    assert.ok(builder.includes("builderProjectId !== relayBuildingProjectId"), 'sync vers un autre projet admise');
   });
 });

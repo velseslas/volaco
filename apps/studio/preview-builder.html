@@ -85,7 +85,9 @@
       position: relative;
       width: 100%; min-height: 100vh;
       border: 0; border-radius: 0;
-      background: linear-gradient(180deg, #0b101f, #090d1a);
+      /* FIDÉLITÉ (audit) : fond blanc = défaut navigateur = vérité onglet
+         quand les sections sont transparentes (leurs fonds couvrent sinon). */
+      background: #ffffff;
       padding: 0;
       box-shadow: none;
     }
@@ -220,32 +222,35 @@
        absents d'ici — retombe proprement sur ce socle premium). */
     .pvz-real { animation: pvzRealIn .6s cubic-bezier(.22,.9,.34,1) both; border-radius: 0; overflow: hidden; min-width: 0;
       color: var(--pv-text); font-size: 14px; line-height: 1.6; }
-    .pvz-real > *:first-child { margin-top: 0; }
-    .pvz-real > *:last-child { margin-bottom: 0; }
-    .pvz-real img { max-width: 100%; height: auto; border-radius: 12px; border: 1px solid var(--pv-border); }
-    .pvz-real h1, .pvz-real h2, .pvz-real h3, .pvz-real h4 { color: #f4f7ff; line-height: 1.25; letter-spacing: -.015em; margin: 1.15em 0 .5em; font-weight: 700; }
-    .pvz-real h1 { font-size: 27px; }
-    .pvz-real h2 { font-size: 21px; }
-    .pvz-real h3 { font-size: 16px; }
-    .pvz-real h4 { font-size: 14px; }
-    .pvz-real p { margin: .55em 0; color: var(--pv-muted); }
-    .pvz-real strong, .pvz-real b { color: #f4f7ff; font-weight: 700; }
-    .pvz-real a { color: #b7a6ff; text-decoration: none; border-bottom: 1px solid rgba(139,92,246,.35); }
-    .pvz-real ul, .pvz-real ol { margin: .5em 0; padding-left: 1.15rem; color: var(--pv-muted); }
-    .pvz-real li { margin: .3em 0; }
-    .pvz-real li::marker { color: var(--pv-accent); }
-    .pvz-real blockquote { margin: .8em 0; padding: 10px 16px; border-left: 3px solid var(--pv-accent);
+    :where(.pvz-real) > *:first-child { margin-top: 0; }
+    :where(.pvz-real) > *:last-child { margin-bottom: 0; }
+    /* FIDÉLITÉ (audit) : le contenu réel ne doit PAS être restylé — l'onglet
+       affiche les images brutes (vives, sans cadre). Seule la contrainte de
+       débordement est conservée. */
+    :where(.pvz-real) img { max-width: 100%; height: auto; }
+    :where(.pvz-real) h1, :where(.pvz-real) h2, :where(.pvz-real) h3, :where(.pvz-real) h4 { color: #f4f7ff; line-height: 1.25; letter-spacing: -.015em; margin: 1.15em 0 .5em; font-weight: 700; }
+    :where(.pvz-real) h1 { font-size: 27px; }
+    :where(.pvz-real) h2 { font-size: 21px; }
+    :where(.pvz-real) h3 { font-size: 16px; }
+    :where(.pvz-real) h4 { font-size: 14px; }
+    :where(.pvz-real) p { margin: .55em 0; color: var(--pv-muted); }
+    :where(.pvz-real) strong, :where(.pvz-real) b { color: #f4f7ff; font-weight: 700; }
+    :where(.pvz-real) a { color: #b7a6ff; text-decoration: none; border-bottom: 1px solid rgba(139,92,246,.35); }
+    :where(.pvz-real) ul, :where(.pvz-real) ol { margin: .5em 0; padding-left: 1.15rem; color: var(--pv-muted); }
+    :where(.pvz-real) li { margin: .3em 0; }
+    :where(.pvz-real) li::marker { color: var(--pv-accent); }
+    :where(.pvz-real) blockquote { margin: .8em 0; padding: 10px 16px; border-left: 3px solid var(--pv-accent);
       background: var(--pv-accent-soft); border-radius: 0 10px 10px 0; color: var(--pv-text); }
-    .pvz-real blockquote p { color: var(--pv-text); margin: .2em 0; }
-    .pvz-real hr { border: none; border-top: 1px solid var(--pv-border); margin: 1.2em 0; }
-    .pvz-real code { background: var(--pv-accent-soft); padding: 2px 6px; border-radius: 6px; font-size: 12px; color: #c4b5fd; }
-    .pvz-real pre { background: var(--pv-surface-2); border: 1px solid var(--pv-border); border-radius: 10px; padding: 12px 14px; overflow-x: auto; }
-    .pvz-real table { width: 100%; border-collapse: collapse; margin: .8em 0; font-size: 13px; }
-    .pvz-real th { text-align: left; color: var(--pv-faint); text-transform: uppercase; font-size: 10px; letter-spacing: .07em; padding: 8px 10px; border-bottom: 1px solid var(--pv-border); }
-    .pvz-real td { padding: 8px 10px; border-bottom: 1px solid rgba(28,39,67,.6); color: var(--pv-muted); }
-    .pvz-real button { background: linear-gradient(135deg, #8b5cf6, #6d28d9); color: #fff; border: none; padding: 9px 16px; border-radius: 10px; font-weight: 700; font-size: 13px; cursor: pointer; }
-    .pvz-real input, .pvz-real textarea, .pvz-real select { background: var(--pv-surface-2); border: 1px solid var(--pv-border); color: var(--pv-text); border-radius: 10px; padding: 9px 12px; font-size: 13px; max-width: 100%; }
-    .pvz-real form { display: flex; flex-direction: column; gap: 10px; max-width: 460px; }
+    :where(.pvz-real) blockquote p { color: var(--pv-text); margin: .2em 0; }
+    :where(.pvz-real) hr { border: none; border-top: 1px solid var(--pv-border); margin: 1.2em 0; }
+    :where(.pvz-real) code { background: var(--pv-accent-soft); padding: 2px 6px; border-radius: 6px; font-size: 12px; color: #c4b5fd; }
+    :where(.pvz-real) pre { background: var(--pv-surface-2); border: 1px solid var(--pv-border); border-radius: 10px; padding: 12px 14px; overflow-x: auto; }
+    :where(.pvz-real) table { width: 100%; border-collapse: collapse; margin: .8em 0; font-size: 13px; }
+    :where(.pvz-real) th { text-align: left; color: var(--pv-faint); text-transform: uppercase; font-size: 10px; letter-spacing: .07em; padding: 8px 10px; border-bottom: 1px solid var(--pv-border); }
+    :where(.pvz-real) td { padding: 8px 10px; border-bottom: 1px solid rgba(28,39,67,.6); color: var(--pv-muted); }
+    :where(.pvz-real) button { background: linear-gradient(135deg, #8b5cf6, #6d28d9); color: #fff; border: none; padding: 9px 16px; border-radius: 10px; font-weight: 700; font-size: 13px; cursor: pointer; }
+    :where(.pvz-real) input, :where(.pvz-real) textarea, :where(.pvz-real) select { background: var(--pv-surface-2); border: 1px solid var(--pv-border); color: var(--pv-text); border-radius: 10px; padding: 9px 12px; font-size: 13px; max-width: 100%; }
+    :where(.pvz-real) form { display: flex; flex-direction: column; gap: 10px; max-width: 460px; }
     @keyframes pvzRealIn { 0% { opacity: 0; transform: translateY(8px) scale(.99); filter: blur(4px); } 100% { opacity: 1; transform: none; filter: blur(0); } }
 
     /* ===== ÉTAPE 12 — VISUELS COMPLETED PREMIUM (fallbacks du registry) =====
@@ -317,7 +322,9 @@
     .vp-btn { padding: 5px 12px; font-size: 11px; background: #1e293b; color: #94a3b8; }
     .vp-btn.active { background: #7c3aed; color: #fff; }
 
-    .pv-root-col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+    .pv-root-col { display: flex; flex-direction: column; gap: 0; min-width: 0; }
+    /* FIDÉLITÉ (audit) : gap 0 — les sections empilées se touchent exactement
+       comme dans le HTML brut ; l'espacement vient des sections elles-mêmes. */
     .pv-root-row { display: flex; gap: 14px; align-items: stretch; flex: 1; min-width: 0; }
     .pv-root-row > .pv-node, .pv-root-row > .pv-comp-col, .pv-root-row > .pv-comp-grid { flex: 1; min-width: 0; }
     .pv-comp-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; flex: 1; }
@@ -335,8 +342,8 @@
     .canvas.vp-mobile .pv-comp-grid { grid-template-columns: 1fr; }
     /* ÉTAPE 12 — échelle typographique du contenu réel par viewport (présentation
        seule : le state, le focus, la timeline et le tree restent inchangés) */
-    .canvas.vp-tablet .pvz-real h1, .canvas.vp-mobile .pvz-real h1 { font-size: 22px; }
-    .canvas.vp-tablet .pvz-real h2, .canvas.vp-mobile .pvz-real h2 { font-size: 18px; }
+    .canvas.vp-tablet :where(.pvz-real) h1, .canvas.vp-mobile :where(.pvz-real) h1 { font-size: 22px; }
+    .canvas.vp-tablet :where(.pvz-real) h2, .canvas.vp-mobile :where(.pvz-real) h2 { font-size: 18px; }
     .canvas.vp-mobile .pvz-hero-title { font-size: 20px; }
     .canvas.vp-mobile .pvz-footer { grid-template-columns: 1fr; }
 
@@ -471,7 +478,6 @@
     
   </div>
 
-  <script>window.__errs=[];window.addEventListener("error",function(e){window.__errs.push((e.message||"?")+" @ ligne "+e.lineno);});</script>
 <script type="module" src="/preview-builder/app.js"></script>
 
   <!-- É28 — CHROME BUILDER MASQUÉ : toute la logique É01→É27 reste

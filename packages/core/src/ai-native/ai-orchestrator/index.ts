@@ -13,6 +13,7 @@ export {
   computeOrchestrationTraceId
 } from './canonical.js';
 export * from './cache.js';
+export * from './run-store.js';
 export * from './agents/index.js';
 export * from './engine/task-decomposer.js';
 export * from './engine/context-orchestrator.js';

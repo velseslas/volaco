@@ -29,8 +29,9 @@ export class UiAgent extends BaseSpecializedAgent {
     context: TaskContextPayload;
     generatedText: string;
   }): readonly AgentArtifact[] {
-    const { task, generatedText } = params;
+    const { task, context, generatedText } = params;
     const targetFile = task.requiredContext.targetFiles?.[0] || 'src/components/View.tsx';
+    const designContext = context.designContext;
 
     const op = task.operation === 'DELETE' ? 'DELETE' : task.operation === 'CREATE' ? 'CREATE' : 'UPDATE';
 
@@ -43,7 +44,9 @@ export class UiAgent extends BaseSpecializedAgent {
         filePath: targetFile,
         operation: op,
         proposedContent: op === 'DELETE' ? undefined : generatedText,
-        reason: `Mise à jour d'interface réalisée par ${this.definition.name}`
+        reason: designContext
+          ? `Mise à jour d'interface design-aware (Design DNA réel, rapport ${designContext.reportId}) réalisée par ${this.definition.name}`
+          : `Mise à jour d'interface réalisée par ${this.definition.name}`
       },
       summary: `Artefact UI généré pour ${targetFile}`
     });
@@ -56,9 +59,27 @@ export class UiAgent extends BaseSpecializedAgent {
       payload: {
         componentName: 'MainView',
         responsiveBreakpoints: ['sm', 'md', 'lg', 'xl'],
-        stylingFramework: 'TailwindCSS'
+        stylingFramework: 'TailwindCSS',
+        // CDC V8 §11 — traçabilité du Design DNA réellement appliqué (absent
+        // quand aucun rapport n'existe : payload historique inchangé).
+        ...(designContext
+          ? {
+              designAware: true,
+              designContextSource: {
+                reportId: designContext.reportId,
+                generatedAt: designContext.generatedAt,
+                overallScore: designContext.overallScore
+              },
+              designDirection: designContext.direction,
+              designDirectionSource: designContext.directionSource,
+              designRulesApplied: designContext.rules.length,
+              designRulesCatalogVersion: designContext.rulesCatalogVersion
+            }
+          : {})
       },
-      summary: 'Spécification de design responsive et hiérarchie de composants'
+      summary: designContext
+        ? `Spécification de design responsive alignée sur le Design DNA du projet (rapport ${designContext.reportId})`
+        : 'Spécification de design responsive et hiérarchie de composants'
     });
 
     return [fileChangeArtifact, specArtifact];

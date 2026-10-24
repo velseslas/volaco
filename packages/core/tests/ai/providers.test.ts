@@ -351,6 +351,107 @@ describe('AI Provider Abstraction & Multi-Provider Architecture Tests', () => {
       assert.ok(body.contents);
       assert.equal(body.contents[0].parts[0].text, 'Analyse la cohérence du graphe');
     });
+
+    it('doit streamer les deltas SSE Gemini et compter l’usage final', async () => {
+      let interceptedUrl = '';
+      let interceptedHeaders: Record<string, string> = {};
+      let interceptedBody: string | undefined;
+      const sse = [
+        'data: {"candidates":[{"content":{"parts":[{"text":"Bon"}]}}]}\n\n',
+        'data: {"candidates":[{"content":{"parts":[{"text":"jour"}]}}]}\n\n',
+        'data: {"candidates":[{"content":{"parts":[{"text":" !"}]}}],"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":3,"totalTokenCount":15}}\n\n'
+      ].join('');
+
+      const mockFetch: typeof fetch = async (url, init) => {
+        interceptedUrl = String(url);
+        interceptedHeaders = (init?.headers ?? {}) as Record<string, string>;
+        interceptedBody = init?.body as string;
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(sse));
+            controller.close();
+          }
+        });
+        return new Response(stream, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' }
+        });
+      };
+
+      const adapter = new GeminiProviderAdapter(mockFetch);
+      const chunks: string[] = [];
+      for await (const delta of adapter.generateStream(
+        {
+          tenantId: tenantA,
+          projectId,
+          prompt: 'Crée une page vitrine',
+          systemPrompt: 'Tu es un assistant concis.',
+          model: 'gemini-2.5-flash',
+          temperature: 0.2,
+          maxTokens: 128,
+          requestId: 'req-gemini-stream-1'
+        },
+        {
+          tenantId: tenantA,
+          providerId: 'gemini',
+          apiKey: 'gemini-secret-stream-key'
+        }
+      )) {
+        chunks.push(delta);
+      }
+
+      assert.equal(chunks.join(''), 'Bonjour !');
+      assert.equal(
+        interceptedUrl,
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse'
+      );
+      assert.equal(interceptedHeaders['x-goog-api-key'], 'gemini-secret-stream-key');
+      assert.equal(interceptedHeaders['Accept'], 'text/event-stream');
+
+      const body = JSON.parse(interceptedBody!);
+      assert.equal(body.contents[0].role, 'user');
+      assert.equal(body.contents[0].parts[0].text, 'Crée une page vitrine');
+      assert.equal(body.systemInstruction.parts[0].text, 'Tu es un assistant concis.');
+      assert.equal(body.generationConfig.maxOutputTokens, 128);
+
+      // START + SUCCESS réel : les tokens transmis par Gemini sont comptés.
+      const summary = aiUsageTracker.getUsageSummary(tenantA, projectId);
+      assert.equal(summary.recordCount, 2);
+      assert.equal(summary.totalTokens, 15);
+    });
+
+    it('refuse le streaming Gemini sans clé, sans appel réseau', async () => {
+      const previousKey = process.env.GEMINI_API_KEY;
+      delete process.env.GEMINI_API_KEY;
+      try {
+        let called = false;
+        const adapter = new GeminiProviderAdapter(async () => {
+          called = true;
+          throw new Error('network must not be called');
+        });
+
+        await assert.rejects(
+          async () => {
+            for await (const _delta of adapter.generateStream({
+              tenantId: tenantA,
+              projectId,
+              prompt: 'Bonjour'
+            })) {
+              // Aucun delta ne doit arriver sans clé.
+            }
+          },
+          (err: unknown) => {
+            assert.ok(err instanceof AIProviderAuthError);
+            assert.equal(err.providerId, 'gemini');
+            return true;
+          }
+        );
+        assert.equal(called, false);
+      } finally {
+        if (previousKey === undefined) delete process.env.GEMINI_API_KEY;
+        else process.env.GEMINI_API_KEY = previousKey;
+      }
+    });
   });
 
   // ==========================================

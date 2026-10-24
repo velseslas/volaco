@@ -20,7 +20,8 @@ import { logger } from '../../../../packages/core/src/logger.js';
 import type { RequestContext } from '../middleware/auth.js';
 import type { IntentResult, ProjectMemory } from '../../../../packages/core/src/ai-native/conversation-intelligence/types.js';
 import type { DecisionEngine } from '../../../../packages/core/src/ai-native/decision-engine/decision-engine.js';
-import type { Decision } from '../../../../packages/core/src/ai-native/decision-engine/types.js';
+import type { Decision, DecisionVerdict } from '../../../../packages/core/src/ai-native/decision-engine/types.js';
+import { matchMemorySignals, type MemorySignals } from '../../../../packages/core/src/ai-native/decision-engine/memory-signals.js';
 import type { AnalystRegistry } from '../../../../packages/core/src/ai-native/intelligence-pool/analysts/index.js';
 import type { IntelligenceRecommendation } from '../../../../packages/core/src/ai-native/intelligence-pool/types.js';
 import type { FileStore } from '../../../../packages/core/src/file-explorer/store.js';
@@ -56,6 +57,92 @@ function emptyMemory(): ProjectMemory {
     knownConstraints: [],
     knownConventions: [],
     knownRisks: []
+  };
+}
+
+/**
+ * V7-WIRE-3 — DÉCISION CONSULTATIVE DANS LE FLUX.
+ *
+ * Le DecisionEngine reste l'autorité de la route POST /decide (décision
+ * persistée dans le ledger). Le flux de génération, lui, a besoin d'un avis
+ * réel mais NON PERSISTÉ : enregistrer une décision `PROPOSED` à chaque
+ * génération ferait grossir le ledger sans borne et le polluerait (la route
+ * GET /decisions liste aussi les PROPOSED).
+ *
+ * `record: false` garantit donc : décision réelle, calculée sur les mêmes
+ * contraintes/alternatives, sans écriture. `null` = route non configurée
+ * (aucune décision fabriquée).
+ */
+export interface AdvisoryDecisionInput {
+  readonly tenantId: string;
+  readonly projectId: string;
+  readonly sessionId: string;
+  readonly intent: IntentResult;
+  /** Mémoire projet réelle ; absente = mémoire vide, jamais un faux historique. */
+  readonly memory?: ProjectMemory | undefined;
+}
+
+export interface AdvisoryDecisionSummary {
+  readonly decisionId: string;
+  readonly verdict: DecisionVerdict;
+  readonly intentCategory: string;
+  readonly intentGoal: string;
+  readonly alternatives: number;
+  readonly viableAlternatives: number;
+  readonly chosenAlternative: {
+    readonly label: string;
+    readonly riskScore: number;
+    readonly reversible: boolean;
+    readonly estimatedEffort: 'LOW' | 'MEDIUM' | 'HIGH';
+  } | null;
+  readonly requiredClarifications: readonly string[];
+  readonly contradictingDecisions: number;
+  readonly rationale: string;
+  /** Signaux mémoire réellement transmis au moteur. */
+  readonly memory: MemorySignals;
+  /** Toujours `false` : le mode consultatif ne touche pas au Decision Ledger. */
+  readonly recorded: false;
+}
+
+export async function produceAdvisoryDecision(
+  input: AdvisoryDecisionInput
+): Promise<AdvisoryDecisionSummary | null> {
+  if (!deps) return null;
+
+  const memory = input.memory ?? emptyMemory();
+  const decision = await deps.decisionEngine.decide(
+    {
+      intent: input.intent,
+      projectId: input.projectId,
+      tenantId: input.tenantId,
+      sessionId: input.sessionId,
+      memory,
+      intelligenceRecommendations: []
+    },
+    { record: false }
+  );
+
+  const viable = decision.alternatives.filter((a) => a.constraintsViolated.length === 0);
+  return {
+    decisionId: decision.decisionId,
+    verdict: decision.verdict,
+    intentCategory: decision.intentCategory,
+    intentGoal: decision.intentGoal,
+    alternatives: decision.alternatives.length,
+    viableAlternatives: viable.length,
+    chosenAlternative: decision.chosenAlternative
+      ? {
+          label: decision.chosenAlternative.label,
+          riskScore: decision.chosenAlternative.riskScore,
+          reversible: decision.chosenAlternative.reversible,
+          estimatedEffort: decision.chosenAlternative.estimatedEffort
+        }
+      : null,
+    requiredClarifications: decision.requiredClarifications,
+    contradictingDecisions: decision.contradictingDecisions.length,
+    rationale: decision.rationale,
+    memory: decision.memorySignals ?? matchMemorySignals(input.intent, memory),
+    recorded: false
   };
 }
 

@@ -22,6 +22,11 @@ export interface ToolExecutionContext {
   readonly agentRole?: AgentRole | undefined;
   readonly allowedTools?: readonly string[] | undefined;
   readonly requestId?: string | undefined;
+  // P0-PROD — true uniquement si un humain a explicitement approuvé ce run
+  // (confirmation=true) ou invoqué executePlan directement. Les outils à
+  // écriture (execute_mutation) exigent ce drapeau pour les plans HIGH /
+  // CRITICAL / BREAKING au lieu des anciens `allowHighRisk: true` en dur.
+  readonly highRiskApproved?: boolean | undefined;
 }
 
 export type ToolHandler = (

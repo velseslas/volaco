@@ -73,15 +73,8 @@ export async function handleAuditRoutes(
         }));
       }
 
-      if (files.length === 0) {
-        files = [
-          {
-            path: 'index.html',
-            content: '<!DOCTYPE html>\n<html lang="fr">\n<head><title>App</title></head>\n<body><div id="root"></div></body>\n</html>'
-          }
-        ];
-      }
-
+      // Plus aucun fichier placeholder : un projet vide doit produire un audit
+      // honnête (dimensions NON MESURÉES), pas un faux 100/100 sur HTML factice.
       const auditRequest: ApplicationAuditRequest = {
         tenantId: context.tenantId,
         projectId,
@@ -147,12 +140,12 @@ export async function handleAuditRoutes(
       }
     }
 
-    const tenantId = payload.tenantId || context.tenantId;
+    const tenantId = context.tenantId; // SÉCURITÉ (SEC-TENANT) : le tenant ne vient JAMAIS du corps — un client ne choisit pas son locataire.
     const projectId = payload.projectId || 'in-memory-audit';
 
     const files: AuditFileEntry[] = Array.isArray(payload.files) && payload.files.length > 0
       ? payload.files.map((f: any) => ({ path: String(f.path || 'index.html'), content: String(f.content || '') }))
-      : [{ path: 'index.html', content: '<!DOCTYPE html><html><body><h1>Audit</h1></body></html>' }];
+      : [];
 
     const auditRequest: ApplicationAuditRequest = {
       tenantId,

@@ -12,6 +12,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { join } from 'node:path';
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 import { assertPermission } from '../../../../packages/core/src/identity/permissions.js';
@@ -25,7 +26,13 @@ import type { RequestContext } from '../middleware/auth.js';
 const here = dirname(fileURLToPath(import.meta.url));
 // dist/apps/api/src/routes → racine du dépôt (5 niveaux)
 const repoRoot = join(here, '..', '..', '..', '..', '..');
-const mcpDist = join(repoRoot, 'dist', 'packages', 'core', 'src', 'mcp');
+// PATCH-R3-A — la mise en page d'exécution varie : déploiement dist/
+// (dist/packages/core/src/mcp, racine+5) ou build isolé (out/packages/core/src/
+// mcp, racine exécutée+4). On résout le dossier qui contient RÉELLEMENT
+// project-server.js ; repli historique dist/ sinon (production inchangée).
+const mcpDistDist = join(repoRoot, 'dist', 'packages', 'core', 'src', 'mcp');
+const mcpDistLocal = join(here, '..', '..', '..', '..', 'packages', 'core', 'src', 'mcp');
+const mcpDist = existsSync(join(mcpDistLocal, 'project-server.js')) ? mcpDistLocal : mcpDistDist;
 
 /** Serveurs MCP connus de la plateforme. */
 export const KNOWN_MCP_SERVERS: ReadonlyArray<{ id: string; description: string; script: string; args: string[] }> = [

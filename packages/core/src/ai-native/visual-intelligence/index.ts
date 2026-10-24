@@ -13,6 +13,9 @@ export {
 export * from './cache.js';
 export * from './engine/dom-normalizer.js';
 export * from './engine/style-computer.js';
+export * from './engine/css-parser.js';
 export * from './engine/layout-engine.js';
 export * from './engine/multimodal-analyzer.js';
+export * from './regression-matrix.js';
+export * from './regression-matrix-store.js';
 export * from './service.js';

@@ -212,6 +212,14 @@ export interface MutationOrchestratorConfig {
   readonly allowDirectRouteMutation: boolean;
   readonly requireImpactAnalysis: boolean;
   readonly cacheMaxEntries: number;
+  /**
+   * V7-WIRE-2 — borne LRU du registre de transactions.
+   * Le registre servait auparavant de `Map` non bornée : appelé à chaque
+   * génération, il fuyait la mémoire. Les transactions les plus anciennes
+   * sont évincées ; un rollback explicite d'une transaction évincée échoue
+   * honnêtement en NotFoundError (jamais de faux succès).
+   */
+  readonly transactionsMaxEntries: number;
 }
 
 // ============================================================================

@@ -27,7 +27,9 @@ import type {
   ApplicationAuditFinding,
   ApplicationAuditReport,
   ApplicationAuditRequest,
-  AuditDimension
+  AuditDimension,
+  AuditDimensionStatus,
+  AuditDimensionStatusMap
 } from './types.js';
 
 export class ApplicationAuditService {
@@ -90,6 +92,48 @@ export class ApplicationAuditService {
       'DESIGN_HARMONY'
     ];
 
+    // Preuves réellement disponibles pour chaque dimension. Une dimension
+    // sans preuve reste UNKNOWN : elle ne doit jamais être notée 100.
+    const dimensionStatus: Record<AuditDimension, AuditDimensionStatus> = {
+      ARCHITECTURE: 'UNKNOWN',
+      CODE_QUALITY: 'UNKNOWN',
+      SECURITY: 'UNKNOWN',
+      PERFORMANCE: 'UNKNOWN',
+      UX: 'UNKNOWN',
+      ACCESSIBILITY: 'UNKNOWN',
+      AI_CONFIG: 'UNKNOWN',
+      DESIGN_HARMONY: 'UNKNOWN'
+    };
+
+    if (enabled.includes('ARCHITECTURE')) {
+      dimensionStatus.ARCHITECTURE = files.length > 0 ? 'MEASURED' : 'UNKNOWN';
+    }
+    if (enabled.includes('CODE_QUALITY')) {
+      dimensionStatus.CODE_QUALITY = files.length > 0 ? 'MEASURED' : 'UNKNOWN';
+    }
+    if (enabled.includes('SECURITY')) {
+      dimensionStatus.SECURITY = files.length > 0 ? 'MEASURED' : 'UNKNOWN';
+    }
+    if (enabled.includes('PERFORMANCE')) {
+      dimensionStatus.PERFORMANCE = snapshots.length > 0
+        ? 'MEASURED'
+        : (files.length > 0 ? 'PARTIAL' : 'UNKNOWN');
+    }
+    if (enabled.includes('UX')) {
+      dimensionStatus.UX = snapshots.length > 0
+        ? 'MEASURED'
+        : (files.length > 0 ? 'PARTIAL' : 'UNKNOWN');
+    }
+    if (enabled.includes('ACCESSIBILITY')) {
+      dimensionStatus.ACCESSIBILITY = snapshots.length > 0 ? 'MEASURED' : 'UNKNOWN';
+    }
+    if (enabled.includes('AI_CONFIG')) {
+      dimensionStatus.AI_CONFIG = files.length > 0 ? 'MEASURED' : 'UNKNOWN';
+    }
+    if (enabled.includes('DESIGN_HARMONY')) {
+      dimensionStatus.DESIGN_HARMONY = designHarmonyReport ? 'MEASURED' : 'UNKNOWN';
+    }
+
     const rawFindings: ApplicationAuditFinding[] = [];
 
     if (enabled.includes('ARCHITECTURE')) {
@@ -128,7 +172,8 @@ export class ApplicationAuditService {
 
     // 4. Compute Scores
     const baselineHarmony = designHarmonyReport ? designHarmonyReport.overallScore : undefined;
-    const { overallScore, dimensionScores } = this.scoreEngine.computeScores(findings, baselineHarmony);
+    const { overallScore, dimensionScores, dimensionStatus: computedStatus, coverage } =
+      this.scoreEngine.computeScores(findings, baselineHarmony, dimensionStatus);
 
     const durationMs = Date.now() - startTime;
     const reportId = `aar-${randomUUID().slice(0, 8)}`;
@@ -138,7 +183,9 @@ export class ApplicationAuditService {
       projectId,
       overallScore,
       findingsCount: findings.length,
-      dimensionScores
+      dimensionScores,
+      dimensionStatus: computedStatus,
+      coverage
     });
 
     const report: ApplicationAuditReport = deepFreeze({
@@ -147,6 +194,8 @@ export class ApplicationAuditService {
       projectId,
       overallScore,
       dimensionScores,
+      dimensionStatus: computedStatus,
+      coverage,
       findings,
       summary,
       auditHash,
@@ -204,17 +253,22 @@ export class ApplicationAuditService {
     prev: ApplicationAuditReport,
     curr: ApplicationAuditReport
   ): ApplicationAuditComparison {
-    const scoreDelta = curr.overallScore - prev.overallScore;
+    const scoreDelta = curr.overallScore === null || prev.overallScore === null
+      ? null
+      : curr.overallScore - prev.overallScore;
 
-    const dimensionDeltas: Record<AuditDimension, number> = {
-      ARCHITECTURE: curr.dimensionScores.architecture - prev.dimensionScores.architecture,
-      CODE_QUALITY: curr.dimensionScores.codeQuality - prev.dimensionScores.codeQuality,
-      SECURITY: curr.dimensionScores.security - prev.dimensionScores.security,
-      PERFORMANCE: curr.dimensionScores.performance - prev.dimensionScores.performance,
-      UX: curr.dimensionScores.ux - prev.dimensionScores.ux,
-      ACCESSIBILITY: curr.dimensionScores.accessibility - prev.dimensionScores.accessibility,
-      AI_CONFIG: curr.dimensionScores.aiConfig - prev.dimensionScores.aiConfig,
-      DESIGN_HARMONY: curr.dimensionScores.designHarmony - prev.dimensionScores.designHarmony
+    const delta = (current: number | null, previous: number | null): number | null =>
+      current === null || previous === null ? null : current - previous;
+
+    const dimensionDeltas: Record<AuditDimension, number | null> = {
+      ARCHITECTURE: delta(curr.dimensionScores.architecture, prev.dimensionScores.architecture),
+      CODE_QUALITY: delta(curr.dimensionScores.codeQuality, prev.dimensionScores.codeQuality),
+      SECURITY: delta(curr.dimensionScores.security, prev.dimensionScores.security),
+      PERFORMANCE: delta(curr.dimensionScores.performance, prev.dimensionScores.performance),
+      UX: delta(curr.dimensionScores.ux, prev.dimensionScores.ux),
+      ACCESSIBILITY: delta(curr.dimensionScores.accessibility, prev.dimensionScores.accessibility),
+      AI_CONFIG: delta(curr.dimensionScores.aiConfig, prev.dimensionScores.aiConfig),
+      DESIGN_HARMONY: delta(curr.dimensionScores.designHarmony, prev.dimensionScores.designHarmony)
     };
 
     const prevIds = new Set(prev.findings.map((f) => f.id));
@@ -226,9 +280,9 @@ export class ApplicationAuditService {
     const improvements: string[] = [];
     const regressions: string[] = [];
 
-    if (scoreDelta > 0) {
+    if (scoreDelta !== null && scoreDelta > 0) {
       improvements.push(`Score global en hausse de +${scoreDelta} points (${prev.overallScore} -> ${curr.overallScore}).`);
-    } else if (scoreDelta < 0) {
+    } else if (scoreDelta !== null && scoreDelta < 0) {
       regressions.push(`Score global en baisse de ${scoreDelta} points (${prev.overallScore} -> ${curr.overallScore}).`);
     }
 

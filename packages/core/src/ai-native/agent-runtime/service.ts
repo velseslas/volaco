@@ -74,6 +74,11 @@ interface ActiveRunSession {
   plan?: AgentPlan | undefined;
   error?: string | undefined;
   confirmationRequested?: boolean | undefined;
+  // P0-PROD — true si un humain a explicitement approuvé ce run
+  // (continueRun(confirmation=true) ou appel direct à executePlan).
+  // Transmis aux outils via ToolExecutionContext.highRiskApproved : sans
+  // approbation, l'Impact Gate bloque HIGH/CRITICAL/BREAKING.
+  humanApproved: boolean;
   readonly createdAt: number;
   updatedAt: number;
 }
@@ -273,7 +278,13 @@ export class AgentRuntimeService {
 
         return this.mutationService!.executePlan(
           plan,
-          { dryRun: false, allowBreaking: true, allowHighRisk: true },
+          // P0-PROD — plus de `allowHighRisk/allowBreaking: true` en dur :
+          // levés uniquement sur approbation humaine du run (fail-closed).
+          {
+            dryRun: false,
+            allowBreaking: ctx.highRiskApproved === true,
+            allowHighRisk: ctx.highRiskApproved === true
+          },
           ctx.userRole,
           ctx.requestId
         );
@@ -319,6 +330,7 @@ export class AgentRuntimeService {
       auditLog,
       budgetTracker,
       assumptionEngine,
+      humanApproved: false,
       createdAt: Date.now(),
       updatedAt: Date.now()
     };
@@ -424,6 +436,10 @@ export class AgentRuntimeService {
           return this.formatRun(session);
         }
       } else if (confirmation === true) {
+        // P0-PROD — approbation humaine explicite : les gates HIGH/CRITICAL
+        // sont levés pour CE run (tracé dans l'audit ci-dessous).
+        session.humanApproved = true;
+        session.auditLog.append('HUMAN_APPROVAL_GRANTED', { reason: 'Confirmation utilisateur explicite' });
         return this.executePlanInternal(session, userRole);
       }
     }
@@ -448,6 +464,10 @@ export class AgentRuntimeService {
     projectId?: string | undefined
   ): Promise<AgentRun> {
     const session = this.getSession(runId, tenantId, projectId);
+    // P0-PROD — appel explicite = action humaine volontaire : les gates
+    // HIGH/CRITICAL sont levés pour CE run (tracé dans l'audit).
+    session.humanApproved = true;
+    session.auditLog.append('HUMAN_APPROVAL_GRANTED', { reason: 'Exécution explicite du plan validé' });
     return this.executePlanInternal(session, userRole);
   }
 
@@ -475,7 +495,8 @@ export class AgentRuntimeService {
       projectId: session.projectId,
       runId: session.runId,
       userRole,
-      requestId
+      requestId,
+      highRiskApproved: session.humanApproved === true
     };
 
     const outcome = await this.executor.executePlan(plan, session.budgetTracker, context);

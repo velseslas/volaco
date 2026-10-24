@@ -12,6 +12,7 @@ import type { ApplicationSemanticModel } from '../../application-understanding/t
 import type { IntentCategory, IntentResult } from '../types.js';
 import { classifyAmbiguities } from './clarification-engine.js';
 import { aiProviderRegistry } from '../../../ai/providers/registry.js';
+import { preferredAiProvider } from '../../../ai/providers/provider-catalog.js';
 import { logger } from '../../../logger.js';
 
 interface CategoryRule {
@@ -184,7 +185,8 @@ async function classifyIntentViaAI(
   tenantId: string,
   projectId: string
 ): Promise<AiClassification | null> {
-  const preferredProviderId = process.env.MISTRAL_API_KEY ? 'mistral' : process.env.GEMINI_API_KEY ? 'gemini' : undefined;
+  // LOT MULTI-MODÈLES — fournisseur actif du tableau de bord ; héritage sinon.
+  const preferredProviderId = preferredAiProvider() ?? (process.env.MISTRAL_API_KEY ? 'mistral' : process.env.GEMINI_API_KEY ? 'gemini' : undefined);
   const adapter = aiProviderRegistry.resolve(preferredProviderId ? { preferredProviderId } : {});
   if (!adapter) {
     return null;

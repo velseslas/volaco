@@ -36,7 +36,8 @@ export const DEFAULT_MUTATION_CONFIG: MutationOrchestratorConfig = {
   maxMutationsPerPlan: 100,
   allowDirectRouteMutation: true,
   requireImpactAnalysis: false,
-  cacheMaxEntries: 100
+  cacheMaxEntries: 100,
+  transactionsMaxEntries: 100
 };
 
 export class MutationOrchestratorService {
@@ -57,6 +58,37 @@ export class MutationOrchestratorService {
       ...config
     };
     this.planCache = new MutationPlanLruCache(this.config.cacheMaxEntries);
+  }
+
+  /**
+   * V7-WIRE-2 — registre borné (LRU) des transactions.
+   *
+   * Avant ce correctif, `transactions` était une `Map` non bornée : chaque
+   * génération du flux ajoutait une transaction (snapshots de fichiers
+   * compris) sans jamais évincer les anciennes. Le registre est maintenant
+   * borné par `transactionsMaxEntries` (défaut 100).
+   */
+  private rememberTransaction(transaction: MutationTransaction): void {
+    const key = transaction.transactionId;
+    if (this.transactions.has(key)) {
+      this.transactions.delete(key);
+    } else {
+      const maxEntries = Math.max(1, this.config.transactionsMaxEntries);
+      while (this.transactions.size >= maxEntries) {
+        const oldest = this.transactions.keys().next().value;
+        if (oldest === undefined) break;
+        this.transactions.delete(oldest);
+      }
+    }
+    this.transactions.set(key, transaction);
+  }
+
+  /** Un accès en lecture rafraîchit la position LRU (les rollbacks récents restent disponibles). */
+  private touchTransaction(transactionId: string): void {
+    const transaction = this.transactions.get(transactionId);
+    if (!transaction) return;
+    this.transactions.delete(transactionId);
+    this.transactions.set(transactionId, transaction);
   }
 
   /**
@@ -369,10 +401,13 @@ export class MutationOrchestratorService {
       });
 
       if (!dryRun) {
-        this.transactions.set(transactionId, transaction);
+        this.rememberTransaction(transaction);
       }
 
-      if (requestId) {
+      // V7-LOT6 — un dry-run ne doit JAMAIS être journalisé comme un commit :
+      // le sandbox calcule des diffs sans écrire, l'audit doit refléter la
+      // réalité (MUTATION_STARTED conserve dryRun: true).
+      if (!dryRun && requestId) {
         try {
           auditStore.record({
             tenantId: plan.tenantId,
@@ -445,6 +480,7 @@ export class MutationOrchestratorService {
     if (!transaction) {
       throw new NotFoundError(`Transaction de mutation '${transactionId}' introuvable`, requestId);
     }
+    this.touchTransaction(transactionId);
 
     const result = rollbackTransaction(this.fileSource, transaction.snapshot, transactionId);
 
@@ -453,7 +489,7 @@ export class MutationOrchestratorService {
       ...transaction,
       status: 'ROLLED_BACK'
     });
-    this.transactions.set(transactionId, updatedTx);
+    this.rememberTransaction(updatedTx);
 
     if (requestId) {
       try {
@@ -481,7 +517,9 @@ export class MutationOrchestratorService {
     requestId?: string | undefined
   ): MutationTransaction | undefined {
     assertPermission(userRole, 'PROJECT_READ', requestId);
-    return this.transactions.get(transactionId);
+    const transaction = this.transactions.get(transactionId);
+    if (transaction) this.touchTransaction(transactionId);
+    return transaction;
   }
 
   public clearCache(): void {

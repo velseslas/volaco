@@ -33,22 +33,44 @@ import { handleAuditRoutes } from './routes/audit.js';
 import { handleFeatureIntelligenceRoutes } from './routes/feature-intelligence.js';
 import { handleFeedbackRoutes } from './routes/feedback.js';
 import { handleStrategyRoutes } from './routes/strategy.js';
-import { handleConversationRoutes, configureConversationIntelligenceService } from './routes/conversation.js';
+import {
+  handleConversationRoutes,
+  configureConversationIntelligenceService,
+  configureStreamImpactService,
+  configureApplicationModelRefresher,
+  configureStreamMutationEngine,
+  configureStreamDecisionAdvisor,
+  configureStreamPreparation
+} from './routes/conversation.js';
 import { handleRenderRoutes } from './routes/render.js';
 import { handleAiProxyRoutes } from './routes/ai-proxy.js';
-import { handleDecideRoutes, configureDecideRoute } from './routes/decide.js';
+import { handleAiProviderRoutes } from './routes/ai-providers.js';
+import { handleDecideRoutes, configureDecideRoute, produceAdvisoryDecision } from './routes/decide.js';
 import { handleOrchestrateRoutes, configureOrchestratorService } from './routes/orchestrate.js';
 import { handleAgentExecutionRoutes, configureAgentExecutionRoute } from './routes/agent-execution.js';
 import { handleDnaRoutes, configureDnaRoute } from './routes/dna.js';
+import { configureValidationRoute } from './routes/validation.js';
+import { handleEvolutionRoutes } from './routes/evolution.js';
+import {
+  handleApplicationModelRoutes,
+  configureApplicationModelRoute,
+  buildAndRecordApplicationModel
+} from './routes/application-model.js';
 import { handleDecisionsRoutes, configureDecisionsRoute } from './routes/decisions.js';
 import { handleRepairRoutes } from './routes/repair.js';
 import { handleDesignRoutes } from './routes/design.js';
+import { handleDesignSurfacesRoutes, configureDesignSurfacesLedger } from './routes/design-surfaces.js';
+import { handleDesignWowRoutes } from './routes/design-wow.js';
+import { handleImproveRoutes } from './routes/improve.js';
 import { handleVisualRoutes } from './routes/visual.js';
 import { ConversationIntelligenceService } from '../../../packages/core/src/ai-native/conversation-intelligence/service.js';
 import { AgentRuntimeService } from '../../../packages/core/src/ai-native/agent-runtime/service.js';
 import { aiProviderRegistry } from '../../../packages/core/src/ai/providers/registry.js';
 import { GeminiProviderAdapter } from '../../../packages/core/src/ai/providers/gemini-adapter.js';
 import { MistralProviderAdapter } from '../../../packages/core/src/ai/providers/mistral-adapter.js';
+import { createOpenAICompatibleAdapters } from '../../../packages/core/src/ai/providers/openai-compatible.js';
+import { AnthropicProviderAdapter } from '../../../packages/core/src/ai/providers/anthropic-adapter.js';
+import { preferredAiProvider } from '../../../packages/core/src/ai/providers/provider-catalog.js';
 import { AIProviderRegistryLLMAdapter } from '../../../packages/core/src/ai-native/agent-runtime/llm/provider-bridge.js';
 import { DefaultReasoningProvider } from '../../../packages/core/src/ai-native/conversation-intelligence/provider/reasoning-provider.js';
 import { LLMReasoningProvider } from '../../../packages/core/src/ai-native/conversation-intelligence/provider/llm-reasoning-provider.js';
@@ -85,6 +107,16 @@ function bootstrapConversationEngine(): void {
     aiProviderRegistry.register(new MistralProviderAdapter());
   }
 
+  // LOT MULTI-MODÈLES — 8 fournisseurs additionnels (7 compatibles OpenAI +
+  // Anthropic Claude) : même contrat AIProviderAdapter que Mistral. La présence
+  // de clé n'est vérifiée qu'À L'USAGE (auth error au besoin) ; le registre
+  // continue de router par capacités/tâche comme avant.
+  for (const additionalAdapter of [...createOpenAICompatibleAdapters(), new AnthropicProviderAdapter()]) {
+    if (!aiProviderRegistry.get(additionalAdapter.descriptor.providerId)) {
+      aiProviderRegistry.register(additionalAdapter);
+    }
+  }
+
   const hasRealProvider = Boolean(process.env.GEMINI_API_KEY) || Boolean(process.env.MISTRAL_API_KEY);
 
   // CRITIQUE — Sans ce bloc, le constructeur de ConversationIntelligenceService
@@ -101,7 +133,7 @@ function bootstrapConversationEngine(): void {
   if (hasRealProvider) {
     const llmAdapter = new AIProviderRegistryLLMAdapter(aiProviderRegistry, {
       requirements: {
-        preferredProviderId: process.env.MISTRAL_API_KEY ? 'mistral' : 'gemini'
+        preferredProviderId: preferredAiProvider() ?? (process.env.MISTRAL_API_KEY ? 'mistral' : 'gemini')
       }
     });
 
@@ -152,7 +184,7 @@ function bootstrapConversationEngine(): void {
           // registre choisir arbitrairement (bug trouvé en testant : Gemini
           // pouvait être choisi sans clé alors que Mistral en avait une).
           requirements: {
-            preferredProviderId: process.env.MISTRAL_API_KEY ? 'mistral' : 'gemini'
+            preferredProviderId: preferredAiProvider() ?? (process.env.MISTRAL_API_KEY ? 'mistral' : 'gemini')
           }
         })
       : undefined
@@ -177,6 +209,10 @@ function bootstrapConversationEngine(): void {
 
   // ÉTAPE 5 — ADR réels exposés (GET /decisions) pour le panneau Décisions.
   configureDecisionsRoute(decisionLedger);
+
+  // P0 (audit 2026-10) — §23 : la Design Memory alimente le MÊME ledger que
+  // GET .../decisions (aucun silo design indépendant).
+  configureDesignSurfacesLedger(decisionLedger);
 
   const understandingService = new ApplicationUnderstandingService(
     semanticGraphService, dnaService, impactService, codeIntelService
@@ -204,6 +240,35 @@ function bootstrapConversationEngine(): void {
   // LOT 3 — la DNA réelle devient consultable (GET /dna) au lieu du
   // manifeste fictif affiché par le Studio.
   configureDnaRoute(dnaService);
+
+  // LOT 2 (§25/§12) — validation en chaîne unique + Application Model
+  // persistent : la chaîne réutilise l'analyseur de code réel déjà construit ;
+  // le modèle racine assemble les services réels du bootstrap.
+  configureValidationRoute({ codeIntelService });
+  configureApplicationModelRoute({ understandingService, dnaService });
+
+  // V7 — les moteurs d'ingénierie entrent dans le flux réel :
+  //  - Impact Intelligence évalue index.html avant chaque modification
+  //    (flux conversationnel SSE) avec le graphe sémantique réel ;
+  //  - l'Application Model est réassemblé depuis les sources réelles après
+  //    chaque mutation persistée, au lieu d'attendre un GET ;
+  //  - le Mutation Orchestrator (AINT-006) exécute la persistance du HTML :
+  //    plan validé, snapshot, diff, vérification et rollback automatique ;
+  //  - le Decision Engine éclaire chaque génération en mode consultatif
+  //    (`record: false`), sans écrire dans le Decision Ledger.
+  configureStreamImpactService(impactService);
+  configureStreamMutationEngine(mutationService);
+  configureStreamDecisionAdvisor(produceAdvisoryDecision);
+  configureApplicationModelRefresher((input) => {
+    const model = buildAndRecordApplicationModel(input);
+    if (!model) {
+      logger.warn('Application Model non reconstruit après mutation (aucune source extractible)', {
+        component: 'server-bootstrap',
+        tenantId: input.tenantId,
+        projectId: input.projectId
+      });
+    }
+  });
 
   if (!hasRealProvider) {
     logger.warn(
@@ -398,11 +463,17 @@ const API_ROUTES: readonly RouteEntry[] = [
   { name: 'agents/execute (ÉTAPE 32)', handler: handleAgentExecutionRoutes },
   { name: 'render (headless)', handler: handleRenderRoutes },
   { name: 'dna (AINT-002)', handler: handleDnaRoutes },
+  { name: 'evolution (AINT-017)', handler: handleEvolutionRoutes },
+  { name: 'application-model (§12)', handler: handleApplicationModelRoutes },
   { name: 'decisions (ADR)', handler: handleDecisionsRoutes },
   { name: 'visual-critic (AINT-012)', handler: handleVisualRoutes },
+  { name: 'design-wow (V8.1 §9/§13/§18)', handler: handleDesignWowRoutes },
+  { name: 'design-surfaces (V8 §6/§8/§24/§30/§31)', handler: handleDesignSurfacesRoutes },
   { name: 'design-intelligence (V8)', handler: handleDesignRoutes },
+  { name: 'design-improve (V8 §17-§21)', handler: handleImproveRoutes },
   { name: 'self-repair (ÉTAPE 7)', handler: handleRepairRoutes },
   { name: 'ai-proxy', handler: handleAiProxyRoutes },
+  { name: 'ai-providers (MULTI-MODÈLES)', handler: handleAiProviderRoutes },
   { name: 'files (CORE-003/004)', handler: handleFilesRoutes },
   { name: 'terminal (CORE-005)', handler: handleTerminalRoutes },
   { name: 'executions (Transparency)', handler: handleExecutionRoutes },
@@ -419,6 +490,9 @@ const API_ROUTES: readonly RouteEntry[] = [
 
 export function createApiServer(configOverride: Partial<AppConfig> = {}) {
   const config = loadConfig(configOverride);
+  // Le flag est relu après loadEnvFile() : un `.env` local peut l'activer sans
+  // modifier le code. Absent/0 = chemin stream historique, strictement inchangé.
+  configureStreamPreparation(process.env.VOLACO_UNIFIED_PIPELINE === '1');
   bootstrapConversationEngine();
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {

@@ -41,6 +41,13 @@ export const DEFAULT_LAYOUT_BOX: LayoutBox = {
   hasOverflow: false
 };
 
+/**
+ * CDC V8 Lot A — balises sans rendu visuel : jamais des nœuds d'analyse.
+ * (Le <head> reste parsé — des tests historiques en dépendent — mais son
+ * contenu technique <style>/<script>/<title> n'existe plus dans l'arbre.)
+ */
+const NON_VISUAL_TAGS = new Set(['script', 'style', 'noscript', 'template', 'meta', 'link', 'base', 'title']);
+
 export class DomNormalizer {
   constructor(private readonly maxDepth = 32) {}
 
@@ -127,7 +134,7 @@ export class DomNormalizer {
       const children: NormalizedDomNode[] = [];
       if (innerContent.length > 0 && depth < this.maxDepth) {
         const childTagRegex = /<([a-zA-Z0-9-]+)(?:[^>]*)(?:\/>|>[\s\S]*?<\/\1>)/gi;
-        let matches = Array.from(innerContent.matchAll(childTagRegex));
+        let matches: RegExpMatchArray[] = Array.from(innerContent.matchAll(childTagRegex));
 
         if (matches.length === 0 && innerContent.includes('<')) {
           const fallbackRegex = /<([a-zA-Z0-9-]+)(?:[^>]*)>[\s\S]*?(?=<[a-zA-Z0-9-]+|$)/gi;
@@ -135,7 +142,28 @@ export class DomNormalizer {
         }
 
         if (matches.length > 0) {
+          // CDC V8 Lot A — les balises vides écrites SANS « / » final
+          // (<img src=…>, <input …>, <br>…) étaient totalement ignorées :
+          // les images sans alt et les champs n'existaient pas dans l'arbre.
+          const voidMatches = Array.from(
+            innerContent.matchAll(/<(?:area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)\b[^>]*\/?>/gi)
+          );
+          const byIndex = new Map<number, RegExpMatchArray>();
+          for (const m of [...matches, ...voidMatches]) {
+            if (typeof m.index === 'number' && !byIndex.has(m.index)) byIndex.set(m.index, m);
+          }
+          matches = Array.from(byIndex.entries())
+            .sort((a, b) => a[0] - b[0])
+            .map(([, m]) => m);
+        }
+
+        if (matches.length > 0) {
           for (const m of matches.slice(0, 50)) { // limit to max 50 children per node
+            // CDC V8 Lot A — les balises sans rendu ne sont JAMAIS des nœuds
+            // d'analyse : sans cela, le texte d'un <style>/<script> comptait
+            // comme du contenu visuel (fausses mesures du Critic/AQS).
+            const childTag = /^<([a-zA-Z0-9-]+)/.exec(m[0])?.[1]?.toLowerCase();
+            if (!childTag || NON_VISUAL_TAGS.has(childTag)) continue;
             const childNode = parseTag(m[0], fullSelector, depth + 1);
             children.push(childNode);
           }
@@ -189,12 +217,18 @@ export class DomNormalizer {
     }
 
     const raw = payload as Record<string, unknown>;
+    const tagName = String(raw['tagName'] || 'body').toLowerCase();
+    const attributes = (raw['attributes'] as Record<string, string>) || {};
+    const classes = Array.isArray(raw['classes']) ? raw['classes'].map(String) : [];
     return {
       id: String(raw['id'] || 'probe-root'),
-      tagName: String(raw['tagName'] || 'body').toLowerCase(),
-      role: (raw['role'] as SemanticRole) || 'CONTAINER',
-      attributes: (raw['attributes'] as Record<string, string>) || {},
-      classes: Array.isArray(raw['classes']) ? raw['classes'].map(String) : [],
+      tagName,
+      // CDC V8 Lot A — un DOM runtime ne fournit pas toujours `role` : on
+      // applique le MÊME classifieur sémantique que le parseur HTML plutôt
+      // que de dégrader tous les nœuds en CONTAINER.
+      role: (raw['role'] as SemanticRole) || this.detectSemanticRole(tagName, attributes, classes),
+      attributes,
+      classes,
       textContent: String(raw['textContent'] || ''),
       styles: {
         ...DEFAULT_COMPUTED_STYLE,

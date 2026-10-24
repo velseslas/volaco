@@ -25,6 +25,8 @@ import type {
   HumanAiMessage,
   IntentResult,
   PlanAssessment,
+  PreparedImpact,
+  PreparedTurn,
   ReasoningProvider
 } from '../types.js';
 
@@ -46,27 +48,33 @@ export class ConversationEngine {
     private readonly executionBridge: ExecutionBridge
   ) {}
 
-  public async processTurn(params: {
+  /**
+   * Phase de préparation pure d'un tour : compréhension, hypothèses,
+   * contradictions, plan, impact, état suivant et contexte borné.
+   *
+   * Aucun appel provider, aucune écriture de session, aucun audit.
+   * `processTurn` l'utilise puis ajoute la génération et la persistance ;
+   * le flux SSE peut l'utiliser pour piloter sa génération sans dupliquer
+   * la logique du moteur conversationnel.
+   */
+  public async prepareTurn(params: {
     session: ConversationSession;
     userMessageText: string;
-    reasoningProvider?: ReasoningProvider | undefined;
+    intent?: IntentResult | undefined;
+    targetFiles?: readonly string[] | undefined;
     autoConfirmLowRisk?: boolean | undefined;
     userRole?: Role | undefined;
     requestId?: string | undefined;
-  }): Promise<{ updatedSession: ConversationSession; turn: ConversationTurn }> {
-    const startTime = Date.now();
-    const { session, userMessageText, reasoningProvider, autoConfirmLowRisk = true, userRole = 'OWNER', requestId } = params;
-
-    const turnIndex = session.turns.length + 1;
-    const turnId = `turn-${session.sessionId}-${turnIndex}`;
+  }): Promise<PreparedTurn> {
+    const {
+      session,
+      userMessageText,
+      autoConfirmLowRisk = true,
+      userRole = 'OWNER',
+      requestId
+    } = params;
 
     const cleanUserText = userMessageText.trim();
-    const userMessage: HumanAiMessage = deepFreeze({
-      id: `msg-user-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-      sender: 'HUMAN',
-      content: cleanUserText,
-      timestamp: new Date().toISOString()
-    });
 
     const latestModel = this.understandingBridge.fetchUnderstanding(
       session.tenantId,
@@ -77,7 +85,8 @@ export class ConversationEngine {
     const latestSnapshot = this.understandingBridge.computeSnapshot(latestModel);
     const isStale = this.understandingBridge.isContextStale(session.applicationSnapshot, latestSnapshot);
 
-    const intent: IntentResult = await this.intentEngine.classifyIntent(cleanUserText, latestModel, session.tenantId, session.projectId);
+    const intent: IntentResult = params.intent
+      ?? await this.intentEngine.classifyIntent(cleanUserText, latestModel, session.tenantId, session.projectId);
 
     const contradictions = this.contradictionDetector.detectContradictions({
       newIntent: intent,
@@ -112,28 +121,36 @@ export class ConversationEngine {
       plan = this.planGenerator.generatePlan({
         intent,
         assumptions,
-        semanticModel: latestModel
+        semanticModel: latestModel,
+        defaultTargetFiles: params.targetFiles
       });
       planAssessment = this.planGenerator.assessPlan(plan, latestModel);
     }
 
+    let impact: PreparedImpact | undefined;
     if (plan) {
-      const impact = this.impactBridge.assessPlanImpact(
+      const rawImpact = this.impactBridge.assessPlanImpact(
         plan,
         session.tenantId,
         session.projectId,
         userRole,
         requestId
       );
-      if (impact.requiresConfirmation) {
+      impact = {
+        riskLevel: rawImpact.riskLevel,
+        affectedFiles: rawImpact.affectedFiles,
+        requiresConfirmation: rawImpact.requiresConfirmation,
+        blastRadiusSummary: rawImpact.blastRadiusSummary
+      };
+      if (rawImpact.requiresConfirmation) {
         plan = deepFreeze({
           ...plan,
-          estimatedImpact: impact.blastRadiusSummary
+          estimatedImpact: rawImpact.blastRadiusSummary
         });
       }
     }
 
-    let nextState = this.compass.determineNextState({
+    const nextState = this.compass.determineNextState({
       currentState: session.currentState,
       intent,
       ambiguities: clarifications,
@@ -143,25 +160,88 @@ export class ConversationEngine {
       autoConfirmLowRisk
     });
 
-    let replyText = '';
-    let confidence = intent.confidence;
-
-    let providerMetadata: Record<string, unknown> | undefined;
-    // PHASE 5/6 - nextAction du LLM pour surcharger le Compass
-    let llmNextAction: import('../types.js').NextActionKind | undefined;
-
     // ÉTAPE 30 — le contexte conversationnel borné (historique pertinent +
     // mémoire projet + décisions + contraintes) est construit UNE fois ici,
     // à l'unique point d'appel du provider, et transmis tel quel. Le pool
     // d'historique est l'historique COMPLET de la session (session.turns —
     // store existant) ; la sélection bornée est le travail du builder.
     const fullHistory: HumanAiMessage[] = session.turns.flatMap((t) => [t.userMessage, t.agentResponse]);
-    const conversationContext = this.contextBuilder.build({
+    const context = this.contextBuilder.build({
       userMessage: cleanUserText,
       history: fullHistory,
       projectMemory: session.projectMemory,
       turnMemory: session.turnMemory
     });
+
+    return {
+      cleanUserText,
+      latestModel,
+      latestSnapshot,
+      isStale,
+      intent,
+      contradictions,
+      assumptions,
+      clarifications,
+      plan,
+      planAssessment,
+      impact,
+      nextState,
+      context,
+      projectMemory: session.projectMemory
+    };
+  }
+
+  public async processTurn(params: {
+    session: ConversationSession;
+    userMessageText: string;
+    reasoningProvider?: ReasoningProvider | undefined;
+    autoConfirmLowRisk?: boolean | undefined;
+    userRole?: Role | undefined;
+    requestId?: string | undefined;
+  }): Promise<{ updatedSession: ConversationSession; turn: ConversationTurn }> {
+    const startTime = Date.now();
+    const { session, userMessageText, reasoningProvider, autoConfirmLowRisk = true, userRole = 'OWNER', requestId } = params;
+
+    const prepared = await this.prepareTurn({
+      session,
+      userMessageText,
+      autoConfirmLowRisk,
+      userRole,
+      requestId
+    });
+
+    const {
+      cleanUserText,
+      latestModel,
+      latestSnapshot,
+      isStale,
+      intent,
+      contradictions,
+      assumptions,
+      clarifications,
+      context: conversationContext
+    } = prepared;
+
+    let plan = prepared.plan;
+    let planAssessment = prepared.planAssessment;
+    let nextState = prepared.nextState;
+
+    const turnIndex = session.turns.length + 1;
+    const turnId = `turn-${session.sessionId}-${turnIndex}`;
+
+    const userMessage: HumanAiMessage = deepFreeze({
+      id: `msg-user-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      sender: 'HUMAN',
+      content: cleanUserText,
+      timestamp: new Date().toISOString()
+    });
+
+    let replyText = '';
+    let confidence = intent.confidence;
+
+    let providerMetadata: Record<string, unknown> | undefined;
+    // PHASE 5/6 - nextAction du LLM pour surcharger le Compass
+    let llmNextAction: import('../types.js').NextActionKind | undefined;
 
     if (reasoningProvider) {
       try {
