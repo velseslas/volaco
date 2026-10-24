@@ -25,3 +25,4 @@ restauration-*/
 .tmp-lot*/
 missions-artifacts/
 *.tar.gz
+deploy/huggingface/upload/
