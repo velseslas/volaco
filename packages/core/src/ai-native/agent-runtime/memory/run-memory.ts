@@ -9,7 +9,9 @@ import type {
   ConversationMessage,
   DecisionRecord,
   EvidenceRecord,
+  MemoryKind,
   ObservationRecord,
+  ObservationStatus,
   RunMemory,
   ToolExecutionResult
 } from '../types.js';
@@ -67,6 +69,49 @@ export class RunMemoryStore {
 
   public recordToolInvocation(result: ToolExecutionResult): void {
     this.toolInvocations.push(result);
+  }
+
+  /**
+   * CDC §14 — métadonnées complètes sur chaque observation : source, date
+   * (timestamp), confiance, provenance, statut et type de mémoire.
+   */
+  public addObservationWithMetadata(
+    text: string,
+    source: string,
+    metadata: {
+      confidence?: number;
+      provenance?: string;
+      kind?: MemoryKind;
+      status?: ObservationStatus;
+    } = {}
+  ): ObservationRecord {
+    const obs: ObservationRecord = {
+      id: `obs-${randomUUID().substring(0, 8)}`,
+      text,
+      source,
+      timestamp: Date.now(),
+      confidence: metadata.confidence,
+      provenance: metadata.provenance ?? source,
+      kind: metadata.kind ?? 'project',
+      status: metadata.status ?? 'ACTIVE'
+    };
+    this.observations.push(obs);
+    return obs;
+  }
+
+  /** CDC §14 — une observation remplacée reste traçable (SUPERSEDED, jamais effacée). */
+  public supersedeObservation(id: string): ObservationRecord | undefined {
+    const index = this.observations.findIndex((o) => o.id === id);
+    if (index === -1) return undefined;
+    const existing = this.observations[index];
+    if (!existing) return undefined;
+    const updated: ObservationRecord = { ...existing, status: 'SUPERSEDED' };
+    this.observations[index] = updated;
+    return updated;
+  }
+
+  public listObservations(kind?: MemoryKind): readonly ObservationRecord[] {
+    return kind ? this.observations.filter((o) => o.kind === kind) : [...this.observations];
   }
 
   public addFact(fact: EvidenceRecord): void {

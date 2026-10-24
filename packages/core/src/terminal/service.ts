@@ -23,6 +23,18 @@ function isProjectIndependent(binary: string, subcommand: string | undefined): b
   return subcommand === '--version' || subcommand === '-v';
 }
 
+/** CDC §24 — plafond du buffer d'exécution (évite l'ENOBUFS sur un build bavard). */
+export const TERMINAL_EXEC_MAX_BUFFER = 4 * 1024 * 1024;
+
+/** CDC §24 — plafond de la sortie renvoyée au client, avec marqueur honnête. */
+export const TERMINAL_RESULT_OUTPUT_LIMIT = 256 * 1024;
+
+export function truncateCommandOutput(s: string): string {
+  return s.length > TERMINAL_RESULT_OUTPUT_LIMIT
+    ? `${s.slice(0, TERMINAL_RESULT_OUTPUT_LIMIT)}\n… [sortie tronquée : ${s.length} caractères produits, ${TERMINAL_RESULT_OUTPUT_LIMIT} renvoyés]`
+    : s;
+}
+
 export class TerminalService {
   constructor(
     private projectStore: ProjectStore,
@@ -74,12 +86,18 @@ export class TerminalService {
 
     const fullCmd = input.command.trim();
 
+    // CDC §24 — garde-fous de sortie : buffer plafonné (évite l'ENOBUFS sur un
+    // build bavard) et troncature explicite du résultat renvoyé au client.
+    const EXEC_MAX_BUFFER = TERMINAL_EXEC_MAX_BUFFER;
+
     if (isProjectIndependent(parsed.binary, parsed.subcommand)) {
       // 4a. Commande indépendante du projet (ex: "git --version") : exécution réelle,
       // sans invocation de shell (execFile n'interprète aucun caractère spécial).
       try {
         stdout = execFileSync(parsed.binary, parsed.args, {
           timeout: input.timeoutMs ?? 10_000,
+          killSignal: 'SIGTERM',
+          maxBuffer: EXEC_MAX_BUFFER,
           encoding: 'utf8',
           windowsHide: true
         });
@@ -119,6 +137,8 @@ export class TerminalService {
           stdout = execFileSync(parsed.binary, parsed.args, {
             cwd: workspacePath,
             timeout: input.timeoutMs ?? 10_000,
+            killSignal: 'SIGTERM',
+            maxBuffer: EXEC_MAX_BUFFER,
             encoding: 'utf8',
             windowsHide: true
           });
@@ -162,8 +182,8 @@ export class TerminalService {
       command: fullCmd,
       binary: parsed.binary,
       exitCode,
-      stdout,
-      stderr,
+      stdout: truncateCommandOutput(stdout),
+      stderr: truncateCommandOutput(stderr),
       durationMs,
       executedAt: new Date()
     };

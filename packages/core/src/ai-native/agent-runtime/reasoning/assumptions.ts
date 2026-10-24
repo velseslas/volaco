@@ -73,4 +73,56 @@ export class AssumptionEngine {
   public get(id: string): Assumption | undefined {
     return this.assumptions.get(id);
   }
+
+  /**
+   * CDC §16 — une hypothèse est révisable : l'ancienne version passe à
+   * SUPERSEDED (traçable) et une nouvelle hypothèse hérite de ses preuves.
+   */
+  public revise(id: string, newStatement: string, reason: string, confidence?: number): Assumption | undefined {
+    const existing = this.assumptions.get(id);
+    if (!existing) return undefined;
+
+    this.assumptions.set(id, { ...existing, status: 'SUPERSEDED' });
+
+    const revised: Assumption = {
+      id: `assump-${randomUUID().substring(0, 8)}`,
+      statement: newStatement,
+      confidence: confidence ?? existing.confidence,
+      evidence: [...existing.evidence, `revision-of:${existing.id}`],
+      status: 'PROPOSED',
+      createdAt: Date.now(),
+      revisedFrom: existing.id,
+      revisionReason: reason
+    };
+    this.assumptions.set(revised.id, revised);
+    return revised;
+  }
+
+  /**
+   * CDC §16 — l'utilisateur n'est interrogé que lorsque l'incertitude ou le
+   * risque le justifie : confiance sous le seuil, ou contexte à risque élevé.
+   */
+  public requiresUserInput(
+    id: string,
+    options: { confidenceThreshold?: number; risky?: boolean } = {}
+  ): boolean {
+    const a = this.assumptions.get(id);
+    if (!a) return false;
+    const threshold = options.confidenceThreshold ?? 0.7;
+    return a.confidence < threshold || options.risky === true;
+  }
+
+  /** Persistance (séquence deterministe) — l'état survit au run. */
+  public toJSON(): string {
+    return JSON.stringify({ version: 1, assumptions: this.getAssumptions() });
+  }
+
+  public static fromJSON(json: string): AssumptionEngine {
+    const engine = new AssumptionEngine();
+    const parsed = JSON.parse(json) as { version?: number; assumptions?: Assumption[] };
+    for (const a of parsed.assumptions ?? []) {
+      engine.assumptions.set(a.id, a);
+    }
+    return engine;
+  }
 }

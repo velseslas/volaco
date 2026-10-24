@@ -120,6 +120,25 @@ export function getCapabilitiesForRole(role: AgentType | AgentRole): AgentCapabi
         canRunBuild: false
       };
 
+    // CDC §20 — agents « futurs » désormais déclarés. Ils cartographient des
+    // moteurs d'analyse existants : lecture/analyse uniquement, aucune
+    // mutation (moindre privilège, DENY implicite par liste blanche).
+    case 'VISUAL_AGENT':
+    case 'ACCESSIBILITY_AGENT':
+    case 'AUDIT_AGENT':
+    case 'PERFORMANCE_AGENT':
+    case 'PRODUCT_INTELLIGENCE_AGENT':
+      return {
+        canReadFiles: true,
+        canInspectAst: true,
+        canInspectGraph: true,
+        canAnalyzeImpact: true,
+        canPlanMutations: false,
+        canExecuteMutations: false,
+        canRunTests: false,
+        canRunBuild: false
+      };
+
     case 'GENERALIST':
     default:
       return {
@@ -275,6 +294,26 @@ export function getAllowedOperationsForRole(role: AgentType | AgentRole): readon
         'VALIDATE_RESULT',
         'read_file',
         'search_code',
+        'analyze_impact',
+        'build_context'
+      ];
+
+    // CDC §20 — agents d'analyse en lecture seule (DENY mutations/tests/build).
+    case 'VISUAL_AGENT':
+    case 'ACCESSIBILITY_AGENT':
+    case 'AUDIT_AGENT':
+    case 'PERFORMANCE_AGENT':
+    case 'PRODUCT_INTELLIGENCE_AGENT':
+      return [
+        'READ_PROJECT',
+        'READ_FILE',
+        'SEARCH_CODE',
+        'ANALYZE_CODE',
+        'GET_SEMANTIC_GRAPH',
+        'ANALYZE_IMPACT',
+        'read_file',
+        'search_code',
+        'inspect_graph',
         'analyze_impact',
         'build_context'
       ];

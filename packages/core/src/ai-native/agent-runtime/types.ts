@@ -19,7 +19,12 @@ export type AgentType =
   | 'SECURITY_AGENT'
   | 'TEST_AGENT'
   | 'DEBUG_AGENT'
-  | 'REVIEW_AGENT';
+  | 'REVIEW_AGENT'
+  | 'VISUAL_AGENT'
+  | 'PERFORMANCE_AGENT'
+  | 'ACCESSIBILITY_AGENT'
+  | 'AUDIT_AGENT'
+  | 'PRODUCT_INTELLIGENCE_AGENT';
 
 export type AgentRole =
   | AgentType
@@ -161,6 +166,9 @@ export interface ContextPackage {
 
 export type ToolRisk = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 
+/** CDC §23 : chaque outil déclare son coût indicatif d'exécution. */
+export type ToolCost = 'FREE' | 'LOW' | 'MEDIUM' | 'HIGH';
+
 export type ToolId =
   | 'READ_PROJECT'
   | 'READ_FILE'
@@ -190,6 +198,8 @@ export interface ToolDefinition {
   readonly isReadonly: boolean;
   readonly timeoutMs: number;
   readonly idempotent: boolean;
+  /** CDC §23 — coût indicatif déclaré par l'outil (infos pour budget/planning). */
+  readonly cost?: ToolCost | undefined;
   readonly provenance?: string | undefined;
 }
 
@@ -301,7 +311,7 @@ export interface EvidenceRecord {
   readonly payload?: Record<string, unknown> | undefined;
 }
 
-export type AssumptionStatus = 'PROPOSED' | 'VALIDATED' | 'REJECTED' | 'EXPIRED';
+export type AssumptionStatus = 'PROPOSED' | 'VALIDATED' | 'REJECTED' | 'EXPIRED' | 'SUPERSEDED';
 
 export interface Assumption {
   readonly id: string;
@@ -311,6 +321,9 @@ export interface Assumption {
   readonly status: AssumptionStatus;
   readonly createdAt: number;
   readonly validatedAt?: number | undefined;
+  /** CDC §16 : une hypothèse est révisable — référence de la version remplacée. */
+  readonly revisedFrom?: string | undefined;
+  readonly revisionReason?: string | undefined;
 }
 
 // ============================================================================
@@ -458,7 +471,17 @@ export interface ObservationRecord {
   readonly text: string;
   readonly source: string;
   readonly timestamp: number;
+  /** CDC §14 — chaque donnée importante possède source, date, confiance, provenance, statut. */
+  readonly confidence?: number | undefined;
+  readonly provenance?: string | undefined;
+  readonly kind?: MemoryKind | undefined;
+  readonly status?: ObservationStatus | undefined;
 }
+
+/** CDC §14 — les cinq types de mémoire applicative. */
+export type MemoryKind = 'conversation' | 'project' | 'application' | 'execution' | 'history';
+
+export type ObservationStatus = 'ACTIVE' | 'SUPERSEDED' | 'ARCHIVED';
 
 export interface DecisionRecord {
   readonly id: string;

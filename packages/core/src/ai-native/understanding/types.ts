@@ -145,6 +145,41 @@ export interface CodeIntelligenceConfig {
   readonly analyzerVersion: string;
 }
 
+// ============================================================================
+// RAG — CODE SEARCH (CDC §22 : lexical, semantic, metadata, dependency-aware,
+// exact search ; contexte chargé de manière lazy)
+// ============================================================================
+
+export type CodeSearchMode =
+  | 'exact'
+  | 'lexical'
+  | 'semantic'
+  | 'metadata'
+  | 'dependency';
+
+export interface CodeSearchHit {
+  readonly filePath: string;
+  readonly symbolName?: string | undefined;
+  readonly kind?: string | undefined;
+  readonly score: number;
+  readonly matchedBy: readonly CodeSearchMode[];
+  readonly snippet: string;
+}
+
+export interface CodeSearchOptions {
+  readonly kind?: string | undefined;
+  readonly limit?: number | undefined;
+  readonly modes?: readonly CodeSearchMode[] | undefined;
+}
+
+export interface CodeSearchResult {
+  readonly query: string;
+  readonly modes: readonly CodeSearchMode[];
+  readonly totalHits: number;
+  readonly truncated: boolean;
+  readonly hits: readonly CodeSearchHit[];
+}
+
 export interface IReadOnlyFileSource {
   getFile(tenantId: string, projectId: string, filePath: string): {
     path: string;

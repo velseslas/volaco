@@ -4,7 +4,7 @@
  * 12 Standard Tools + Aliases
  */
 
-import type { ToolDefinition } from '../types.js';
+import type { ToolCost, ToolDefinition } from '../types.js';
 
 export const STANDARD_TOOL_NAMES = [
   'READ_PROJECT',
@@ -779,3 +779,27 @@ export const TOOL_DEFINITIONS: Record<string, ToolDefinition> = {
     provenance: 'AINT-007'
   }
 };
+
+// ============================================================================
+// CDC §23 — coût déclaratif par outil. Les alias héritent du coût de l'outil
+// standard (lookup par nom normalisé).
+// ============================================================================
+const TOOL_COSTS: Readonly<Record<string, ToolCost>> = {
+  READ_PROJECT: 'FREE',
+  READ_FILE: 'FREE',
+  SEARCH_CODE: 'FREE',
+  ANALYZE_CODE: 'LOW',
+  GET_APPLICATION_DNA: 'FREE',
+  GET_SEMANTIC_GRAPH: 'FREE',
+  ANALYZE_IMPACT: 'LOW',
+  BUILD_MUTATION_PLAN: 'MEDIUM',
+  PREVIEW_MUTATION: 'MEDIUM',
+  EXECUTE_MUTATION: 'HIGH',
+  VALIDATE_RESULT: 'MEDIUM',
+  RUN_TESTS: 'MEDIUM'
+};
+
+for (const def of Object.values(TOOL_DEFINITIONS)) {
+  const mutable = def as { cost?: ToolCost };
+  mutable.cost = TOOL_COSTS[def.name] ?? TOOL_COSTS[def.name.toUpperCase()] ?? 'LOW';
+}
