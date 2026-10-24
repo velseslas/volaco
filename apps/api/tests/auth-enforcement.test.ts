@@ -73,6 +73,39 @@ describe('Sécurité : application de l\'authentification', () => {
     const res = await fetch(`${baseUrl}/health`);
     assert.equal(res.status, 200, 'Le healthcheck reste public même en production');
   });
+
+  it('5. laisse le shell du Studio accessible sans authentification (écran de login)', async () => {
+    // Poulet-œuf : sans cette surface publique, impossible d'ouvrir la page
+    // de connexion pour obtenir un premier jeton en production.
+    for (const p of ['/', '/index.html', '/shell']) {
+      const res = await fetch(`${baseUrl}${p}`);
+      assert.equal(res.status, 200, `le shell ${p} doit être public`);
+      const contentType = res.headers.get('content-type') ?? '';
+      assert.ok(contentType.includes('text/html'), `${p} sert bien du HTML`);
+    }
+  });
+
+  it('6. laisse les assets statiques du Studio publics (js/css) mais verrouille les chemins inconnus', async () => {
+    const asset = await fetch(`${baseUrl}/html2canvas.min.js`);
+    assert.equal(asset.status, 200, 'html2canvas.min.js doit être public');
+    assert.ok((asset.headers.get('content-type') ?? '').includes('javascript'));
+
+    const unknown = await fetch(`${baseUrl}/aucun-dossier-sans-extension`);
+    assert.equal(unknown.status, 401, 'un chemin non api, sans extension, reste verrouillé');
+  });
+
+  it('7. les routes /api/v1/auth/* restent ouvertes (signup/login) en production', async () => {
+    // Le garde middleware ne doit PAS bloquer la route (message « fournissez
+    // un en-tête ») ; la réponse vient du handler lui-même (identifiants…).
+    const res = await fetch(`${baseUrl}/api/v1/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}'
+    });
+    const body = await res.json().catch(() => ({ error: { message: '' } })) as { error?: { message?: string } };
+    const message = body?.error?.message ?? '';
+    assert.ok(!message.includes('fournissez un en-tête Authorization'), 'le garde middleware ne doit pas intercepter la route de login');
+  });
 });
 
 describe('Sécurité : CORS fermé par défaut', () => {

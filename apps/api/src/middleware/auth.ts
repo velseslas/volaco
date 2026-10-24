@@ -58,17 +58,34 @@ export function extractRequestContext(req: IncomingMessage, config?: AppConfig, 
       return authContext;
     }
     if (config.env === 'production') {
-      logger.warn('Requete sans Bearer valide en production - acces refuse', {
-        component: 'auth', env: config.env, path: req.url, method: req.method
-      });
-      // Sécurité : en production, toute requête sans Bearer valide est refusée.
-      // Avant ce correctif, l'exécution continuait avec un contexte fabriqué
-      // depuis les en-têtes client (rôle/tenant spoofables) — l'API était
-      // ouverte même avec une clé configurée.
-      throw new UnauthorizedError(
-        'Authentification requise : fournissez un en-tête Authorization: Bearer <VOLACO_API_KEY>',
-        requestId
-      );
+      // Surface publique minimale : le shell du Studio (écran de connexion
+      // inclus), ses assets statiques et les routes d'authentification.
+      // Sans cette exemption, poulet-œuf en production : impossible d'ouvrir
+      // la page de login pour obtenir un premier jeton. Toute route /api
+      // hors /auth et /health reste verrouillée sans Bearer valide.
+      const rawPath = (req.url || '/').split('?')[0] ?? '/';
+      const isPublicSurface =
+        rawPath === '/'
+        || rawPath === '/index.html'
+        || rawPath === '/shell'
+        || rawPath === '/studio'
+        || rawPath === '/volaco_studio.html'
+        || rawPath.startsWith('/health')
+        || rawPath.startsWith('/api/v1/auth/')
+        || (!rawPath.startsWith('/api') && !rawPath.includes('..') && /\.[a-zA-Z0-9]+$/.test(rawPath));
+      if (!isPublicSurface) {
+        logger.warn('Requete sans Bearer valide en production - acces refuse', {
+          component: 'auth', env: config.env, path: req.url, method: req.method
+        });
+        // Sécurité : en production, toute requête non publique sans Bearer
+        // valide est refusée. Avant ce correctif, l'exécution continuait avec
+        // un contexte fabriqué depuis les en-têtes client (rôle/tenant
+        // spoofables) — l'API était ouverte même avec une clé configurée.
+        throw new UnauthorizedError(
+          'Authentification requise : fournissez un en-tête Authorization: Bearer <VOLACO_API_KEY>',
+          requestId
+        );
+      }
     }
     // n°4 : bruit de routine (1 appel par requête en dev), pas un avertissement
     // — niveau info pour suivre le chemin async du logger, contenu inchangé.
