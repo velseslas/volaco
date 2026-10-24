@@ -3187,6 +3187,36 @@
       return headers;
     }
 
+    // CDC V8 §11 — « Améliore le design » : propose d'abord (apply:false),
+    // puis application optionnelle avec approbation humaine explicite (§21).
+    window.volacoDesignImprove = async function () {
+      const proj = (typeof userProjects !== 'undefined') ? userProjects.find(p => p.id === activeProjectId) : null;
+      const pid = (proj && (proj.serverProjectId || proj.id)) || (typeof serverProjectId !== 'undefined' ? serverProjectId : '') || activeProjectId;
+      if (!pid) { alert('Aucun projet actif.'); return; }
+      const btn = document.getElementById('btnDesignImprove');
+      if (btn) { btn.disabled = true; btn.textContent = 'Analyse…'; }
+      try {
+        const res = await fetch(`/api/v1/projects/${encodeURIComponent(pid)}/design/improve`, {
+          method: 'POST', headers: studioApiHeaders(), body: JSON.stringify({ apply: false })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { alert('Amélioration impossible : ' + (data.message || res.status)); return; }
+        const before = JSON.stringify(data.scoreBefore ?? data.harmonyBefore ?? data.aestheticBefore ?? '?');
+        const after = JSON.stringify(data.scoreAfter ?? data.harmonyAfter ?? data.aestheticAfter ?? '?');
+        if (!confirm('Proposition d amélioration prête (scores ' + before + ' → ' + after + ').\nAppliquer maintenant ?')) return;
+        const approvedBy = prompt('Approbation humaine (§21) — ton nom :', 'studio');
+        if (!approvedBy) return;
+        const res2 = await fetch(`/api/v1/projects/${encodeURIComponent(pid)}/design/improve`, {
+          method: 'POST', headers: studioApiHeaders(), body: JSON.stringify({ apply: true, approvedBy: approvedBy })
+        });
+        const data2 = await res2.json().catch(() => ({}));
+        if (res2.ok) alert('Amélioration appliquée. Compare avant/après dans le panneau Comparaison puis valide.');
+        else alert('Application refusée : ' + (data2.message || res2.status));
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '✨ Améliore le design'; }
+      }
+    };
+
     /**
      * Crée (une seule fois par projet local) le projet correspondant côté
      * serveur, puis synchronise le contenu HTML actuel dans son fichier
@@ -17165,6 +17195,47 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
   else boot();
+})();
+</script>
+<script>
+/* ============================================================================
+   CDC V8 — durcissement preview (§12 / SEC-01) + bouton « Améliore le design »
+   (§11). Le bloc ne touche jamais au script principal : injection DOM seule.
+   ============================================================================ */
+(function () {
+  'use strict';
+  function harden(frame) {
+    if (frame && frame.tagName === 'IFRAME' && !frame.hasAttribute('sandbox')) {
+      frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups');
+    }
+  }
+  function bootV8() {
+    var wrapper = document.getElementById('previewFrameWrapper');
+    if (wrapper) {
+      Array.prototype.forEach.call(wrapper.querySelectorAll('iframe'), harden);
+      if (window.MutationObserver) {
+        new MutationObserver(function (muts) {
+          muts.forEach(function (m) { Array.prototype.forEach.call(m.addedNodes, harden); });
+        }).observe(wrapper, { childList: true, subtree: true });
+      }
+    }
+    var anchor = document.getElementById('btnWsTab-preview');
+    if (anchor && !document.getElementById('btnDesignImprove')) {
+      var btn = document.createElement('button');
+      btn.id = 'btnDesignImprove';
+      btn.type = 'button';
+      btn.title = 'Analyse esthétique puis amélioration contrôlée (CDC V8 §8/§11)';
+      btn.setAttribute('class', anchor.getAttribute('class') || '');
+      btn.textContent = '✨ Améliore le design';
+      btn.addEventListener('click', function () {
+        if (typeof window.volacoDesignImprove === 'function') window.volacoDesignImprove();
+        else alert('Module d amélioration indisponible (script principal non chargé).');
+      });
+      if (anchor.parentNode) anchor.parentNode.insertBefore(btn, anchor.nextSibling);
+    }
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bootV8);
+  else bootV8();
 })();
 </script>
 </body></html>
