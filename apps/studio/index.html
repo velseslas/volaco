@@ -17238,4 +17238,106 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
   else bootV8();
 })();
 </script>
+<script>
+/* ============================================================================
+   CDC §35 — Connexion JWT du Studio (production). Le Studio n'avait AUCUN
+   flux d'authentification branché : en production fail-closed, toute requête
+   API échouait en 401. Barre minimale : inscription / connexion via
+   /api/v1/auth/*, jeton stocké dans 'vibecode_auth_token' (clé déjà lue par
+   studioApiHeaders via getAuthToken).
+   ============================================================================ */
+(function () {
+  'use strict';
+  var TOKEN_KEY = 'vibecode_auth_token';
+
+  function getToken() {
+    try { return localStorage.getItem(TOKEN_KEY) || ''; } catch (e) { return ''; }
+  }
+
+  function buildBar() {
+    var bar = document.createElement('div');
+    bar.id = 'volacoAuthBar';
+    bar.style.cssText = 'position:fixed;top:10px;right:10px;z-index:2147483000;display:flex;gap:6px;align-items:center;'
+      + 'background:rgba(9,11,20,.95);border:1px solid #1f2937;border-radius:12px;padding:6px 10px;'
+      + 'font:12px/1.4 system-ui,sans-serif;color:#e2e8f0;box-shadow:0 4px 16px rgba(0,0,0,.4)';
+
+    var status = document.createElement('span');
+    status.id = 'volacoAuthStatus';
+    status.style.cssText = 'max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    bar.appendChild(status);
+
+    var email = document.createElement('input');
+    email.id = 'volacoAuthEmail';
+    email.type = 'email';
+    email.placeholder = 'email';
+    var pass = document.createElement('input');
+    pass.id = 'volacoAuthPass';
+    pass.type = 'password';
+    pass.placeholder = 'mot de passe';
+    var inputStyle = 'background:#0b0f1c;border:1px solid #24304d;border-radius:8px;color:#e2e8f0;padding:4px 8px;width:140px';
+    email.style.cssText = inputStyle;
+    pass.style.cssText = inputStyle;
+    bar.appendChild(email);
+    bar.appendChild(pass);
+
+    function authAction(mode) {
+      var e = email.value.trim(), p = pass.value;
+      if (!e || !p) { status.textContent = 'Email + mot de passe requis'; return; }
+      status.textContent = mode === 'signup' ? 'Inscription…' : 'Connexion…';
+      fetch('/api/v1/auth/' + mode, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: e, password: p })
+      }).then(function (res) {
+        return res.json().then(function (data) { return { ok: res.ok, data: data }; });
+      }).then(function (r) {
+        if (!r.ok) {
+          status.textContent = (r.data && r.data.error && r.data.error.message) || 'Échec (' + r.status + ')';
+          return;
+        }
+        var token = r.data.token || r.data.jwt || '';
+        if (!token) { status.textContent = 'Réponse sans jeton'; return; }
+        try { localStorage.setItem(TOKEN_KEY, token); } catch (e2) { }
+        status.textContent = 'Connecté ✓';
+        location.reload();
+      }).catch(function () { status.textContent = 'Serveur injoignable'; });
+    }
+
+    function button(label, mode) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = label;
+      b.style.cssText = 'background:#1d4ed8;color:#fff;border:0;border-radius:8px;padding:5px 10px;cursor:pointer;font-weight:600';
+      b.addEventListener('click', function () { authAction(mode); });
+      return b;
+    }
+
+    bar.appendChild(button('Inscription', 'signup'));
+    bar.appendChild(button('Connexion', 'login'));
+
+    var out = document.createElement('button');
+    out.type = 'button';
+    out.textContent = 'Quitter';
+    out.title = 'Se déconnecter';
+    out.style.cssText = 'background:transparent;color:#94a3b8;border:1px solid #24304d;border-radius:8px;padding:4px 8px;cursor:pointer';
+    out.addEventListener('click', function () {
+      try { localStorage.removeItem(TOKEN_KEY); } catch (e3) { }
+      status.textContent = 'Déconnecté';
+      location.reload();
+    });
+    bar.appendChild(out);
+
+    document.body.appendChild(bar);
+    return status;
+  }
+
+  function bootAuth() {
+    var status = buildBar();
+    status.textContent = getToken() ? 'Connecté ✓' : 'Non connecté — inscris-toi ou connecte-toi';
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bootAuth);
+  else bootAuth();
+})();
+</script>
 </body></html>
