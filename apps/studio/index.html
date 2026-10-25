@@ -878,14 +878,47 @@
                 </div>
                 <span class="active-nav-badge text-[9px] bg-violet-500/30 text-violet-300 px-1.5 py-0.5 rounded-full font-bold font-mono">Actif</span>
               </button>
+
+              <button onclick="switchSystemView('mcp'); toggleProjectDropdown();" id="menuNav-mcp" class="w-full text-left px-2.5 py-1.5 rounded-xl text-xs text-slate-300 hover:bg-[#151c33] hover:text-white flex items-center justify-between transition group">
+                <div class="flex items-center space-x-2.5">
+                  <div class="w-6 h-6 rounded-lg bg-emerald-500/15 text-emerald-400 flex items-center justify-center text-xs">
+                    <i class="fa-solid fa-plug-circle-bolt"></i>
+                  </div>
+                  <div>
+                    <div class="font-bold text-white text-xs">MCP</div>
+                    <div class="text-[9px] text-slate-400">Model Context Protocol</div>
+                  </div>
+                </div>
+                <span class="active-nav-badge hidden text-[9px] bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded font-bold font-mono">Actif</span>
+              </button>
+
+              <button onclick="switchSystemView('connecteurs'); toggleProjectDropdown();" id="menuNav-connecteurs" class="w-full text-left px-2.5 py-1.5 rounded-xl text-xs text-slate-300 hover:bg-[#151c33] hover:text-white flex items-center justify-between transition group">
+                <div class="flex items-center space-x-2.5">
+                  <div class="w-6 h-6 rounded-lg bg-cyan-500/15 text-cyan-400 flex items-center justify-center text-xs">
+                    <i class="fa-solid fa-satellite-dish"></i>
+                  </div>
+                  <div>
+                    <div class="font-bold text-white text-xs">Connecteurs</div>
+                    <div class="text-[9px] text-slate-400">Fournisseurs IA &amp; services</div>
+                  </div>
+                </div>
+                <span class="active-nav-badge hidden text-[9px] bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded font-bold font-mono">Actif</span>
+              </button>
+
+              <button onclick="switchSystemView('skills'); toggleProjectDropdown();" id="menuNav-skills" class="w-full text-left px-2.5 py-1.5 rounded-xl text-xs text-slate-300 hover:bg-[#151c33] hover:text-white flex items-center justify-between transition group">
+                <div class="flex items-center space-x-2.5">
+                  <div class="w-6 h-6 rounded-lg bg-orange-500/15 text-orange-400 flex items-center justify-center text-xs">
+                    <i class="fa-solid fa-wand-magic-sparkles"></i>
+                  </div>
+                  <div>
+                    <div class="font-bold text-white text-xs">Skills</div>
+                    <div class="text-[9px] text-slate-400">Capacités des agents</div>
+                  </div>
+                </div>
+                <span class="active-nav-badge hidden text-[9px] bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded font-bold font-mono">Actif</span>
+              </button>
             </div>
 
-            <!-- Liste des Projets -->
-            <div class="border-t border-[#171c30] pt-2 px-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-wider flex justify-between items-center">
-              <span>Mes Projets</span>
-              <span id="projectCountBadge" class="text-[9px] bg-violet-950 text-violet-300 px-1.5 py-0.5 rounded-full font-bold">4</span>
-            </div>
-            <div id="projectDropdownList" class="space-y-1 max-h-60 overflow-y-auto"></div>
             <div class="border-t border-[#171c30] pt-1.5 mt-1.5">
               <button onclick="openNewProjectModal()" class="w-full px-2.5 py-1.5 text-xs text-amber-400 hover:bg-[#12162a] rounded-xl flex items-center space-x-2 font-semibold transition">
                 <i class="fa-solid fa-plus text-xs"></i>
@@ -2800,6 +2833,97 @@
   </div>
 
   <!-- ==================== VUE 4 : PAGE DES PARAMÈTRES (PLEIN ÉCRAN) ==================== -->
+  <!-- ==================== VUE MCP (Model Context Protocol) ==================== -->
+  <div id="view-mcp" class="flex-1 flex-col overflow-y-auto hidden bg-[#06080e]">
+    <div class="sticky top-0 z-20 bg-[#06080e]/95 backdrop-blur border-b border-[#141a2e] px-6 py-4 flex items-center justify-between">
+      <div class="flex items-center space-x-3">
+        <div class="w-9 h-9 rounded-xl bg-emerald-500/15 text-emerald-400 flex items-center justify-center"><i class="fa-solid fa-plug-circle-bolt"></i></div>
+        <div>
+          <div class="text-sm font-bold text-white">MCP — Model Context Protocol</div>
+          <div class="text-[10px] text-slate-500">Serveurs d'outils découverts par handshake réel</div>
+        </div>
+      </div>
+      <button onclick="switchSystemView('workspace')" class="px-3 py-1.5 rounded-xl text-xs bg-[#0e1220] border border-[#1c223a] text-slate-300 hover:text-white transition"><i class="fa-solid fa-arrow-left mr-1.5"></i>Retour</button>
+    </div>
+    <div class="px-6 py-5 max-w-4xl mx-auto space-y-4">
+      <div class="rounded-2xl border border-emerald-900/40 bg-emerald-950/20 p-4 text-xs text-emerald-300/80">
+        <i class="fa-solid fa-circle-info mr-1.5"></i>Chaque serveur est interrogé <b>réellement</b> (handshake MCP stdio) : statut en ligne = handshake + liste d'outils réussis à l'instant.
+      </div>
+      <button onclick="renderMcpView()" class="px-4 py-2 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white transition shadow-lg shadow-emerald-600/20"><i class="fa-solid fa-rotate mr-2"></i>Rafraîchir le handshake</button>
+      <div id="mcpServersList" class="space-y-3">
+        <div class="text-xs text-slate-500 italic"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Handshake MCP en cours…</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== VUE CONNECTEURS ==================== -->
+  <div id="view-connecteurs" class="flex-1 flex-col overflow-y-auto hidden bg-[#06080e]">
+    <div class="sticky top-0 z-20 bg-[#06080e]/95 backdrop-blur border-b border-[#141a2e] px-6 py-4 flex items-center justify-between">
+      <div class="flex items-center space-x-3">
+        <div class="w-9 h-9 rounded-xl bg-cyan-500/15 text-cyan-400 flex items-center justify-center"><i class="fa-solid fa-satellite-dish"></i></div>
+        <div>
+          <div class="text-sm font-bold text-white">Connecteurs</div>
+          <div class="text-[10px] text-slate-500">Fournisseurs IA du catalogue & services branchés</div>
+        </div>
+      </div>
+      <button onclick="switchSystemView('workspace')" class="px-3 py-1.5 rounded-xl text-xs bg-[#0e1220] border border-[#1c223a] text-slate-300 hover:text-white transition"><i class="fa-solid fa-arrow-left mr-1.5"></i>Retour</button>
+    </div>
+    <div class="px-6 py-5 max-w-4xl mx-auto space-y-5">
+      <div>
+        <div class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Fournisseurs IA (catalogue réel)</div>
+        <div id="connecteursProviders" class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div class="text-xs text-slate-500 italic"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Chargement du catalogue…</div>
+        </div>
+      </div>
+      <div>
+        <div class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Images & services externes</div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div class="rounded-2xl border border-[#1a2138] bg-[#0b0e1b] p-4">
+            <div class="flex items-center justify-between mb-1.5">
+              <div class="font-bold text-white text-xs"><i class="fa-solid fa-image mr-1.5 text-pink-400"></i>Pollinations (images)</div>
+              <span class="text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400">GRATUIT</span>
+            </div>
+            <div class="text-[10px] text-slate-500">Génération d'images sans clé — provider par défaut du registre image.</div>
+          </div>
+          <div class="rounded-2xl border border-[#1a2138] bg-[#0b0e1b] p-4">
+            <div class="flex items-center justify-between mb-1.5">
+              <div class="font-bold text-white text-xs"><i class="fa-solid fa-cloud mr-1.5 text-sky-400"></i>Unsplash / Pexels</div>
+              <span class="text-[9px] font-bold px-2 py-0.5 rounded-full bg-slate-700 text-slate-400">OPTIONNEL</span>
+            </div>
+            <div class="text-[10px] text-slate-500">Photos réelles — activables via les Réglages (clés transportées au serveur).</div>
+          </div>
+        </div>
+      </div>
+      <div class="rounded-2xl border border-cyan-900/40 bg-cyan-950/20 p-4 text-xs text-cyan-300/80">
+        <i class="fa-solid fa-shield-halved mr-1.5"></i>Sécurité : une clé client rejetée (401) retombe automatiquement sur la clé serveur (.env) — une ancienne clé ne bloque plus jamais la génération.
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== VUE SKILLS ==================== -->
+  <div id="view-skills" class="flex-1 flex-col overflow-y-auto hidden bg-[#06080e]">
+    <div class="sticky top-0 z-20 bg-[#06080e]/95 backdrop-blur border-b border-[#141a2e] px-6 py-4 flex items-center justify-between">
+      <div class="flex items-center space-x-3">
+        <div class="w-9 h-9 rounded-xl bg-orange-500/15 text-orange-400 flex items-center justify-center"><i class="fa-solid fa-wand-magic-sparkles"></i></div>
+        <div>
+          <div class="text-sm font-bold text-white">Skills — capacités des agents</div>
+          <div class="text-[10px] text-slate-500">Matrice de capacités déclaratives (moindre privilège)</div>
+        </div>
+      </div>
+      <button onclick="switchSystemView('workspace')" class="px-3 py-1.5 rounded-xl text-xs bg-[#0e1220] border border-[#1c223a] text-slate-300 hover:text-white transition"><i class="fa-solid fa-arrow-left mr-1.5"></i>Retour</button>
+    </div>
+    <div class="px-6 py-5 max-w-4xl mx-auto space-y-4">
+      <div class="rounded-2xl border border-orange-900/40 bg-orange-950/20 p-4 text-xs text-orange-300/80">
+        <i class="fa-solid fa-lock mr-1.5"></i>Chaque agent déclare ses capacités (READ / mutations / tests / build). Le DENY est implicite : tout ce qui n'est pas listé est interdit — enforceé par le Tool Registry et testé.
+      </div>
+      <div id="skillsAgentsList" class="grid grid-cols-1 sm:grid-cols-2 gap-3"></div>
+      <div>
+        <div class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Outils standards du Tool Registry (12 + alias)</div>
+        <div id="skillsToolsList" class="flex flex-wrap gap-2"></div>
+      </div>
+    </div>
+  </div>
+
   <div id="view-settings" class="flex-1 flex-col overflow-y-auto hidden bg-[#06080e]">
     <!-- Top Fixed Bar with Back Button -->
     <header class="h-16 border-b border-[#141828] bg-[#070911]/90 backdrop-blur px-8 flex items-center justify-between sticky top-0 z-30">
@@ -6919,20 +7043,8 @@ ${sections}
     }
 
     function renderProjectDropdown() {
-      const list = document.getElementById('projectDropdownList');
-      const badge = document.getElementById('projectCountBadge');
-      if (badge) badge.innerText = userProjects.length;
-      if (!list) return;
-
-      list.innerHTML = userProjects.map(p => `
-        <div onclick="openProject('${p.id}')" class="p-2 rounded-xl flex items-center justify-between cursor-pointer transition ${p.id === activeProjectId ? 'bg-violet-950/60 border border-violet-800/50 text-white font-bold' : 'hover:bg-[#12162a] text-slate-300'}">
-          <div class="flex items-center space-x-2">
-            <span class="text-sm">${p.icon}</span>
-            <span class="text-xs truncate max-w-[170px]">${p.name}</span>
-          </div>
-          ${p.id === activeProjectId ? '<span class="text-emerald-400 text-[10px]">● Actif</span>' : ''}
-        </div>
-      `).join('');
+      // Liste des projets retirée du menu déroulant (elle vit dans le
+      // Tableau de bord) — la fonction reste un no-op pour les appelants.
     }
 
     function toggleProjectDropdown() {
@@ -7214,7 +7326,7 @@ npx serve .
         return;
       }
 
-      ['home', 'dashboard', 'workspace', 'settings'].forEach(v => {
+      ['home', 'dashboard', 'workspace', 'settings', 'mcp', 'connecteurs', 'skills'].forEach(v => {
         const p = document.getElementById('view-' + v);
         const b = document.getElementById('sysBtn-' + v);
         const mb = document.getElementById('menuNav-' + v);
@@ -7244,6 +7356,15 @@ npx serve .
       }
       if (viewName === 'dashboard') {
         renderDashboardProjects();
+      }
+      if (viewName === 'mcp') {
+        renderMcpView();
+      }
+      if (viewName === 'connecteurs') {
+        renderConnecteursView();
+      }
+      if (viewName === 'skills') {
+        renderSkillsView();
       }
     }
 
@@ -17428,6 +17549,165 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bootLoginPage);
   else bootLoginPage();
+})();
+</script>
+<script>
+/* ============================================================================
+   VUES MCP / CONNECTEURS / SKILLS — données réelles uniquement.
+   - MCP : GET /api/v1/mcp/servers (handshake stdio réel côté serveur)
+   - Connecteurs : GET /api/v1/ai/providers (catalogue persisté)
+   - Skills : matrice des 12 agents CDC (miroir de agent/capabilities.ts)
+     + les 12 outils standards (nom, risque, coût) du Tool Registry.
+   ============================================================================ */
+(function () {
+  'use strict';
+
+  function authHeaders() {
+    var token = '';
+    try { token = localStorage.getItem('vibecode_auth_token') || ''; } catch (e) { token = ''; }
+    var h = { 'Content-Type': 'application/json' };
+    if (token) h['Authorization'] = 'Bearer ' + token;
+    return h;
+  }
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  /* ---------------- MCP ---------------- */
+  window.renderMcpView = function () {
+    var box = document.getElementById('mcpServersList');
+    if (!box) return;
+    box.innerHTML = '<div class="text-xs text-slate-500 italic"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Handshake MCP en cours…</div>';
+    fetch('/api/v1/mcp/servers', { headers: authHeaders() })
+      .then(function (res) { return res.json().then(function (d) { return { ok: res.ok, d: d }; }); })
+      .then(function (r) {
+        if (!r.ok || !r.d || !Array.isArray(r.d.servers)) {
+          box.innerHTML = '<div class="rounded-xl border border-red-900/50 bg-red-950/30 p-4 text-xs text-red-300">Catalogue MCP indisponible (' + (r.status || '?') + ').</div>';
+          return;
+        }
+        if (r.d.servers.length === 0) {
+          box.innerHTML = '<div class="text-xs text-slate-500 italic">Aucun serveur MCP déclaré dans le catalogue.</div>';
+          return;
+        }
+        box.innerHTML = r.d.servers.map(function (s) {
+          var online = !!s.online;
+          var badge = online
+            ? '<span class="text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400">EN LIGNE</span>'
+            : '<span class="text-[9px] font-bold px-2 py-0.5 rounded-full bg-red-500/15 text-red-400">HORS LIGNE</span>';
+          var tools = (s.tools || []).map(function (t) {
+            return '<span class="text-[10px] px-2 py-0.5 rounded-full bg-[#12162a] border border-[#1e2748] text-slate-300 font-mono">' + esc(t) + '</span>';
+          }).join(' ');
+          var detail = online
+            ? (tools ? '<div class="flex flex-wrap gap-1.5 mt-2">' + tools + '</div>'
+                    : '<div class="text-[10px] text-slate-500 mt-2 italic">Aucun outil exposé par ce serveur.</div>')
+            : '<div class="text-[10px] text-red-400/80 mt-2 font-mono break-all">' + esc(s.error || 'échec de handshake') + '</div>';
+          return '<div class="rounded-2xl border ' + (online ? 'border-emerald-900/50 bg-emerald-950/10' : 'border-[#1a2138] bg-[#0b0e1b]') + ' p-4">'
+            + '<div class="flex items-center justify-between mb-1">'
+            + '<div class="font-bold text-white text-xs"><i class="fa-solid fa-server mr-1.5 ' + (online ? 'text-emerald-400' : 'text-slate-500') + '"></i>' + esc(s.id) + '</div>'
+            + badge + '</div>'
+            + '<div class="text-[10px] text-slate-400">' + esc(s.description || '') + '</div>'
+            + detail + '</div>';
+        }).join('');
+      })
+      .catch(function () {
+        box.innerHTML = '<div class="rounded-xl border border-red-900/50 bg-red-950/30 p-4 text-xs text-red-300">Serveur injoignable.</div>';
+      });
+  };
+
+  /* ---------------- CONNECTEURS ---------------- */
+  window.renderConnecteursView = function () {
+    var box = document.getElementById('connecteursProviders');
+    if (!box) return;
+    box.innerHTML = '<div class="text-xs text-slate-500 italic"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Chargement du catalogue…</div>';
+    fetch('/api/v1/ai/providers', { headers: authHeaders() })
+      .then(function (res) { return res.json().then(function (d) { return { ok: res.ok, d: d }; }); })
+      .then(function (r) {
+        if (!r.ok || !r.d || !Array.isArray(r.d.providers)) {
+          box.innerHTML = '<div class="rounded-xl border border-red-900/50 bg-red-950/30 p-4 text-xs text-red-300">Catalogue indisponible.</div>';
+          return;
+        }
+        var active = r.d.active;
+        box.innerHTML = r.d.providers.map(function (p) {
+          var isActive = active === p.providerId;
+          var badge = isActive
+            ? '<span class="text-[9px] font-bold px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300">ACTIF</span>'
+            : '<span class="text-[9px] font-bold px-2 py-0.5 rounded-full bg-slate-700 text-slate-400">DISPONIBLE</span>';
+          return '<div class="rounded-2xl border ' + (isActive ? 'border-cyan-700/50 bg-cyan-950/10' : 'border-[#1a2138] bg-[#0b0e1b]') + ' p-4">'
+            + '<div class="flex items-center justify-between mb-1">'
+            + '<div class="font-bold text-white text-xs"><i class="fa-solid fa-microchip mr-1.5 text-cyan-400"></i>' + esc(p.providerName || p.providerId) + '</div>'
+            + badge + '</div>'
+            + '<div class="text-[10px] text-slate-400">Modèle par défaut : <span class="font-mono text-slate-300">' + esc(p.defaultModel || '—') + '</span></div>'
+            + '<div class="text-[10px] text-slate-500 mt-1">Identifiant catalogue : <span class="font-mono">' + esc(p.providerId) + '</span></div>'
+            + '</div>';
+        }).join('');
+      })
+      .catch(function () {
+        box.innerHTML = '<div class="rounded-xl border border-red-900/50 bg-red-950/30 p-4 text-xs text-red-300">Serveur injoignable.</div>';
+      });
+  };
+
+  /* ---------------- SKILLS ---------------- */
+  var SKILLS_AGENTS = [
+    { nom: 'UI Agent', couleur: 'violet', caps: { lecture: true, mutations: true, tests: true, build: true }, ops: ['read_file', 'search_code', 'preview_mutation', 'execute_mutation'] },
+    { nom: 'Frontend Agent (UI)', couleur: 'violet', caps: { lecture: true, mutations: true, tests: true, build: true }, ops: ['read_file', 'search_code', 'preview_mutation', 'execute_mutation'] },
+    { nom: 'Backend Agent', couleur: 'indigo', caps: { lecture: true, mutations: true, tests: true, build: true }, ops: ['read_file', 'search_code', 'inspect_route', 'execute_mutation'] },
+    { nom: 'Data Agent', couleur: 'sky', caps: { lecture: true, mutations: true, tests: true, build: false }, ops: ['read_file', 'search_code', 'execute_mutation'] },
+    { nom: 'Testing Agent', couleur: 'amber', caps: { lecture: true, mutations: true, tests: true, build: true }, ops: ['read_file', 'run_tests', 'run_typecheck'] },
+    { nom: 'Security Agent', couleur: 'red', caps: { lecture: true, mutations: false, tests: true, build: false }, ops: ['read_file', 'search_code', 'inspect_graph', 'analyze_impact'] },
+    { nom: 'Deployment Agent', couleur: 'emerald', caps: { lecture: true, mutations: false, tests: false, build: false }, ops: ['read_file', 'analyze_code'] },
+    { nom: 'Visual Agent', couleur: 'fuchsia', caps: { lecture: true, mutations: false, tests: false, build: false }, ops: ['read_file', 'inspect_graph', 'analyze_impact'] },
+    { nom: 'Performance Agent', couleur: 'orange', caps: { lecture: true, mutations: false, tests: false, build: false }, ops: ['read_file', 'analyze_code', 'analyze_impact'] },
+    { nom: 'Accessibility Agent', couleur: 'teal', caps: { lecture: true, mutations: false, tests: false, build: false }, ops: ['read_file', 'analyze_code'] },
+    { nom: 'Audit Agent', couleur: 'yellow', caps: { lecture: true, mutations: false, tests: false, build: false }, ops: ['read_file', 'search_code', 'inspect_graph'] },
+    { nom: 'Product Intelligence Agent', couleur: 'pink', caps: { lecture: true, mutations: false, tests: false, build: false }, ops: ['read_file', 'search_code', 'analyze_impact'] }
+  ];
+
+  var SKILLS_TOOLS = [
+    { n: 'READ_PROJECT', r: 'LOW', c: 'FREE' }, { n: 'READ_FILE', r: 'LOW', c: 'FREE' },
+    { n: 'SEARCH_CODE', r: 'LOW', c: 'FREE' }, { n: 'ANALYZE_CODE', r: 'LOW', c: 'LOW' },
+    { n: 'GET_APPLICATION_DNA', r: 'LOW', c: 'FREE' }, { n: 'GET_SEMANTIC_GRAPH', r: 'LOW', c: 'FREE' },
+    { n: 'ANALYZE_IMPACT', r: 'LOW', c: 'LOW' }, { n: 'BUILD_MUTATION_PLAN', r: 'MEDIUM', c: 'MEDIUM' },
+    { n: 'PREVIEW_MUTATION', r: 'MEDIUM', c: 'MEDIUM' }, { n: 'EXECUTE_MUTATION', r: 'HIGH', c: 'HIGH' },
+    { n: 'VALIDATE_RESULT', r: 'MEDIUM', c: 'MEDIUM' }, { n: 'RUN_TESTS', r: 'MEDIUM', c: 'MEDIUM' }
+  ];
+
+  function capBadge(ok, label, couleur) {
+    var cls = ok
+      ? 'bg-' + couleur + '-500/15 text-' + couleur + '-400'
+      : 'bg-slate-800 text-slate-600 line-through';
+    return '<span class="text-[9px] font-bold px-1.5 py-0.5 rounded ' + cls + '">' + label + '</span>';
+  }
+
+  window.renderSkillsView = function () {
+    var box = document.getElementById('skillsAgentsList');
+    if (box) {
+      box.innerHTML = SKILLS_AGENTS.map(function (a) {
+        return '<div class="rounded-2xl border border-[#1a2138] bg-[#0b0e1b] p-4">'
+          + '<div class="font-bold text-white text-xs mb-2"><i class="fa-solid fa-user-gear mr-1.5 text-' + a.couleur + '-400"></i>' + esc(a.nom) + '</div>'
+          + '<div class="flex flex-wrap gap-1.5 mb-2">'
+          + capBadge(a.caps.lecture, 'READ', 'blue')
+          + capBadge(a.caps.mutations, 'MUTATIONS', 'violet')
+          + capBadge(a.caps.tests, 'TESTS', 'amber')
+          + capBadge(a.caps.build, 'BUILD', 'emerald')
+          + '</div>'
+          + '<div class="flex flex-wrap gap-1">' + a.ops.map(function (o) {
+              return '<span class="text-[9px] px-1.5 py-0.5 rounded bg-[#12162a] border border-[#1e2748] text-slate-400 font-mono">' + esc(o) + '</span>';
+            }).join(' ') + '</div>'
+          + '</div>';
+      }).join('');
+    }
+    var tools = document.getElementById('skillsToolsList');
+    if (tools) {
+      tools.innerHTML = SKILLS_TOOLS.map(function (t) {
+        var riskCls = t.r === 'HIGH' ? 'text-red-400 border-red-900/50' : t.r === 'MEDIUM' ? 'text-amber-400 border-amber-900/50' : 'text-emerald-400 border-emerald-900/50';
+        return '<span class="text-[10px] px-2 py-1 rounded-lg bg-[#0b0e1b] border ' + riskCls + ' font-mono">' + esc(t.n)
+          + ' <span class="text-slate-500">· risque ' + t.r + ' · coût ' + t.c + '</span></span>';
+      }).join('');
+    }
+  };
 })();
 </script>
 </body></html>
