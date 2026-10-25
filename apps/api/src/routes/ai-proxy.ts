@@ -280,6 +280,29 @@ export async function handleAiProxyRoutes(
         body: JSON.stringify(upstreamPayload),
         signal: controller.signal
       });
+      // FIX 401 récurrent — une clé fournie par le client (X-Mistral-Api-Key,
+      // souvent une ancienne clé révoquée stockée dans le navigateur) ne doit
+      // pas faire échouer la requête quand le serveur possède une clé valide :
+      // retente UNE fois avec la clé serveur, sans compter comme tentative.
+      if (res.status === 401 && clientProvidedKey && requestedProvider === 'mistral') {
+        const envMistralKey = (providerEnvKey('mistral') || '').trim();
+        if (envMistralKey && apiKey !== envMistralKey) {
+          logger.warn('Proxy IA : clé client rejetée (401), nouvelle tentative avec la clé serveur', {
+            component: 'ai-proxy',
+            tenantId: context.tenantId,
+            rejectedKeyHint: `${clientProvidedKey.slice(0, 4)}...${clientProvidedKey.slice(-4)} (len ${clientProvidedKey.length})`
+          });
+          await res.arrayBuffer().catch(() => null);
+          const retry = await fetch(upstreamUrl, {
+            method: 'POST',
+            headers: { ...upstreamHeaders, Authorization: `Bearer ${envMistralKey}` },
+            body: JSON.stringify(upstreamPayload),
+            signal: controller.signal
+          });
+          upstreamResponse = retry;
+          break;
+        }
+      }
       if ((res.status === 429 || res.status >= 500) && attempt < PROXY_MAX_ATTEMPTS) {
         await res.arrayBuffer().catch(() => null);
         const retryAfter = Number.parseInt(res.headers.get('retry-after') ?? '', 10);

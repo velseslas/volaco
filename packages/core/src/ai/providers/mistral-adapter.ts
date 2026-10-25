@@ -4,6 +4,7 @@
  */
 
 import { aiUsageTracker, MODEL_PRICING } from '../usage.js';
+import { logger } from '../../logger.js';
 import {
   AIProviderAdapter,
   AIProviderAuthError,
@@ -36,6 +37,34 @@ export class MistralProviderAdapter implements AIProviderAdapter {
 
   constructor(customFetch?: typeof fetch) {
     this.fetchFn = customFetch ?? fetch;
+  }
+
+  /**
+   * FIX 401 récurrent — la clé fournie par l'appelant (souvent une ancienne
+   * clé révoquée stockée dans le navigateur et transportée par l'en-tête
+   * X-Mistral-Api-Key) peut être rejetée 401 par Mistral alors que le
+   * serveur possède une clé valide dans .env. On retente UNE fois avec la
+   * clé serveur : une clé client périmée ne doit jamais bloquer la
+   * génération quand une clé valide existe côté serveur.
+   */
+  private async fetchMistralWithFallback(
+    endpoint: string,
+    init: { method: string; headers: Record<string, string>; body: string; signal: AbortSignal },
+    attemptedKey: string
+  ): Promise<Response> {
+    const response = await this.fetchFn(endpoint, init);
+    const envKey = process.env.MISTRAL_API_KEY?.trim();
+    if (response.status === 401 && envKey && attemptedKey.trim() !== envKey) {
+      logger.warn('Clé client Mistral rejetée (401) — nouvelle tentative avec la clé serveur (.env)', {
+        component: 'mistral-adapter',
+        rejectedKeyHint: `${attemptedKey.slice(0, 4)}...${attemptedKey.slice(-4)} (len ${attemptedKey.length})`
+      });
+      return this.fetchFn(endpoint, {
+        ...init,
+        headers: { ...init.headers, Authorization: `Bearer ${envKey}` }
+      });
+    }
+    return response;
   }
 
   public async generate(
@@ -123,17 +152,21 @@ export class MistralProviderAdapter implements AIProviderAdapter {
       });
 
       try {
-        const response = await this.fetchFn(endpoint, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${apiKey.trim()}`,
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-            ...(credentials?.customHeaders ?? {})
+        const response = await this.fetchMistralWithFallback(
+          endpoint,
+          {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${apiKey.trim()}`,
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+              ...(credentials?.customHeaders ?? {})
+            },
+            body: JSON.stringify(requestBody),
+            signal: controller.signal
           },
-          body: JSON.stringify(requestBody),
-          signal: controller.signal
-        });
+          apiKey
+        );
 
       const latencyMs = Date.now() - startTime;
 
@@ -361,22 +394,26 @@ export class MistralProviderAdapter implements AIProviderAdapter {
         streamTerminalEmitted = true;
       };
 
-      const response = await this.fetchFn(endpoint, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey.trim()}`,
-          'Content-Type': 'application/json',
-          'Accept': 'text/event-stream'
+      const response = await this.fetchMistralWithFallback(
+        endpoint,
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey.trim()}`,
+            'Content-Type': 'application/json',
+            'Accept': 'text/event-stream'
+          },
+          body: JSON.stringify({
+            model,
+            messages,
+            temperature: request.temperature ?? 0.4,
+            max_tokens: request.maxTokens ?? 8192,
+            stream: true
+          }),
+          signal: controller.signal
         },
-        body: JSON.stringify({
-          model,
-          messages,
-          temperature: request.temperature ?? 0.4,
-          max_tokens: request.maxTokens ?? 8192,
-          stream: true
-        }),
-        signal: controller.signal
-      });
+        apiKey
+      );
 
       if (!response.ok) {
         let errMessage = `HTTP ${response.status}`;

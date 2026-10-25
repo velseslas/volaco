@@ -17411,4 +17411,193 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
   else bootAuth();
 })();
 </script>
+<script>
+/* ============================================================================
+   PAGE D'ACCUEIL VOLACO — connexion / inscription (style Hello!, couleurs
+   volcan). Remplace la barre flottante quand aucune session valide :
+   - « Se souvenir de moi » (coché par défaut) : identifiants mémorisés
+     localement + reconnexion automatique invisible au démarrage suivant ;
+   - repli inscription automatique si le compte n'existe pas ;
+   - la session JWT reste le mécanisme réel (isolation + tunnel public).
+   ============================================================================ */
+(function () {
+  'use strict';
+  var TOKEN_KEY = 'vibecode_auth_token';
+  var CREDS_KEY = 'vibecode_remember_creds';
+
+  function lsGet(k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+  function lsDel(k) { try { localStorage.removeItem(k); } catch (e) {} }
+
+  function buildLoginPage() {
+    var page = document.createElement('div');
+    page.id = 'volacoLoginPage';
+    page.style.cssText = 'position:fixed;inset:0;z-index:2147483600;display:flex;align-items:center;justify-content:center;'
+      + 'background:radial-gradient(900px 500px at 15% 10%, rgba(249,115,22,.16), transparent 60%),'
+      + 'radial-gradient(800px 600px at 85% 90%, rgba(239,68,68,.12), transparent 60%),'
+      + 'linear-gradient(160deg, #0A0E1A 0%, #070B14 55%, #0D1117 100%);'
+      + 'font-family:system-ui,-apple-system,Segoe UI,sans-serif;overflow:auto';
+    page.innerHTML = [
+      '<div style="width:min(420px,92vw);padding:36px 34px;border-radius:24px;position:relative;',
+      'background:rgba(13,17,27,.92);border:1px solid rgba(249,115,22,.22);',
+      'box-shadow:0 24px 80px rgba(0,0,0,.55), 0 0 60px rgba(249,115,22,.07);backdrop-filter:blur(8px)">',
+      '  <div style="width:64px;height:64px;margin:0 auto 18px;border-radius:20px;display:flex;align-items:center;justify-content:center;font-size:30px;',
+      'background:linear-gradient(135deg,#F97316,#EF4444);box-shadow:0 8px 30px rgba(249,115,22,.4)">🌋</div>',
+      '  <div style="text-align:center;font-size:13px;letter-spacing:4px;color:#F97316;font-weight:700;margin-bottom:6px">VOLACO STUDIO</div>',
+      '  <h1 style="text-align:center;font-size:34px;margin:0 0 6px;color:#F8FAFC;font-weight:800">Hello&nbsp;!</h1>',
+      '  <p id="volacoLoginSub" style="text-align:center;font-size:14px;color:#94A3B8;margin:0 0 26px">Connecte-toi pour créer avec le volcan.</p>',
+      '  <label style="display:block;font-size:12px;color:#CBD5E1;font-weight:600;margin:0 0 6px">Email</label>',
+      '  <input id="volacoLoginEmail" type="email" placeholder="toi@exemple.com" autocomplete="username"',
+      '    style="width:100%;box-sizing:border-box;padding:12px 14px;margin-bottom:16px;border-radius:12px;border:1px solid #263048;background:#0B1220;color:#E2E8F0;font-size:14px;outline:none">',
+      '  <label style="display:block;font-size:12px;color:#CBD5E1;font-weight:600;margin:0 0 6px">Mot de passe</label>',
+      '  <div style="position:relative;margin-bottom:8px">',
+      '    <input id="volacoLoginPass" type="password" placeholder="••••••••" autocomplete="current-password"',
+      '      style="width:100%;box-sizing:border-box;padding:12px 44px 12px 14px;border-radius:12px;border:1px solid #263048;background:#0B1220;color:#E2E8F0;font-size:14px;outline:none">',
+      '    <button id="volacoLoginEye" type="button" title="Afficher / masquer"',
+      '      style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:0;color:#64748B;cursor:pointer;font-size:15px">👁</button>',
+      '  </div>',
+      '  <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#94A3B8;margin:10px 0 18px;cursor:pointer">',
+      '    <input id="volacoLoginRemember" type="checkbox" checked style="accent-color:#F97316;width:15px;height:15px">',
+      '    <span>Se souvenir de moi <span style="color:#475569">(plus jamais de connexion)</span></span>',
+      '  </label>',
+      '  <button id="volacoLoginSubmit" type="button"',
+      '    style="width:100%;padding:13px;border:0;border-radius:12px;cursor:pointer;font-size:15px;font-weight:700;color:#FFF;',
+      'background:linear-gradient(135deg,#F97316,#EF4444);box-shadow:0 8px 24px rgba(249,115,22,.35);transition:transform .15s">',
+      '    Se connecter</button>',
+      '  <div id="volacoLoginSwitch" style="text-align:center;margin-top:16px;font-size:13px;color:#94A3B8;cursor:pointer">',
+      '    Pas encore de compte ? <span style="color:#F97316;font-weight:600">Créer un compte</span>',
+      '  </div>',
+      '  <div id="volacoLoginError" style="display:none;margin-top:14px;padding:10px 12px;border-radius:10px;font-size:13px;',
+      'background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.35);color:#FCA5A5"></div>',
+      '</div>'
+    ].join('');
+    document.body.appendChild(page);
+    return page;
+  }
+
+  var mode = 'login';
+  var page = null;
+
+  function err(msg) {
+    var el = document.getElementById('volacoLoginError');
+    if (!el) return;
+    el.textContent = msg;
+    el.style.display = msg ? 'block' : 'none';
+  }
+
+  function apiAuth(m, email, pass) {
+    return fetch('/api/v1/auth/' + m, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email, password: pass })
+    }).then(function (res) {
+      return res.json().then(function (data) { return { ok: res.ok, data: data }; });
+    });
+  }
+
+  function doLogin(silent) {
+    var email = (document.getElementById('volacoLoginEmail') || {}).value || '';
+    var pass = (document.getElementById('volacoLoginPass') || {}).value || '';
+    var remember = (document.getElementById('volacoLoginRemember') || {}).checked !== false;
+    email = email.trim();
+    if (!email || !pass) { if (!silent) err('Email et mot de passe requis.'); return; }
+    var btn = document.getElementById('volacoLoginSubmit');
+    if (btn) { btn.disabled = true; btn.textContent = 'Connexion…'; }
+    err('');
+    apiAuth('login', email, pass).then(function (r) {
+      if (!r.ok) {
+        // Compte inexistant → inscription (même comportement que « Entrer »)
+        return apiAuth('signup', email, pass).then(function (s) {
+          if (!s.ok) throw new Error((s.data && s.data.error && s.data.error.message) || ('Échec (' + s.status + ')'));
+          return s;
+        });
+      }
+      return r;
+    }).then(function (r) {
+      var token = r.data && r.data.token;
+      if (!token) throw new Error('Réponse sans jeton');
+      lsSet(TOKEN_KEY, token);
+      if (remember) lsSet(CREDS_KEY, JSON.stringify({ email: email, password: pass }));
+      else lsDel(CREDS_KEY);
+      location.reload();
+    }).catch(function (e) {
+      if (btn) { btn.disabled = false; btn.textContent = mode === 'login' ? 'Se connecter' : 'Créer mon compte'; }
+      if (!silent) err(e && e.message ? e.message : 'Connexion impossible.');
+    });
+  }
+
+  function silentLoginWithRemembered() {
+    var raw = lsGet(CREDS_KEY);
+    if (!raw) return Promise.resolve(false);
+    var creds;
+    try { creds = JSON.parse(raw); } catch (e) { return Promise.resolve(false); }
+    if (!creds || !creds.email || !creds.password) return Promise.resolve(false);
+    return apiAuth('login', creds.email, creds.password).then(function (r) {
+      if (r.ok && r.data && r.data.token) { lsSet(TOKEN_KEY, r.data.token); return true; }
+      lsDel(CREDS_KEY);
+      return false;
+    }).catch(function () { return false; });
+  }
+
+  function tokenValid(t) {
+    return fetch('/api/v1/ai/providers', { headers: { 'Authorization': 'Bearer ' + t } })
+      .then(function (res) { return res.ok; })
+      .catch(function () { return false; });
+  }
+
+  function bootLoginPage() {
+    var t = lsGet(TOKEN_KEY);
+    var bar = document.getElementById('volacoAuthBar');
+    var proceed = function (connected) {
+      if (connected) {
+        if (bar) bar.style.display = '';
+        return; // session valide : page normale, barre discrète « Connecté ✓ »
+      }
+      if (bar) bar.style.display = 'none';
+      page = buildLoginPage();
+      var emailEl = document.getElementById('volacoLoginEmail');
+      var passEl = document.getElementById('volacoLoginPass');
+      var eye = document.getElementById('volacoLoginEye');
+      var sw = document.getElementById('volacoLoginSwitch');
+      var sub = document.getElementById('volacoLoginSub');
+      var submit = document.getElementById('volacoLoginSubmit');
+      var remembered = lsGet(CREDS_KEY);
+      if (remembered) { try { emailEl.value = JSON.parse(remembered).email || ''; } catch (e) {} }
+      if (eye) eye.addEventListener('click', function () {
+        passEl.type = passEl.type === 'password' ? 'text' : 'password';
+      });
+      if (sw) sw.addEventListener('click', function () {
+        mode = mode === 'login' ? 'signup' : 'login';
+        var toSignup = mode === 'signup';
+        sub.textContent = toSignup ? 'Crée ton compte et réveille le volcan.' : 'Connecte-toi pour créer avec le volcan.';
+        submit.textContent = toSignup ? 'Créer mon compte' : 'Se connecter';
+        sw.innerHTML = toSignup ? 'Déjà un compte ? <span style="color:#F97316;font-weight:600">Se connecter</span>'
+                                : 'Pas encore de compte ? <span style="color:#F97316;font-weight:600">Créer un compte</span>';
+        err('');
+      });
+      if (submit) submit.addEventListener('click', function () { doLogin(false); });
+      if (passEl) passEl.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') doLogin(false); });
+    };
+
+    if (t) {
+      tokenValid(t).then(function (ok) {
+        if (ok) { proceed(true); return; }
+        lsDel(TOKEN_KEY);
+        silentLoginWithRemembered().then(function (re) {
+          if (re) { location.reload(); return; }
+          proceed(false);
+        });
+      });
+    } else {
+      silentLoginWithRemembered().then(function (re) {
+        if (re) { location.reload(); return; }
+        proceed(false);
+      });
+    }
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bootLoginPage);
+  else bootLoginPage();
+})();
+</script>
 </body></html>
