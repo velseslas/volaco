@@ -11,7 +11,8 @@
     "security:check": "node scripts/check-secrets.mjs --all",
     "gate1:verify": "node scripts/run_gate1_tests.mjs",
     "gate2:verify": "node scripts/run_gate2_tests.mjs",
-    "start": "node dist/apps/api/src/server.js"
+    "start": "node --env-file=.env dist/apps/api/src/server.js",
+    "start:dev": "node --env-file=.env --watch dist/apps/api/src/server.js"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",

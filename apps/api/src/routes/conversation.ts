@@ -141,7 +141,9 @@ function resolveStreamingAdapter() {
     const fb = aiProviderRegistry.resolve({ preferredProviderId: fallbackId });
     if (fb && 'generateStream' in fb) return fb;
   }
-  return resolved;
+  // FIX P1-C/P3-E — aucun adaptateur streaming disponible : retourne undefined
+  // pour que le caller puisse gérer l'absence proprement (évite TypeError runtime).
+  return undefined;
 }
 
 /**

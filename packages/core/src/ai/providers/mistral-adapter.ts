@@ -283,11 +283,33 @@ export class MistralProviderAdapter implements AIProviderAdapter {
     const model = request.model || process.env.MISTRAL_MODEL || 'codestral-latest';
     const timeoutMs = request.timeoutMs ?? 120000; // 2 minutes pour le streaming
 
-    const messages: { role: 'system' | 'user'; content: string }[] = [];
-    if (request.systemPrompt) {
-      messages.push({ role: 'system', content: request.systemPrompt });
+    // FIX P3-F — support multi-tours dans generateStream : quand request.messages
+    // est fourni (historique conversationnel), il remplace la construction
+    // mono-tour systemPrompt+prompt — identique au comportement de generate().
+    let messages: Record<string, unknown>[];
+    if (request.messages && request.messages.length > 0) {
+      messages = request.messages.map((m) => {
+        const wire: Record<string, unknown> = { role: m.role, content: m.content };
+        if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
+          wire.tool_calls = m.toolCalls.map((tc) => ({
+            id: tc.id,
+            type: 'function',
+            function: { name: tc.name, arguments: tc.arguments }
+          }));
+        }
+        if (m.role === 'tool') {
+          if (m.toolCallId) wire.tool_call_id = m.toolCallId;
+          if (m.name) wire.name = m.name;
+        }
+        return wire;
+      });
+    } else {
+      messages = [];
+      if (request.systemPrompt) {
+        messages.push({ role: 'system', content: request.systemPrompt });
+      }
+      messages.push({ role: 'user', content: request.prompt });
     }
-    messages.push({ role: 'user', content: request.prompt });
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);

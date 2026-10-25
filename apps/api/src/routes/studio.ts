@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
   StudioShellService
 } from '../../../../packages/core/src/studio/index.js';
+import { assertPermission } from '../../../../packages/core/src/identity/permissions.js';
 import { projectStore } from '../../../../packages/core/src/identity/project.js';
 import { projectStateService } from './project-state.js';
 import { fileExplorerService } from './files.js';
@@ -33,6 +34,9 @@ export async function handleStudioRoutes(
     const projectId = parts[0];
 
     if (projectId && parts[1] === 'shell') {
+      // FIX P3-C — assertPermission manquait sur cette route (audit 2026-10-25)
+      assertPermission(context.role, 'PROJECT_READ', requestId);
+
       const viewModel = studioShellService.getShellViewModel(
         context.tenantId,
         projectId,
