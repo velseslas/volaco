@@ -7062,7 +7062,7 @@ ${sections}
       }
     });
 
-    function openProject(id) {
+    function openProject(id, opts = {}) {
       if (hasUnsavedCodeChanges) {
         pendingLeaveAction = () => openProject(id);
         openLeaveCodeModal();
@@ -7087,7 +7087,10 @@ ${sections}
       historyIndex = 0;
       updateUndoRedoButtons();
 
-      switchSystemView('workspace');
+      // Routage hash (Étape B) : l'auto-ouverture du boot (keepHashView)
+      // respecte la vue demandée par l'URL au lieu d'écraser vers workspace.
+      const hashViewActive = HASH_VIEWS.indexOf(currentSystemView) !== -1;
+      switchSystemView(opts.keepHashView && hashViewActive ? currentSystemView : 'workspace');
       const dd = document.getElementById('projectDropdown');
       if (dd) dd.classList.add('hidden');
       showCaptureToast(`Projet "${proj.name}" chargé !`);
@@ -7319,12 +7322,48 @@ npx serve .
     let currentAppHtml = pulseAiExactTemplate;
 
     // View Navigation (Home, Dashboard, Workspace, Settings)
+    // ===== Routage hash pour MCP / Connecteurs / Skills (Étape B) =====
+    // URL ↔ interface : #mcp, #connecteurs, #skills survivent au F5,
+    // alimentent précédent/suivant, sans dupliquer switchSystemView.
+    const HASH_VIEWS = ['mcp', 'connecteurs', 'skills'];
+    let currentSystemView = 'workspace';
+
+    function syncHashForView(viewName) {
+      if (HASH_VIEWS.indexOf(viewName) !== -1) {
+        if (location.hash !== '#' + viewName) location.hash = '#' + viewName;
+      } else if (HASH_VIEWS.some(h => location.hash === '#' + h)) {
+        history.replaceState(null, '', location.pathname + location.search);
+      }
+    }
+
+    window.addEventListener('hashchange', () => {
+      const name = (location.hash || '').replace(/^#/, '');
+      if (HASH_VIEWS.indexOf(name) === -1) return;
+      const panel = document.getElementById('view-' + name);
+      if (panel && !panel.classList.contains('hidden')) return; // déjà active
+      if (pendingLeaveAction) {
+        // sorties non sauvegardées en attente : le hash ne doit pas mentir
+        syncHashForView(currentSystemView);
+        return;
+      }
+      switchSystemView(name);
+    });
+
+    // F5 / ouverture directe : applique le hash présent au chargement.
+    // Différé : le script ci-dessus déclare hasUnsavedCodeChanges plus bas —
+    // un appel immédiat tomberait dans la TDZ.
+    setTimeout(function applyInitialHashRoute() {
+      const name = (location.hash || '').replace(/^#/, '');
+      if (HASH_VIEWS.indexOf(name) !== -1) switchSystemView(name);
+    }, 0);
+
     function switchSystemView(viewName) {
       if (hasUnsavedCodeChanges && viewName !== 'workspace') {
         pendingLeaveAction = () => switchSystemView(viewName);
         openLeaveCodeModal();
         return;
       }
+      currentSystemView = viewName;
 
       ['home', 'dashboard', 'workspace', 'settings', 'mcp', 'connecteurs', 'skills'].forEach(v => {
         const p = document.getElementById('view-' + v);
@@ -7366,6 +7405,7 @@ npx serve .
       if (viewName === 'skills') {
         renderSkillsView();
       }
+      syncHashForView(viewName);
     }
 
     function setWorkspaceSubTab(tab) {

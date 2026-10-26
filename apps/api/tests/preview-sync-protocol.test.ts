@@ -40,7 +40,7 @@ describe('SOURCE UNIQUE : panneau et onglet suivent le projet actif', () => {
     assert.ok(builder.includes('window.parent.postMessage'), 'annonce au parent (intégré uniquement)');
     assert.ok(studio.includes('function postBuilderSync()'), 'helper de synchro (visible partout)');
     assert.ok(studio.includes("rd.command === 'builder-ready'"), 'le Studio écoute l’annonce');
-    const openFn = studio.slice(studio.indexOf('function openProject(id)'));
+    const openFn = studio.slice(studio.indexOf('function openProject(id, opts = {})'));
     assert.ok(openFn.slice(0, 2500).includes('postBuilderSync()'), 'changement de projet → panneau resynchronisé');
   });
 
