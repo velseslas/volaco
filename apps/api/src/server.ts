@@ -671,7 +671,10 @@ export function createApiServer(configOverride: Partial<AppConfig> = {}) {
             'json': 'application/json; charset=utf-8',
             'png': 'image/png',
             'jpg': 'image/jpeg',
-            'svg': 'image/svg+xml'
+            'svg': 'image/svg+xml',
+            'woff2': 'font/woff2',
+            'woff': 'font/woff',
+            'ttf': 'font/ttf'
           };
           if (serveStaticFile(req, res, join(process.cwd(), 'apps/studio', staticStudioFile), mimeMap[ext || ''] || 'application/octet-stream', true)) {
             return;

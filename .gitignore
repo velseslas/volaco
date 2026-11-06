@@ -26,3 +26,7 @@ restauration-*/
 missions-artifacts/
 *.tar.gz
 deploy/huggingface/upload/
+.server-restart.out.log
+.server-restart.err.log
+dist-backup-*/
+.env.bak-*

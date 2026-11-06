@@ -30,8 +30,26 @@
       document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"><\/script>');
     }
   </script>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <!-- Font Awesome LOCAL PRIORITAIRE (conforme CSP stricte 'self') + repli CDN si absent -->
+  <link rel="stylesheet" href="fontawesome/css/all.min.css">
+  <script>
+    // Repli CDN uniquement si la feuille locale n'a pas charg├® (ex. asset manquant).
+    document.addEventListener('DOMContentLoaded', function () {
+      var probe = document.createElement('i');
+      probe.className = 'fa-solid fa-user';
+      probe.style.position = 'absolute'; probe.style.left = '-9999px';
+      document.body.appendChild(probe);
+      var loaded = getComputedStyle(probe, '::before').content !== 'none';
+      probe.remove();
+      if (!loaded) {
+        var l = document.createElement('link');
+        l.rel = 'stylesheet';
+        l.href = 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css';
+        document.head.appendChild(l);
+      }
+    });
+  </script>
+  <link href="fonts/google-fonts.css" rel="stylesheet">
   <style>
     .hidden { display: none !important; }
     [hidden] { display: none !important; }
