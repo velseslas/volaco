@@ -682,12 +682,19 @@ export async function handleAppGeneratorRoutes(
     if (!isSafeProjectId(rawId)) {
       throw new ValidationError('Identifiant de projet invalide', undefined, requestId);
     }
-    // PV-02/PV-19 — lecture SEULE : jamais de matérialisation pour un
-    // inconnu (fini la copie template sur ids arbitraires sans jeton).
-    // Pas de contrôle de locataire ici : l'iframe preview navigue sans
-    // en-têtes (contexte défaut) ; les ids sont indevinables et la
-    // création est verrouillée — le résiduel est documenté, les URLs
-    // signées viendront ensuite.
+    // PV-02/PV-19 + LOT S3 (audit sécurité 04/11) — lecture SEULE : jamais de
+    // matérialisation pour un inconnu (fini la copie template sur ids
+    // arbitraires sans jeton). La vérification tenant+projet est EXIGÉE sur
+    // toute reconnaissance d'un projet existant : sans elle, un tenant sans
+    // aucun autre accès pouvait énumérer proj_* cross-tenant et lire le bundle.
+    // Les requêtes non authentifiées (navigations iframe intégré : contexte défaut)
+    // tombent dans throw NotFoundError — indiscernable d'un projet absent.
+    // Firestore isolation : getProject(tenantId, rawId) reproduit la check
+    // multi-tenant de `projectStore`.
+    const projectForBundle = projectStore.getProject(context.tenantId, rawId);
+    if (!projectForBundle) {
+      throw new NotFoundError(`Projet ${rawId}`, requestId);
+    }
     const wsRoot = workspaceDir(rawId);
     const rel = bundleMatch[2] && bundleMatch[2] !== '/' ? bundleMatch[2].slice(1) : 'index.html';
     let file = join(wsRoot, 'dist', rel);

@@ -12,6 +12,8 @@
  *    (aucun champ en plus : non-régression e53/e42).
  */
 
+import './_lot-b-legacy-env.js';
+
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Server } from 'node:http';

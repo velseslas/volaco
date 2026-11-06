@@ -3,6 +3,8 @@
  * cross-tenant (CDC §37 : « Toutes les données doivent être isolées »).
  */
 
+import './_lot-b-legacy-env.js';
+
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Server } from 'node:http';

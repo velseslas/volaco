@@ -26,6 +26,15 @@ function isProjectIndependent(binary: string, subcommand: string | undefined): b
 /** CDC §24 — plafond du buffer d'exécution (évite l'ENOBUFS sur un build bavard). */
 export const TERMINAL_EXEC_MAX_BUFFER = 4 * 1024 * 1024;
 
+/** LOT S7 — plafond server-side du timeout client (anti-DoS process local). */
+export const TERMINAL_TIMEOUT_MIN_MS = 100;
+export const TERMINAL_TIMEOUT_MAX_MS = 60_000;
+
+function clampTerminalTimeout(timeoutMs: number | undefined): number {
+  if (timeoutMs === undefined || !Number.isFinite(timeoutMs)) return 10_000;
+  return Math.min(TERMINAL_TIMEOUT_MAX_MS, Math.max(TERMINAL_TIMEOUT_MIN_MS, Math.floor(timeoutMs)));
+}
+
 /** CDC §24 — plafond de la sortie renvoyée au client, avec marqueur honnête. */
 export const TERMINAL_RESULT_OUTPUT_LIMIT = 256 * 1024;
 
@@ -95,7 +104,7 @@ export class TerminalService {
       // sans invocation de shell (execFile n'interprète aucun caractère spécial).
       try {
         stdout = execFileSync(parsed.binary, parsed.args, {
-          timeout: input.timeoutMs ?? 10_000,
+          timeout: clampTerminalTimeout(input.timeoutMs),
           killSignal: 'SIGTERM',
           maxBuffer: EXEC_MAX_BUFFER,
           encoding: 'utf8',
@@ -136,7 +145,7 @@ export class TerminalService {
         try {
           stdout = execFileSync(parsed.binary, parsed.args, {
             cwd: workspacePath,
-            timeout: input.timeoutMs ?? 10_000,
+            timeout: clampTerminalTimeout(input.timeoutMs),
             killSignal: 'SIGTERM',
             maxBuffer: EXEC_MAX_BUFFER,
             encoding: 'utf8',

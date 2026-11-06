@@ -10,6 +10,8 @@
  * serveur de test), les routes répondent 404 sur projet inexistant AVANT
  * tout Chromium/LLM — aucun navigateur lancé, aucun timing.
  */
+import './_lot-b-legacy-env.js';
+
 process.env.VOLACO_EXECUTION_TIMELINE = 'off';
 
 import { describe, it, before, after } from 'node:test';

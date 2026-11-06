@@ -15,6 +15,8 @@
  *  8. permissions, validation et non-régression sont respectées.
  */
 
+import './_lot-b-legacy-env.js';
+
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Server } from 'node:http';

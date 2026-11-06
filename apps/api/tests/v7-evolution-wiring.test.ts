@@ -13,6 +13,8 @@
  *  - le Studio n'appelle plus `/features/analyze` et rend les champs AINT-017.
  */
 
+import './_lot-b-legacy-env.js';
+
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

@@ -7,6 +7,8 @@
  * Le client avorte après le 1er chunk reçu ; on libère la porte ; on
  * constate qu'aucun 2e appel modèle n'a lieu (la boucle est morte).
  */
+import './_lot-b-legacy-env.js';
+
 process.env.VOLACO_EXECUTION_TIMELINE = 'off';
 
 import { describe, it, before, after } from 'node:test';

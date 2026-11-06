@@ -64,14 +64,23 @@ function emptyMemory(): ProjectMemory {
  * V7-WIRE-3 — DÉCISION CONSULTATIVE DANS LE FLUX.
  *
  * Le DecisionEngine reste l'autorité de la route POST /decide (décision
- * persistée dans le ledger). Le flux de génération, lui, a besoin d'un avis
- * réel mais NON PERSISTÉ : enregistrer une décision `PROPOSED` à chaque
- * génération ferait grossir le ledger sans borne et le polluerait (la route
- * GET /decisions liste aussi les PROPOSED).
+ * persistée dans le ledger). Le flux de génération appelle le même moteur en
+ * mode consultatif : décision réelle (contraintes + alternatives +
+ * contradictions), SANS écriture par défaut.
  *
- * `record: false` garantit donc : décision réelle, calculée sur les mêmes
- * contraintes/alternatives, sans écriture. `null` = route non configurée
- * (aucune décision fabriquée).
+ * CDC §15 — LOT ADR AUTO (2026-11-03, audit moteurs) : `record: true` active
+ * l'enregistrement automatique de la décision consultative au ledger. Le
+ * mode consultatif par défaut reste intact (aucune écriture). L'appelant du
+ * flux active le flag UNIQUEMENT quand (a) on n'est pas sous node:test (PORTE
+ * anti-pollution des suites), (b) la catégorie d'intention change réellement
+ * l'application (CREATE/MODIFY/DELETE/REFACTOR), (c) l'interrupteur
+ * `VOLACO_DECISION_AUTORECORD` n'est pas à '0'.
+ *
+ * La déduplication protège le ledger de la croissance par génération : si une
+ * décision ACTIVE du projet porte déjà la MÊME catégorie et le MÊME but, le
+ * doublon n'est pas enregistré (note `recordNote` tracée). Le verdict
+ * `recorded` devient donc honnête : `true` = écrit, `false` = consultatif ou
+ * doublon.
  */
 export interface AdvisoryDecisionInput {
   readonly tenantId: string;
@@ -80,6 +89,11 @@ export interface AdvisoryDecisionInput {
   readonly intent: IntentResult;
   /** Mémoire projet réelle ; absente = mémoire vide, jamais un faux historique. */
   readonly memory?: ProjectMemory | undefined;
+  /**
+   * CDC §15 — ADR auto : `true` = enregistrer la décision au ledger après
+   * déduplication (défaut `undefined` = consultatif pur, comportement historique).
+   */
+  readonly record?: boolean | undefined;
 }
 
 export interface AdvisoryDecisionSummary {
@@ -100,8 +114,13 @@ export interface AdvisoryDecisionSummary {
   readonly rationale: string;
   /** Signaux mémoire réellement transmis au moteur. */
   readonly memory: MemorySignals;
-  /** Toujours `false` : le mode consultatif ne touche pas au Decision Ledger. */
-  readonly recorded: false;
+  /**
+   * CDC §15 — ADR auto : `true` = décision écrite au Decision Ledger ;
+   * `false` = mode consultatif OU doublon dédupliqué (voir `recordNote`).
+   */
+  readonly recorded: boolean;
+  /** Raison d'un non-enregistrement en mode ADR auto (doublon, ledger indisponible). */
+  readonly recordNote?: string;
 }
 
 export async function produceAdvisoryDecision(
@@ -110,6 +129,33 @@ export async function produceAdvisoryDecision(
   if (!deps) return null;
 
   const memory = input.memory ?? emptyMemory();
+
+  // CDC §15 — ADR auto avec déduplication : on enregistre UNIQUEMENT si
+  // aucune décision ACTIVE du projet ne porte déjà la même catégorie et le
+  // même but (anti-pollution du ledger, cf. commentaire de bloc ci-dessus).
+  // En cas d'échec de lecture du ledger, on NE PASSE PAS en aveugle : rien
+  // n'est écrit, une note honnête est tracée.
+  let record = false;
+  let recordNote: string | undefined;
+  if (input.record === true) {
+    try {
+      const actives = deps.decisionEngine.getHistory(input.projectId);
+      const duplicate = actives.some(
+        (d) => d.intentCategory === input.intent.category && d.intentGoal === input.intent.goal
+      );
+      if (duplicate) {
+        recordNote = 'doublon ignoré (décision active identique)';
+      } else {
+        record = true;
+      }
+    } catch (ledgerError) {
+      recordNote =
+        'ledger indisponible, rien enregistré (' +
+        (ledgerError instanceof Error ? ledgerError.message : String(ledgerError)) +
+        ')';
+    }
+  }
+
   const decision = await deps.decisionEngine.decide(
     {
       intent: input.intent,
@@ -119,7 +165,7 @@ export async function produceAdvisoryDecision(
       memory,
       intelligenceRecommendations: []
     },
-    { record: false }
+    { record }
   );
 
   const viable = decision.alternatives.filter((a) => a.constraintsViolated.length === 0);
@@ -142,7 +188,8 @@ export async function produceAdvisoryDecision(
     contradictingDecisions: decision.contradictingDecisions.length,
     rationale: decision.rationale,
     memory: decision.memorySignals ?? matchMemorySignals(input.intent, memory),
-    recorded: false
+    recorded: record,
+    ...(recordNote ? { recordNote } : {})
   };
 }
 

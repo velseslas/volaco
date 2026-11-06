@@ -15,6 +15,8 @@ import type {
 } from '../types.js';
 import type { AIProviderRegistry } from '../../../ai/providers/registry.js';
 import { aiProviderRegistry } from '../../../ai/providers/registry.js';
+import type { AIProviderAdapter, TenantProviderCredentials } from '../../../ai/providers/types.js';
+import { resolveAgentCredentialSlots } from '../../../ai/providers/agent-keys.js';
 
 export abstract class BaseSpecializedAgent {
   public readonly definition: SpecializedAgentDefinition;
@@ -44,6 +46,43 @@ export abstract class BaseSpecializedAgent {
     });
 
     const credentials = this.registry.getTenantCredentials(tenantId, adapter?.descriptor.providerId || '');
+
+    // PAGE CLÉS API — bascule par agent : slots configurés (primary → fallback)
+    // par la page, puis chaîne legacy ci-dessus en DERNIER recours. Aucun slot
+    // configuré → comportement antérieur strictement inchangé.
+    interface CredentialAttempt {
+      slot: 'primary' | 'fallback' | 'legacy-tenant';
+      adapter: AIProviderAdapter | undefined;
+      credentials: TenantProviderCredentials | undefined;
+    }
+    const attempts: CredentialAttempt[] = [];
+    const agentSlots = resolveAgentCredentialSlots(this.definition.id);
+    for (const slotName of ['primary', 'fallback'] as const) {
+      const configured = agentSlots[slotName];
+      if (!configured) continue;
+      const slotAdapter = this.registry.get(configured.providerId);
+      if (!slotAdapter || slotAdapter.descriptor.availability === 'UNAVAILABLE') {
+        // Fournisseur explicitement indisponible : noté, autre slot tenté.
+        continue;
+      }
+      attempts.push({
+        slot: slotName,
+        adapter: slotAdapter,
+        credentials: { tenantId, providerId: configured.providerId, apiKey: configured.apiKey }
+      });
+    }
+
+    // CHAÎNE DE GÉNÉRATION (demande opérateur 2026-11-02) — l'Agent UI/Backend
+    // produit des flux HTML COMPLETS : 4096 tokens tronquaient des sections.
+    // Bornes surchargées par env, défauts documentés (8192 tokens / 60 s).
+    const agentLlmMaxTokens = (): number => {
+      const raw = Number.parseInt(process.env.VOLACO_AGENT_LLM_MAX_TOKENS ?? '', 10);
+      return Math.min(Number.isFinite(raw) && raw > 0 ? raw : 8192, 16384);
+    };
+    const agentLlmTimeoutMs = (): number => {
+      const raw = Number.parseInt(process.env.VOLACO_AGENT_LLM_TIMEOUT_MS ?? '', 10);
+      return Math.min(Number.isFinite(raw) && raw > 0 ? raw : 60000, 120000);
+    };
 
     // 2. Build Passive-Data System & User Prompts
     const systemPrompt =
@@ -82,30 +121,46 @@ export abstract class BaseSpecializedAgent {
     let tokensUsed = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
     let llmDegraded = true;
     let degradeReason = '';
+    let usedSlot: 'primary' | 'fallback' | 'legacy-tenant' | undefined;
+    let usedProviderId: string | undefined;
+    const failoverNotes: string[] = [];
 
-    if (adapter) {
+    // PAGE CLÉS API — BASCULE : slots configurés (primary → fallback), puis la
+    // chaîne legacy ci-dessus en dernier recours. Chaque échec est NOTÉ
+    // honnêtement (failoverNotes) — jamais masqué ; le rapport final trace
+    // quel slot/fournisseur a servi l'appel (credentialSlot / failoverReason).
+    attempts.push({ slot: 'legacy-tenant', adapter, credentials });
+
+    for (const attempt of attempts) {
+      if (!attempt.adapter) continue;
       try {
-        const response = await adapter.generate(
+        const response = await attempt.adapter.generate(
           {
             tenantId,
             projectId,
             prompt,
             systemPrompt,
             requestId,
-            timeoutMs: 15000
+            maxTokens: agentLlmMaxTokens(),
+            timeoutMs: agentLlmTimeoutMs()
           },
-          credentials
+          attempt.credentials
         );
         generatedText = response.text;
         tokensUsed = response.usage;
         llmDegraded = false;
+        usedSlot = attempt.slot;
+        usedProviderId = attempt.adapter.descriptor.providerId;
+        break;
       } catch (err: unknown) {
-        degradeReason = err instanceof Error ? err.message.slice(0, 120) : String(err).slice(0, 120);
-        generatedText = `[Mode Dégradé] ${task.title} — l'appel IA a échoué (${degradeReason}). Artefacts structurels uniquement.`;
+        const errMsg = err instanceof Error ? err.message.slice(0, 120) : String(err).slice(0, 120);
+        failoverNotes.push(`${attempt.slot}(${attempt.adapter.descriptor.providerId}) : échec — ${errMsg}`);
       }
-    } else {
-      degradeReason = 'aucun provider IA configuré';
-      generatedText = `[Mode Dégradé] ${task.title} — aucun provider IA disponible. Artefacts structurels uniquement.`;
+    }
+
+    if (llmDegraded) {
+      degradeReason = failoverNotes.length > 0 ? failoverNotes.join(' ; ') : 'aucun provider IA configuré';
+      generatedText = `[Mode Dégradé] ${task.title} — l'appel IA a échoué (${degradeReason}). Artefacts structurels uniquement.`;
     }
 
     // 3. Formulate Domain Artifacts
@@ -125,7 +180,9 @@ export abstract class BaseSpecializedAgent {
       // la vérité — plus de SUCCESS fictif sans IA).
       status: 'SUCCESS',
       degraded: llmDegraded,
-      ...(llmDegraded ? { degradeReason } : {}),
+      ...(llmDegraded ? { degradeReason } : { credentialSlot: usedSlot ?? 'legacy-tenant' }),
+      ...(usedProviderId ? { credentialProviderId: usedProviderId } : {}),
+      ...(!llmDegraded && failoverNotes.length > 0 ? { failoverReason: failoverNotes.join(' ; ') } : {}),
       artifacts,
       conflicts: [],
       tokensUsed,

@@ -15,6 +15,44 @@ export interface AuditEvent {
   timestamp: Date;
 }
 
+/**
+ * LOT B (Phase 2, décision 4) — Audit durable.
+ *
+ * Actions CRITIQUES : flush SYNCHRONE immédiat (jamais coalescées) et échec
+ * d'écriture SIGNALÉ (jamais silencieux). Les autres événements suivent la
+ * stratégie de coalescence documentée (fenêtre/volume) sans masquer les
+ * erreurs. L'indicateur de santé (`health()`) expose l'état réel du store.
+ */
+const AUDIT_CRITICAL_ACTIONS: ReadonlySet<string> = new Set([
+  'LOGIN_FAILURE',
+  'LOGIN_LOCKOUT',
+  'AUTH_LOGOUT',
+  'SESSION_REVOKED',
+  'TENANT_MANAGE',
+  'MCP_REMOTE_CONNECTOR_CREATED',
+  'MCP_REMOTE_CONNECTOR_UPDATED',
+  'MCP_REMOTE_CONNECTOR_DELETED',
+  'MCP_REMOTE_CONNECTOR_SECRET_SET',
+  'MCP_REMOTE_CONNECTOR_SECRET_REMOVED',
+  'MCP_REMOTE_TOOL_APPROVED',
+  'MCP_REMOTE_TOOL_REVOKED',
+  'MCP_REMOTE_TOOL_CALLED',
+  'MCP_REMOTE_TOOL_CALL_REFUSED',
+  'MCP_REMOTE_TOOL_CALL_FAILED',
+  'ROLLBACK_TRIGGERED',
+  'DNA_ROLLBACK_TRIGGERED'
+]);
+
+export interface AuditHealth {
+  /** Dernier échec d'écriture persistant (null si aucun). */
+  readonly lastWriteError: string | null;
+  /** Horodatage du dernier flush durable réussi. */
+  readonly lastFlushAt: number;
+  /** Événements en attente de flush. */
+  readonly pending: number;
+  readonly persistent: boolean;
+}
+
 const AUDIT_MAX_EVENTS = 5_000; // garde-fou mémoire/disque (append-only borné)
 
 // n°2 — ÉCRITURES BATCHÉES : `record()` écrivait tout le document (jusqu'à
@@ -54,6 +92,7 @@ export class AuditStore {
   private readonly flushEvery: number;
   private lastFlushAt = 0;
   private pendingSinceFlush = 0;
+  private lastWriteError: string | null = null;
 
   constructor(options?: { persist?: boolean; flushMs?: number; flushEvery?: number }) {
     this.persistent = options?.persist === true;
@@ -79,9 +118,24 @@ export class AuditStore {
       writeJsonFileSync(this.filePath, this.events.slice(-AUDIT_MAX_EVENTS));
       this.lastFlushAt = Date.now();
       this.pendingSinceFlush = 0;
-    } catch {
-      // L'audit ne doit jamais faire échouer la requête qui le déclenche
+      this.lastWriteError = null;
+    } catch (error) {
+      // LOT B (décision 4) — un échec d'écriture n'est JAMAIS silencieux :
+      // il est conservé pour l'indicateur de santé et journalisé.
+      const message = error instanceof Error ? error.message : String(error);
+      this.lastWriteError = message;
+      console.error(`[VOLACO:AUDIT] flush failed: ${message}`);
     }
+  }
+
+  /** Indicateur de santé du système d'audit (état réel, jamais inventé). */
+  public health(): AuditHealth {
+    return {
+      lastWriteError: this.lastWriteError,
+      lastFlushAt: this.lastFlushAt,
+      pending: this.pendingSinceFlush,
+      persistent: this.persistent
+    };
   }
 
   /** Écrit immédiatement la queue (no-op si rien en attente ou non persistant). */
@@ -106,6 +160,14 @@ export class AuditStore {
 
     this.events.push(event);
     this.pendingSinceFlush += 1;
+    // LOT B (décision 4) — les actions CRITIQUES (authentification, gestion
+    // tenant, MCP distant, rollback) sont écrites IMMÉDIATEMENT (flush
+    // synchrone) : jamais une fenêtre de perte sur un acte sensible.
+    const critical = AUDIT_CRITICAL_ACTIONS.has(input.action) || input.status === 'FAILURE';
+    if (critical) {
+      this.persist();
+      return event;
+    }
     // Batch : 1 écriture physique par fenêtre ou tous les N — jamais plus.
     if (this.pendingSinceFlush >= this.flushEvery || Date.now() - this.lastFlushAt >= this.flushMs) {
       this.persist();

@@ -6,6 +6,8 @@
  *  - registre de transactions borné (pas de fuite mémoire par génération).
  */
 
+import './_lot-b-legacy-env.js';
+
 import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

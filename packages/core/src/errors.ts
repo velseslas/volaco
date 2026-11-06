@@ -7,7 +7,18 @@
   | 'BAD_REQUEST'
   | 'PAYLOAD_TOO_LARGE'
   | 'RATE_LIMITED'
-  | 'PROJECT_BUSY';
+  | 'PROJECT_BUSY'
+  /* C3.2-B — connecteurs MCP distants : erreurs normalisées (additif) */
+  /* C3.2-B2 — mutation concurrente du connecteur pendant une demande (TOCTOU
+     gardé) : l'URL a changé entre l'interrogation et le commit → refus 409. */
+  | 'MCP_REMOTE_DRIFT'
+  | 'MCP_REMOTE_UNREACHABLE'
+  | 'MCP_REMOTE_TIMEOUT'
+  | 'MCP_REMOTE_CONFIG'
+  /* Lot A — gouvernance MCP intégrée : état de confirmation invalide
+     (inconnue / expirée / rejouée / empreinte divergente) — 409 stable,
+     raison fermée portée par l'audit, jamais par le message HTTP. */
+  | 'MCP_BUILTIN_DRIFT';
 
 export interface ErrorDetails {
   code: ErrorCode;

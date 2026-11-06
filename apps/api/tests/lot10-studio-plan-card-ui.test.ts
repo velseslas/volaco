@@ -17,6 +17,8 @@
  * l'interface actuelle pour redevenir des garde-fous réels.
  */
 
+import './_lot-b-legacy-env.js';
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -210,8 +212,11 @@ describe('LOT 10 — Câblage réel de l\'interface Studio', () => {
     assert.ok(indexContent.includes('function appendQuickActions()') === false, 'Les chips de fin doivent avoir disparu');
     assert.ok(indexContent.includes('autoHarmonizeApp()'), 'L\'amélioration design reste branchée');
     assert.ok(indexContent.includes('autoRepair()'), 'L\'auto-réparation reste branchée');
-    // Indicateur de frappe vivant + plus d'interception instantanée du chat
-    assert.ok(indexContent.includes('animate-pulse text-violet-300 tracking-widest'), 'L\'indicateur de frappe vivant doit exister');
+    // LOT CHAT-WHEEL — l'indicateur de frappe (trois points `animate-pulse
+    // … tracking-widest`) a été remplacé par la roue « Réflexion… » ; le pin
+    // suit l'implémentation actuelle (spinner + libellé) qui joue le même rôle.
+    assert.ok(indexContent.includes('fa-spinner fa-spin mr-2'), 'L\'indicateur d\'activité vivant (roue Réflexion…) doit exister');
+    assert.ok(indexContent.includes('Réflexion…'), 'Le libellé de réflexion de la roue doit exister');
     assert.ok(!indexContent.includes('const isInstant = hasInstantTemplate(text)'), 'Le chat ne doit plus être court-circuité par les templates instantanés');
     assert.ok(
       indexContent.includes("runConversationEngineFlow(text, isModification, loadEl, cleanTitle);\r\n    }") || indexContent.includes('runConversationEngineFlow(text, isModification, loadEl, cleanTitle);'),

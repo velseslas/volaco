@@ -1,0 +1,132 @@
+{
+  "base": "http://127.0.0.1:3000",
+  "when": "2026-10-12T23:04:46.726Z",
+  "results": [
+    {
+      "id": "health",
+      "title": "GET /health — coût le plus faible (aucune auth, aucun disque)",
+      "levels": [
+        {
+          "concurrency": 1,
+          "count": 110,
+          "rps": 71,
+          "p50": 15.8,
+          "p95": 17.4,
+          "p99": 18.2,
+          "max": 18.4,
+          "statuses": {
+            "200": 110
+          },
+          "sampleError": null
+        },
+        {
+          "concurrency": 10,
+          "count": 110,
+          "rps": 1352.6,
+          "p50": 6.7,
+          "p95": 11.3,
+          "p99": 13.1,
+          "max": 14.3,
+          "statuses": {
+            "200": 110
+          },
+          "sampleError": null
+        },
+        {
+          "concurrency": 50,
+          "count": 110,
+          "rps": 1222.5,
+          "p50": 39.3,
+          "p95": 52.7,
+          "p99": 54.4,
+          "max": 54.8,
+          "statuses": {
+            "200": 110
+          },
+          "sampleError": null
+        },
+        {
+          "concurrency": 100,
+          "count": 110,
+          "rps": 1753,
+          "p50": 50.5,
+          "p95": 53.5,
+          "p99": 53.6,
+          "max": 53.7,
+          "statuses": {
+            "200": 110
+          },
+          "sampleError": null
+        }
+      ],
+      "probe": null
+    },
+    {
+      "id": "projects-read",
+      "title": "GET /api/v1/projects — lecture JSON authentifiée",
+      "levels": [
+        {
+          "concurrency": 1,
+          "count": 110,
+          "rps": 80.5,
+          "p50": 15.1,
+          "p95": 17.5,
+          "p99": 19.8,
+          "max": 31.2,
+          "statuses": {
+            "200": 110
+          },
+          "sampleError": null
+        },
+        {
+          "concurrency": 10,
+          "count": 110,
+          "rps": 515.5,
+          "p50": 16.5,
+          "p95": 34.6,
+          "p99": 44.2,
+          "max": 45.2,
+          "statuses": {
+            "200": 110
+          },
+          "sampleError": null
+        },
+        {
+          "concurrency": 50,
+          "count": 110,
+          "rps": 869.8,
+          "p50": 41.2,
+          "p95": 70.8,
+          "p99": 71.7,
+          "max": 72.5,
+          "statuses": {
+            "200": 110
+          },
+          "sampleError": null
+        },
+        {
+          "concurrency": 100,
+          "count": 110,
+          "rps": 1027,
+          "p50": 80,
+          "p95": 90,
+          "p99": 92,
+          "max": 92.9,
+          "statuses": {
+            "200": 110
+          },
+          "sampleError": null
+        }
+      ],
+      "probe": {
+        "p50": 17.4,
+        "p95": 99.5,
+        "n": 18
+      }
+    }
+  ],
+  "skipped": [],
+  "findings": [
+    "projects-read : p95 ×5.1 au dernier palier → file d'attente côté serveur (traitement séquentiel)."
+  ]
+}

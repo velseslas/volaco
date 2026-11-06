@@ -2,6 +2,8 @@
  * n°5 — rate limiting hors /api : /health et le statique sont throttlés
  * (bucket séparé 2 000/min/IP), sans toucher au budget API/IA.
  */
+import './_lot-b-legacy-env.js';
+
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Server } from 'node:http';

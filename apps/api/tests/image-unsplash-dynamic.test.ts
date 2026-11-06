@@ -239,8 +239,8 @@ describe('sanitizeImageSources + adoption dynamique', () => {
 });
 
 describe('THEME_PHOTO_QUERY', () => {
-  it('14. 12 thèmes, requêtes sobres non vides, ASCII, sans URL/ID', () => {
-    assert.equal(IMAGE_THEMES.length, 12);
+  it('17 thèmes (LOT MÉTIERS inclus), requêtes sobres non vides, ASCII, sans URL/ID', () => {
+    assert.equal(IMAGE_THEMES.length, 17);
     for (const theme of IMAGE_THEMES) {
       const q = THEME_PHOTO_QUERY[theme];
       assert.ok(typeof q === 'string' && q.trim().length > 0, 'requête absente : ' + theme);

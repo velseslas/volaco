@@ -24,6 +24,34 @@ import type {
 export const MAX_EVENTS_PER_EXECUTION = 300;
 export const MAX_EXECUTIONS_PER_PROJECT = 20;
 
+/**
+ * PERF-TTF (2026-11-03, audit moteurs) — le blob `executions` (tous tenants)
+ * était réécrit en SYNCHRONE à CHAQUE événement (~50-85 ms mesuré sur le
+ * volume réel) : le temps jusqu'à la première frame `start` du stream
+ * dépassait 1 s et dégradait avec le nombre d'exécutions accumulées.
+ *
+ * Correctif double, avec durabilité honnête et bornée :
+ *   1. COALESCENCE : les événements intermédiaires marquent le document
+ *      « sale » et une réécriture décalée la regroupe (défaut 250 ms,
+ *      `VOLACO_EXECUTION_PERSIST_DEBOUNCE_MS`). Les événements TERMINAUX
+ *      (COMPLETED/FAILED/CANCELLED/clear) restent un flush SYNCHRONE, et le
+ *      processus vide le tampon à sa sortie — la trace est donc toujours sur
+ *      disque au plus tard à la fin de l'exécution (CDC §26 : durée/jamais
+ *      inventée, trace persistée à la clôture).
+ *   2. BORNE GLOBALE : le document ne garde que les MAX_EXECUTIONS_GLOBAL
+ *      exécutions les plus récentes (terminales d'abord évictées ;
+ *      `VOLACO_EXECUTION_STORE_MAX_RECORDS`), en plus de la borne par projet.
+ */
+const EXECUTION_PERSIST_DEBOUNCE_MS = readPositiveIntEnv('VOLACO_EXECUTION_PERSIST_DEBOUNCE_MS', 250);
+const MAX_EXECUTIONS_GLOBAL = readPositiveIntEnv('VOLACO_EXECUTION_STORE_MAX_RECORDS', 200);
+
+function readPositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 interface AppendEventInput {
   type: ExecutionEventType;
   phase: ExecutionPhase;
@@ -37,6 +65,8 @@ export class ExecutionEventStore {
   private executions = new Map<string, ExecutionRecord>();
   private orderCounter = 0;
   private readonly filePath: string | undefined;
+  private persistTimer: NodeJS.Timeout | undefined;
+  private exitFlushArmed = false;
 
   constructor(options?: { persist?: boolean }) {
     if (options?.persist) {
@@ -46,16 +76,53 @@ export class ExecutionEventStore {
         this.executions.set(key, record);
         this.orderCounter = Math.max(this.orderCounter, record.order || 0);
       }
+      // PERF-TTF — borne globale appliquée au démarrage : les exécutions
+      // HISTORY au-delà de la borne sortent du document (les plus récentes
+      // d'abord), le blob redevient borné dès le prochain flush.
+      this.pruneGlobal();
+      // Garantie CDC §26 : le tampon décalé est écrit même si le processus
+      // s'arrête entre deux flush programmés.
+      if (!this.exitFlushArmed) {
+        this.exitFlushArmed = true;
+        process.once('exit', () => this.flushPersist());
+      }
     }
   }
 
   private persist(): void {
     if (!this.filePath) return;
+    // PERF-TTF — un flush décalé en attente devient inutile : on écrit tout,
+    // tout de suite.
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = undefined;
+    }
     const obj: Record<string, ExecutionRecord> = {};
     for (const [key, record] of this.executions.entries()) {
       obj[key] = record;
     }
     writeJsonFileSync(this.filePath, obj);
+  }
+
+  /** Flush synchrone explicitement demandé (fin d'exécution, shutdown). */
+  public flushPersist(): void {
+    if (!this.filePath) return;
+    this.persist();
+  }
+
+  /**
+   * PERF-TTF — coalescence : marque le document sale et programme UNE
+   * réécriture dans la fenêtre de debounce. Aucun await filé : les écrivains
+   * restent non bloquants ; événements suivants rafraîchissent le tampon.
+   */
+  private persistSoon(): void {
+    if (!this.filePath) return;
+    if (this.persistTimer) return;
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = undefined;
+      this.persist();
+    }, EXECUTION_PERSIST_DEBOUNCE_MS);
+    this.persistTimer.unref?.();
   }
 
   /**
@@ -92,6 +159,7 @@ export class ExecutionEventStore {
     };
     this.executions.set(record.executionId, record);
     this.pruneProject(input.tenantId, input.projectId);
+    this.pruneGlobal();
     this.persist();
     return this.executions.get(record.executionId)!;
   }
@@ -134,7 +202,9 @@ export class ExecutionEventStore {
     }
     record.phase = input.phase;
     record.updatedAt = event.ts;
-    this.persist();
+    // PERF-TTF — événement intermédiaire : coalescé (flush décalé). Les
+    // opérations terminales ci-dessous font leur flush synchrone.
+    this.persistSoon();
     return event;
   }
 
@@ -157,7 +227,9 @@ export class ExecutionEventStore {
     if (!record) return;
     record.status = status;
     record.updatedAt = Date.now();
-    this.persist();
+    // WAITING_USER / reparabilité entre deux flush synchro — coalescé,
+    // flush synchrone garanti à la clôture (complete/fail/cancel).
+    this.persistSoon();
   }
 
   public completeExecution(executionId: string, summary?: ExecutionSummary): void {
@@ -232,6 +304,27 @@ export class ExecutionEventStore {
     if (records.length <= MAX_EXECUTIONS_PER_PROJECT) return;
     for (const record of records.slice(MAX_EXECUTIONS_PER_PROJECT)) {
       this.executions.delete(record.executionId);
+    }
+  }
+
+  /**
+   * PERF-TTF — borne globale du document : au-delà de MAX_EXECUTIONS_GLOBAL,
+   * les exécutions les plus ANCIENNES sortent, en commençant par les
+   * terminales (une exécution en cours n'est jamais evictée).
+   */
+  private pruneGlobal(): void {
+    let overflow = this.executions.size - MAX_EXECUTIONS_GLOBAL;
+    if (overflow <= 0) return;
+    const all = [...this.executions.values()].sort((a, b) => a.order - b.order);
+    const terminal = new Set(['COMPLETED', 'FAILED', 'CANCELLED']);
+    for (const pass of [true, false]) {
+      for (const record of all) {
+        if (overflow <= 0) return;
+        // Passe 1 : terminales uniquement (sécurité) ; passe 2 : tout.
+        if (pass && !terminal.has(record.status)) continue;
+        this.executions.delete(record.executionId);
+        overflow -= 1;
+      }
     }
   }
 

@@ -10,6 +10,8 @@
  * Limite avouée : ces tests prouvent la TRANSMISSION des contraintes, pas
  * leur respect visuel dans une génération réelle (pas de vision ici).
  */
+import './_lot-b-legacy-env.js';
+
 process.env.VOLACO_EXECUTION_TIMELINE = 'off';
 
 import { describe, it, before, after } from 'node:test';

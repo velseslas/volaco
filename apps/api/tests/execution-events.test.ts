@@ -9,6 +9,8 @@
  * s'arrête AVANT la génération (garde-fou Human Control).
  */
 
+import './_lot-b-legacy-env.js';
+
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Server } from 'node:http';
@@ -268,11 +270,17 @@ describe('T1 : ExecutionEventStore — invariants unitaires', () => {
 
   it('7. persistance : un nouveau store relit les exécutions écrites', () => {
     const writer = new ExecutionEventStore({ persist: true });
-    writer.startExecution({ executionId: 'rt-1', tenantId: 'rt-tenant', projectId: 'rt-project', mode: 'create', prompt: 'roundtrip' });
-    writer.appendEvent('rt-1', { type: 'PLAN_CREATED', phase: 'PLAN', status: 'COMPLETED', title: 'Plan créé' });
+    const rtId = 'rt-1-' + Date.now().toString(36);
+    writer.startExecution({ executionId: rtId, tenantId: 'rt-tenant', projectId: 'rt-project', mode: 'create', prompt: 'roundtrip' });
+    writer.appendEvent(rtId, { type: 'PLAN_CREATED', phase: 'PLAN', status: 'COMPLETED', title: 'Plan créé' });
+    // PERF-TTF (2026-11-03) : les événements INTERMÉDIAIRES sont coalescés
+    // (flush décalé, défaut 250 ms). Le flush explicite = ce que la route
+    // fait aux points TERMINAUX (complete/fail/cancel) ; ici on prouve la
+    // durabilité APRÈS flush (contrat CDC §26 honnête, jamais inventé).
+    writer.flushPersist();
 
     const reader = new ExecutionEventStore({ persist: true });
-    const record = reader.getExecution('rt-1');
+    const record = reader.getExecution(rtId);
     assert.ok(record, 'l\'exécution doit survivre à une réinstanciation');
     assert.equal(record!.status, 'RUNNING');
     assert.equal(record!.events.length, 1);

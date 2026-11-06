@@ -1,3 +1,5 @@
+import './_lot-b-legacy-env.js';
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { configureDecideRoute, produceAdvisoryDecision } from '../src/routes/decide.js';

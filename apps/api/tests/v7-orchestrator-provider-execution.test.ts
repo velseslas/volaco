@@ -10,6 +10,8 @@
  * prouve le chaînage exécutable et l'honnêteté de l'audit.
  */
 
+import './_lot-b-legacy-env.js';
+
 process.env.MISTRAL_API_KEY = 'fake-key-lot6-provider';
 process.env.VOLACO_EXECUTION_TIMELINE = 'off';
 

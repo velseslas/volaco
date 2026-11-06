@@ -43,6 +43,17 @@ export const THEME_PHOTO_QUERY: Record<ImageTheme, string> = {
   immobilier: 'modern house architecture exterior',
   avocat: 'lawyer office justice law books',
   coiffeur: 'barber shop men haircut',
+  // LOT MÉTIERS (30/10) — requêtes ALIGNÉES SUR LE LEXIQUE sectoriel
+  // (sector-queries.ts) : même autorité pour la voie « clé usager » et pour
+  // le brief statique. Aucune requête nouvelle : celle des 5 métiers
+  // déjà documentés dans le lexique (plombier l.55, serrurier l.57,
+  // cordonnier l.123, boucherie l.126) ; pâtissier ajouté au lexique au
+  // même passage (même query ici et là-bas).
+  boucherie: 'butcher shop meat cuts',
+  plombier: 'plumber pipes bathroom repair',
+  serrurier: 'locksmith door lock key',
+  patisserie: 'pastry shop cake display desserts',
+  cordonnier: 'cobbler shoe repair workshop',
   autre: 'modern architecture interior minimal',
 };
 

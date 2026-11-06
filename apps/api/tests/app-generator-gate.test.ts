@@ -32,6 +32,8 @@
  * 11. état initial préservé : rien ne détruit les fichiers légitimes.
  */
 
+import './_lot-b-legacy-env.js';
+
 process.env.VOLACO_EXECUTION_TIMELINE = 'off';
 process.env.MISTRAL_API_KEY = 'fake-key-for-tests';
 

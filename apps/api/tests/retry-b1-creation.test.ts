@@ -19,6 +19,8 @@
  * Limite assumée : le diff-guard/rollback CLIENT reste du code navigateur,
  * non exécutable sous node --test (prouvé par lecture de code, pas ici).
  */
+import './_lot-b-legacy-env.js';
+
 process.env.VOLACO_EXECUTION_TIMELINE = 'off';
 
 import { describe, it, before, after } from 'node:test';

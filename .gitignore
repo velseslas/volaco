@@ -30,3 +30,7 @@ deploy/huggingface/upload/
 .server-restart.err.log
 dist-backup-*/
 .env.bak-*
+.tmp-*
+/&1
+/image-adoptions.json
+docs/preuves-generations/

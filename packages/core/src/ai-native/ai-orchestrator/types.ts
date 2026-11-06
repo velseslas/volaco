@@ -168,6 +168,11 @@ export interface AgentResult {
   /** P2 — vrai quand le contenu ne provient PAS du LLM (fallback local). */
   degraded?: boolean;
   degradeReason?: string;
+  /** Bascule de clés (page Clés API — agents) : slot ayant servi l'appel IA. */
+  credentialSlot?: 'primary' | 'fallback' | 'legacy-tenant';
+  credentialProviderId?: string;
+  /** Liste motivée des échecs avant bascule (honnêteté : jamais masquée). */
+  failoverReason?: string;
   readonly taskId: string;
   readonly agentId: string;
   readonly status: 'SUCCESS' | 'FAILURE' | 'ESCALATED';

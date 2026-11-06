@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
     <!-- É31/E47 — CSP : le HTML IA réel ne peut toujours pas exécuter de script
-         inline/onclick/eval ; le Tailwind est désormais servi LOCALEMENT
+         inline/onclick/eval ; le Tailwind est désormais servî LOCALEMENT
          (same-origin, conforme à la CSP stricte du Studio) — aucune exception
          CDN nécessaire.
          NOTE : l'en-tête CSP du serveur (server.ts STUDIO_CSP) prévaut ; il
@@ -102,7 +102,24 @@
     #dropIndicator.forbidden.ring { border-color: #fb7185; background: rgba(251,113,133,.06); }
     body.pv-dragging { cursor: grabbing !important; user-select: none; }
     body.pv-dragging .pv-node { cursor: grabbing; }
+    /* FIX (2026-11-02 soir — « supprime les 3 points dans la shimmer,
+       laisse texte brut ») : le placeholder de construction n'était plus
+       qu'un texte brut gris. Il redevient un shimmer vivant : 3 points qui
+       dansent + barres squelettes défilantes + label (qui porte ensuite le
+       nom de l'agent en cours, voir livePaintRelay 'on_agent_step'). */
+    .placeholderConstruction .ph-dots { display: flex; gap: 8px; justify-content: center; margin-bottom: 14px; }
+    .placeholderConstruction .ph-dots span { width: 10px; height: 10px; border-radius: 9999px; background: #f59e0b; animation: phDot 1.1s ease-in-out infinite; }
+    .placeholderConstruction .ph-dots span:nth-child(2) { animation-delay: .18s; background: #a78bfa; }
+    .placeholderConstruction .ph-dots span:nth-child(3) { animation-delay: .36s; background: #34d399; }
+    @keyframes phDot { 0%, 100% { opacity: .3; transform: translateY(0) scale(.85); } 50% { opacity: 1; transform: translateY(-5px) scale(1.15); } }
+    .placeholderConstruction .ph-label { color: #94a3b8; font-size: 13px; font-weight: 600; margin-bottom: 16px; }
+    .placeholderConstruction .ph-bar { width: 240px; height: 10px; border-radius: 6px; margin: 0 auto 8px; background: linear-gradient(90deg, rgba(30,41,59,.55) 0%, rgba(71,85,105,.9) 50%, rgba(30,41,59,.55) 100%); background-size: 600px 100%; animation: phShimmer 1.5s linear infinite; }
+    .placeholderConstruction .ph-bar.short { width: 150px; }
+    @keyframes phShimmer { 0% { background-position: -320px 0; } 100% { background-position: 320px 0; } }
     .canvas .placeholder { color: #334155; font-size: 13px; text-align: center; padding: 40px 0; }
+    /* Variante shimmer posée par renderLayout (classe placeholderConstruction) */
+    .canvas .placeholder.placeholderConstruction { color: #94a3b8; padding: 56px 24px; animation: phIn .35s ease-out; }
+    @keyframes phIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 
     /* ===== NŒUDS ===== */
     /* ÉTAPE 12 — un composant TERMINÉ disparaît dans l'interface : pas de
@@ -479,7 +496,7 @@
     
   </div>
 
-<script type="module" src="/preview-builder/app.js"></script>
+<script type="module" src="/preview-builder/app.js?v4=1"></script>
 
   <!-- É28 — CHROME BUILDER MASQUÉ : toute la logique É01→É27 reste
        branchée (moteur, pont Studio, éditions, timeline, inspector) mais

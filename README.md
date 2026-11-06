@@ -25,7 +25,9 @@ npm start              # node dist/apps/api/src/server.js (port 3000)
 | `MISTRAL_API_KEY` | Clé Mistral/Codestral pour le moteur IA (serveur uniquement) |
 | `GEMINI_API_KEY` | Fournisseur alternatif (Provider Independence — §3.8 CDC) |
 | `VOLACO_API_KEY` | Clé d'API admin (Bearer). Absente en production → clé éphémère |
-| `AUTH_SECRET` | Secret HMAC des tokens JWT (requis en production) |
+| `VOLACO_JWT_SECRET` | **Secret HMAC dédié à la signature des JWT (OBLIGATOIRE).** Base64 canonique ≥ 32 octets, distinct de `VOLACO_API_KEY`. Absent/invalide → **le service refuse de démarrer**. Voir `.env.example` [SEC-001] |
+| `VOLACO_STRICT_AUTH` | `1` = mode strict (repli dev par en-têtes désactivé). En production, le strict est **imposé** ; `0` n'est honoré qu'en dev/test |
+| `AUTH_SECRET` | **Historique** : ne signe plus les JWT (remplacé par `VOLACO_JWT_SECRET`). Sert encore à dériver la clé d'API de production. Ne pas réutiliser comme secret JWT |
 | `CORS_ALLOWED_ORIGINS` | Origines cross-origin autorisées (vide = même origine uniquement) |
 | `VOLACO_PERSISTENCE` | `json` force le backend fichiers hérité (défaut : SQLite) |
 | `VOLACO_DATA_DIR` | Répertoire des données (défaut : `.volaco-data/`) |

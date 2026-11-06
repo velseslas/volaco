@@ -275,6 +275,17 @@ export interface ConversationSession {
   readonly activeAssumptions: readonly ConversationAssumption[];
   readonly activeDecisions: readonly ArchitecturalDecisionRecord[];
   readonly pendingApproval?: { readonly planId: string; readonly reason: string } | undefined;
+  // LOT CLARIF-RESUME — une clarification posée attend une RÉPONSE : la
+  // question, son horodatage (TTL de consommation côté route : 10 min) et le
+  // mode que la réponse doit suivre (« create » sur projet vierge, « modify »
+  // sur un site réel). Consommé au message suivant ; aperçu volontairement
+  // restreint (pas d'identifiant de tour : le marqueur ne pilote que le
+  // routage du prochain message).
+  readonly pendingClarification?: {
+    readonly question: string;
+    readonly questionAskedAt: number;
+    readonly mode: 'create' | 'modify';
+  } | undefined;
   readonly applicationSnapshot: ApplicationSnapshot;
   readonly turnMemory: TurnMemory;
   readonly projectMemory: ProjectMemory;

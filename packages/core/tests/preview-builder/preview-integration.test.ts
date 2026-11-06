@@ -9,6 +9,8 @@
  * la page du Builder.
  */
 
+import '../_lot-b-secret-env.js';
+
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

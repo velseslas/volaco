@@ -29,6 +29,7 @@ import { ConversationTraceCollector } from './observability/conversation-trace.j
 import { DefaultReasoningProvider } from './provider/reasoning-provider.js';
 import type {
   ArchitecturalDecisionRecord,
+  ConversationAssumption,
   ConversationCacheMetrics,
   ConversationIntelligenceConfig,
   ConversationSession,
@@ -334,6 +335,141 @@ export class ConversationIntelligenceService {
     this.cache.set(ConversationSessionLruCache.buildKey(session.tenantId, session.projectId, session.sessionId), updatedSession);
     this.persistSession(updatedSession);
     this.totalTurnsProcessed += 1;
+    return updatedSession;
+  }
+
+  /**
+   * LOT CLARIF-RESUME — marque une clarification EN ATTENTE après l'avoir
+   * posée (chat frame + tour enregisté). Sans cette marque, la réponse de
+   * l'utilisateur était re-classifiée à froid : « une page galerie photo »
+   * tombait sur CREATE inventé par le repli regex (même famille que le bug
+   * du bruit, mais avec des mots porteurs). Le marqueur est consommé par
+   * clearPendingClarification au premier message suivant, ou écrasé par une
+   * nouvelle clarification.
+   */
+  public setPendingClarification(params: {
+    tenantId: string;
+    projectId: string;
+    sessionId: string;
+    question: string;
+    mode: 'create' | 'modify';
+    userRole?: Role | undefined;
+    requestId?: string | undefined;
+  }): ConversationSession | undefined {
+    const userRole = params.userRole ?? 'OWNER';
+    const session = this.getSession(params.tenantId, params.projectId, params.sessionId, userRole, params.requestId);
+    if (!session) return undefined;
+
+    const updatedSession: ConversationSession = {
+      ...session,
+      pendingClarification: {
+        question: params.question,
+        questionAskedAt: Date.now(),
+        mode: params.mode
+      }
+    };
+
+    this.cache.set(ConversationSessionLruCache.buildKey(session.tenantId, session.projectId, session.sessionId), updatedSession);
+    this.persistSession(updatedSession);
+    return updatedSession;
+  }
+
+  /**
+   * LOT CLARIF-RESUME — consomme la marque de clarification (contrat :
+   * lecture = consommation). Une re-clarification repose sa propre marque ;
+   * un flux qui échoue après consommation ne ré-arme pas la question.
+   */
+  public clearPendingClarification(params: {
+    tenantId: string;
+    projectId: string;
+    sessionId: string;
+    userRole?: Role | undefined;
+    requestId?: string | undefined;
+  }): ConversationSession | undefined {
+    const userRole = params.userRole ?? 'OWNER';
+    const session = this.getSession(params.tenantId, params.projectId, params.sessionId, userRole, params.requestId);
+    if (!session) return undefined;
+    if (!session.pendingClarification) return session;
+
+    const updatedSession: ConversationSession = { ...session, pendingClarification: undefined };
+    this.cache.set(ConversationSessionLruCache.buildKey(session.tenantId, session.projectId, session.sessionId), updatedSession);
+    this.persistSession(updatedSession);
+    return updatedSession;
+  }
+
+  /**
+   * CDC §16 — CONFIRMATION INTERACTIVE DES HYPOTHÈSES (audit moteurs, 04/11).
+   * L'opérateur tranche : CONFIRMED ou REJECTED. Le verdict vit sur la session
+   * (activeAssumptions, rôle jusque-là inutilisé dans le flux) et, pour les
+   * CONFIRMED, le libellé rejoint la mémoire projet (knownConventions, borne
+   * 30) — la source que deriveAssumptions (§16) et le contexte des agents
+   * consomment déjà. Sanitisation stricte des entrées (id/statement bornés,
+   * confidence ∈ [0;1], risk ∈ enum) ; dédoublonnage par id, entrées vides
+   * ignorées, cap 50 par session. JAMAIS une entrée inventée : un verdict
+   * sans statement lisible est ignoré.
+   */
+  public recordAssumptionVerdicts(params: {
+    tenantId: string;
+    projectId: string;
+    sessionId: string;
+    userRole?: Role | undefined;
+    requestId?: string | undefined;
+    verdicts: readonly {
+      id: string;
+      statement: string;
+      verdict: 'CONFIRMED' | 'REJECTED';
+      confidence?: number | undefined;
+      evidence?: string | undefined;
+      risk?: 'LOW' | 'MEDIUM' | 'HIGH' | undefined;
+      reversible?: boolean | undefined;
+    }[];
+  }): ConversationSession | undefined {
+    const userRole = params.userRole ?? 'OWNER';
+    const session = this.getSession(params.tenantId, params.projectId, params.sessionId, userRole, params.requestId);
+    if (!session) return undefined;
+
+    let projectMemory = session.projectMemory;
+    const merged: ConversationAssumption[] = [...session.activeAssumptions];
+    for (const input of params.verdicts) {
+      const id = String(input.id ?? '').trim().slice(0, 80);
+      const statement = String(input.statement ?? '').trim().slice(0, 300);
+      if (!id || !statement) continue;
+      const status: ConversationAssumption['status'] = input.verdict === 'CONFIRMED' ? 'CONFIRMED' : 'REJECTED';
+      const assumption: ConversationAssumption = Object.freeze({
+        id,
+        statement,
+        confidence:
+          typeof input.confidence === 'number' && Number.isFinite(input.confidence) && input.confidence >= 0 && input.confidence <= 1
+            ? input.confidence
+            : 0.8,
+        evidence:
+          typeof input.evidence === 'string' && input.evidence.trim().length > 0
+            ? input.evidence.trim().slice(0, 200)
+            : "déjà proposée au flux (§16), verdict opérateur",
+        risk: input.risk === 'HIGH' || input.risk === 'MEDIUM' || input.risk === 'LOW' ? input.risk : 'LOW',
+        reversible: input.reversible !== false,
+        requiresConfirmation: false,
+        status
+      });
+      const idx = merged.findIndex((a) => a.id === id);
+      if (idx >= 0) merged[idx] = assumption;
+      else merged.push(assumption);
+      if (status === 'CONFIRMED' && !projectMemory.knownConventions.some((c) => c.toLowerCase() === statement.toLowerCase())) {
+        projectMemory = Object.freeze({
+          ...projectMemory,
+          knownConventions: [...projectMemory.knownConventions, statement].slice(-30)
+        });
+      }
+    }
+    const activeAssumptions = Object.freeze(merged.slice(-50));
+
+    const updatedSession: ConversationSession = {
+      ...session,
+      activeAssumptions,
+      projectMemory
+    };
+    this.cache.set(ConversationSessionLruCache.buildKey(session.tenantId, session.projectId, session.sessionId), updatedSession);
+    this.persistSession(updatedSession);
     return updatedSession;
   }
 

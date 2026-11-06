@@ -16,6 +16,10 @@ process.env.VOLACO_EXECUTION_TIMELINE = 'off';
 // le faux adaptateur est enregistré sous l id 'mistral' : la clé doit
 // exister pour que les routes sélectionnent le provider 'mistral'
 process.env.MISTRAL_API_KEY = 'fake-key-for-tests';
+// LOT B — secret JWT dédié obligatoire (mode strict par défaut).
+process.env.VOLACO_JWT_SECRET = process.env.VOLACO_JWT_SECRET || Buffer.from(
+  Array.from({ length: 32 }, (_, i) => (i * 7 + 11) % 256)
+).toString('base64');
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -26,7 +30,24 @@ import { writeAppFile } from '../../../packages/core/src/app-pipeline.js';
 import { aiProviderRegistry } from '../../../packages/core/src/ai/providers/registry.js';
 import type { AIProviderGenerateRequest, AIProviderGenerateResponse } from '../../../packages/core/src/ai/providers/types.js';
 
-const H = { 'Content-Type': 'application/json', 'x-tenant-id': 'tenant_p1_01', 'x-user-role': 'ENGINEER' };
+// LOT B — le mode STRICT est désormais le défaut : les en-têtes legacy
+// x-tenant-id/x-user-role ne suffisent plus. On fournit un vrai JWT de test
+// (créé via userStore) pour l'authentification des requêtes.
+import { signToken } from '../../../packages/core/src/identity/user-store.js';
+
+const TEST_TENANT = 'tenant_p1_01';
+const TEST_USER = {
+  id: 'usr_p1_test',
+  email: 'p1@t.volaco',
+  tenantId: TEST_TENANT,
+  role: 'ENGINEER' as const
+};
+const H = {
+  'Content-Type': 'application/json',
+  'x-tenant-id': TEST_TENANT,
+  'x-user-role': 'ENGINEER',
+  Authorization: `Bearer ${signToken(TEST_USER)}`
+};
 
 interface ScriptedTurn {
   readonly text?: string;
@@ -168,7 +189,7 @@ describe('CORE-API P1 : routes d écriture nues (SSE mocké)', () => {
     assert.ok((done!.files as string[]).includes('src/App.tsx'), 'le fichier généré est listé');
 
     // le bundle est servi et contient le composant
-    const bundle = await fetch(`${baseUrl}/preview-bundle/${projectId}/`);
+    const bundle = await fetch(`${baseUrl}/preview-bundle/${projectId}/`, { headers: H });
     assert.equal(bundle.status, 200);
     assert.ok((await bundle.text()).includes('Projet P1'), 'le bundle embarque l app générée');
   });
@@ -237,6 +258,9 @@ describe('CORE-API P1 : routes d écriture nues (SSE mocké)', () => {
   });
 
   it('6. /conversation/…/stream : le pipeline HTML produit les sections et sauvegarde', async () => {
+    // LOT CONVERS-CLARIFY — une demande nue (« crée un site ») déclenche une
+    // clarification bloquante par design : aucun domaine n'est énoncé. Le test
+    // du pipeline de sections porte donc un mot métier (« boulangerie »).
     const streamScript = 'Voici votre site.\n\n<SECTION name="header">\nJe pose le header.\n<header class="p-4"><h1>Stream P1</h1></header>\n</SECTION>\n\nTerminé !';
     aiProviderRegistry.register(new FakeMistralAdapter([], streamScript) as unknown as Parameters<typeof aiProviderRegistry.register>[0]);
 
@@ -247,7 +271,7 @@ describe('CORE-API P1 : routes d écriture nues (SSE mocké)', () => {
 
     const res = await fetch(`${baseUrl}/api/v1/projects/${projectId}/conversation/sessions/${sessionId}/stream`, {
       method: 'POST', headers: H,
-      body: JSON.stringify({ message: 'crée un site', isModification: false })
+      body: JSON.stringify({ message: 'crée un site de boulangerie', isModification: false })
     });
     assert.equal(res.status, 200);
     const events = await consumeSSE(res);

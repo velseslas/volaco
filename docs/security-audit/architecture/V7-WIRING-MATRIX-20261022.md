@@ -1,5 +1,8 @@
 # Matrice de câblage V7 — état au 23/10/2026
 
+> Audit de couverture CDC complet (43 modules, pourcentages et limites) :
+> [`V7-CDC-AUDIT-20261024.md`](./V7-CDC-AUDIT-20261024.md).
+
 Critère « branché » : service réellement instancié + utilisé par un flux produit
 + persistance/trace + test + preuve live. Une route qui n'est appelée par
 personne est `PARTIEL`, pas `BRANCHÉ`.

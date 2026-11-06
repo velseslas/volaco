@@ -7,6 +7,8 @@
  * tasksWithoutTrace — AUCUNE ExecutionTrace fabriquée.
  */
 
+import './_lot-b-legacy-env.js';
+
 process.env.VOLACO_EXECUTION_TIMELINE = 'off';
 
 import { describe, it, before, after } from 'node:test';

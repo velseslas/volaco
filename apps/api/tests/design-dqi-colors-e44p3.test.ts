@@ -12,6 +12,8 @@
  * (polices volontairement ≤ 3 dans tous les fixtures pour isoler le terme couleur).
  */
 
+import './_lot-b-legacy-env.js';
+
 process.env.VOLACO_EXECUTION_TIMELINE = 'off';
 
 import { describe, it, before, after } from 'node:test';

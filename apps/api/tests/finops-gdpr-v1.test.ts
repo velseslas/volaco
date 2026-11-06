@@ -5,6 +5,8 @@
  *          et droit à l'effacement (erase tenant).
  */
 
+import './_lot-b-legacy-env.js';
+
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import { describe, it, before, after } from 'node:test';

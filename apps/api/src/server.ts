@@ -20,6 +20,7 @@ import { handlePreviewStandaloneRoutes } from './routes/preview-standalone.js';
 import { handleAppGeneratorRoutes } from './routes/app-generator.js';
 import { handleAppEditRoutes } from './routes/app-edit.js';
 import { handleMcpRoutes } from './routes/mcp.js';
+import { handleMcpRemoteRoutes } from './routes/mcp-remote.js';
 import { handleImageRoutes } from './routes/images.js';
 import { handleExecutionRoutes } from './routes/executions.js';
 import { handleSettingsRoutes } from './routes/settings.js';
@@ -42,7 +43,8 @@ import {
   configureApplicationModelRefresher,
   configureStreamMutationEngine,
   configureStreamDecisionAdvisor,
-  configureStreamPreparation
+  configureStreamPreparation,
+  configureDnaVersionCapture
 } from './routes/conversation.js';
 import { handleRenderRoutes } from './routes/render.js';
 import { handleAiProxyRoutes } from './routes/ai-proxy.js';
@@ -50,7 +52,10 @@ import { handleAiProviderRoutes } from './routes/ai-providers.js';
 import { handleDecideRoutes, configureDecideRoute, produceAdvisoryDecision } from './routes/decide.js';
 import { handleOrchestrateRoutes, configureOrchestratorService } from './routes/orchestrate.js';
 import { handleAgentExecutionRoutes, configureAgentExecutionRoute } from './routes/agent-execution.js';
-import { handleDnaRoutes, configureDnaRoute } from './routes/dna.js';
+import { configureConversationAgentBridge } from './routes/agent-generation-pipeline.js';
+import { handleAiAgentKeysRoutes, configureAgentKeysRoute } from './routes/ai-agent-keys.js';
+import { handleDnaRoutes, configureDnaRoute, configureDnaVersionStore } from './routes/dna.js';
+import { DNAVersionStore } from '../../../packages/core/src/ai-native/dna/version-store.js';
 import { configureValidationRoute } from './routes/validation.js';
 import { handleEvolutionRoutes } from './routes/evolution.js';
 import {
@@ -228,6 +233,13 @@ function bootstrapConversationEngine(): void {
   );
   configureOrchestratorService(orchestratorInstance);
   configureAgentExecutionRoute(orchestratorInstance);
+  // CHAÎNE DE GÉNÉRATION (demande opérateur 2026-11-02) — la route
+  // conversationnelle /stream utilise l'orchestrateur réel pour la chaîne
+  // Décision → Architecture → Agent UI → Agent Backend → Agent Sécurité.
+  configureConversationAgentBridge(orchestratorInstance);
+  // PAGE CLÉS API — le roster des agents (source unique) alimente la route
+  // des clés d'agents (GET) ; le service ne connaît QUE ce module non plus.
+  configureAgentKeysRoute(orchestratorInstance);
 
   // ÉTAPE 33 — pont Conversation → Agent : l'exécuteur d'agents du
   // orchestrateur (AgentExecutionService É32 — source unique) est attaché au
@@ -242,6 +254,47 @@ function bootstrapConversationEngine(): void {
   // LOT 3 — la DNA réelle devient consultable (GET /dna) au lieu du
   // manifeste fictif affiché par le Studio.
   configureDnaRoute(dnaService);
+
+  // CDC §31 — DNA EVOLUTION (LOT 2026-11-03, audit moteurs) : le store de
+  // versions est branché au flux — chaque mutation persistée archive une
+  // version SI le hash du DNA a réellement changé, avec provenance complète
+  // (revisionId de la révision racine + decisionId consultative). Le
+  // rollback réel passera par la révision archivée (film revisionStore).
+  const dnaVersionStore = new DNAVersionStore(true);
+  const dnaImport = dnaService;
+  configureDnaVersionCapture(({ tenantId, projectId, requestId, sessionId, decisionId, revisionId, trigger }) => {
+    try {
+      const dna = dnaImport.extractDNA(tenantId, projectId, 'ENGINEER', requestId);
+      if (!dna) return null;
+      const outcome = dnaVersionStore.recordVersion(tenantId, projectId, dna, {
+        trigger,
+        requestId,
+        sessionId,
+        decisionId,
+        revisionId
+      });
+      if (outcome.created) {
+        logger.info('DNA Evolution : version archivée (CDC §31)', {
+          component: 'server-bootstrap',
+          tenantId,
+          projectId,
+          version: outcome.version,
+          total: outcome.versions,
+          trigger
+        });
+      }
+      return outcome;
+    } catch (error) {
+      logger.warn('DNA Evolution : capture honnêtement impossible (non bloquant)', {
+        component: 'server-bootstrap',
+        tenantId,
+        projectId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return null;
+    }
+  });
+  configureDnaVersionStore(dnaVersionStore);
 
   // LOT 2 (§25/§12) — validation en chaîne unique + Application Model
   // persistent : la chaîne réutilise l'analyseur de code réel déjà construit ;
@@ -284,20 +337,22 @@ function bootstrapConversationEngine(): void {
  * En-têtes de sécurité de base (CDC Annexe F — Security Baseline), appliqués
  * à TOUTES les réponses. Additifs et non cassants.
  *
- * EXCEPTION DOCUMENTÉE (Annexe F : « toute exception doit être documentée et
- * limitée ») : la Content-Security-Policy stricte n'est PAS appliquée à la
- * page Studio tant que le preview utilise un iframe srcdoc — un document
- * srcdoc hérite de la CSP de son parent, et les applications générées
- * chargent des CDNs arbitraires (Tailwind, FontAwesome, chart.js…) : une
- * CSP parente les casserait. La CSP sera introduite à l'étape « fichiers
- * matérialisés sur disque », quand les previews seront servis comme vrais
- * documents HTTP avec leur propre CSP. Exception temporaire, tracée ici.
+ * LOT S2 — la page Studio reçoit une CSP strictsséparable : aucune ressource
+ * externe n'est chargée depuis le principal, les CDN (Tailwind, FontAwesome,
+ * Chart.js…) ne vivent que dans les previews. Le `srcdoc` des previews
+ * hérite des directives de `script-src` de ce principal : isoler la préview
+ * reste le rôle des en-têtes `sandbox` des routes dédiées
+ * (`preview-bundle`, `preview-standalone`, voir app-generator/preview-
+ * standalone). La CSP ci-dessous bloque l'injection de script dans le
+ * Studio et l'API principale, sans imposer une liste de sources.
  */
+const STUDIO_CSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; frame-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; form-action 'self'";
 function setSecurityHeaders(res: ServerResponse): void {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Content-Security-Policy', STUDIO_CSP);
 }
 
 /**
@@ -415,12 +470,17 @@ interface RouteEntry {
 
 // Enrobe les handlers avec effet d'audit lié au POST (comportement historique
 // du dispatcher conservé à l'identique).
+// LOT B (Phase 2, décision 4) — l'identité journalisée est l'identité RÉELLE
+// (context.userId, cf. D7) quand elle existe ; on ne substitue JAMAIS le rôle
+// au pseudo-utilisateur. Sinon, marqueur explicite (jamais une identité
+// fabriquée silencieuse).
+const auditUserId = (context: RequestContext): string => context.userId ?? 'anonymous';
 const projectsWithAudit: RouteHandler = async (req, res, pathname, context, requestId) => {
   const handled = await handleProjectsRoutes(req, res, pathname, context, requestId);
   if (handled && req.method === 'POST') {
     auditStore.record({
       tenantId: context.tenantId,
-      userId: context.role,
+      userId: auditUserId(context),
       action: 'PROJECT_CREATE',
       resourceType: 'PROJECT',
       resourceId: 'new',
@@ -436,7 +496,7 @@ const revisionsWithAudit: RouteHandler = async (req, res, pathname, context, req
   if (handled && req.method === 'POST') {
     auditStore.record({
       tenantId: context.tenantId,
-      userId: context.role,
+      userId: auditUserId(context),
       action: pathname.endsWith('/rollback') ? 'ROLLBACK_TRIGGERED' : 'REVISION_CREATE',
       resourceType: 'REVISION',
       resourceId: 'action',
@@ -478,6 +538,7 @@ const API_ROUTES: readonly RouteEntry[] = [
   { name: 'self-repair (ÉTAPE 7)', handler: handleRepairRoutes },
   { name: 'ai-proxy', handler: handleAiProxyRoutes },
   { name: 'ai-providers (MULTI-MODÈLES)', handler: handleAiProviderRoutes },
+  { name: 'ai-agents-keys (CLÉS PAR AGENT)', handler: handleAiAgentKeysRoutes },
   { name: 'files (CORE-003/004)', handler: handleFilesRoutes },
   { name: 'terminal (CORE-005)', handler: handleTerminalRoutes },
   { name: 'executions (Transparency)', handler: handleExecutionRoutes },
@@ -486,6 +547,7 @@ const API_ROUTES: readonly RouteEntry[] = [
   { name: 'app-generator (P1/P2 — React réel)', handler: handleAppGeneratorRoutes },
   { name: 'app-edit (P3 — édition IA par fichiers)', handler: handleAppEditRoutes },
   { name: 'mcp (P3 — Model Context Protocol)', handler: handleMcpRoutes },
+  { name: 'mcp-remote (C3.2-B — connecteurs MCP distants)', handler: handleMcpRemoteRoutes },
   { name: 'images (P4 — génération d images)', handler: handleImageRoutes },
   { name: 'settings (CORE-006)', handler: handleSettingsRoutes },
   { name: 'projects (FND-003)', handler: projectsWithAudit },
@@ -573,18 +635,9 @@ export function createApiServer(configOverride: Partial<AppConfig> = {}) {
       // en production sans token valide, d'où sa place dans le try.
       const context = extractRequestContext(req, config, requestId);
 
-      // P0 — REFUS PAR DÉFAUT (défense en profondeur).
-      // En mode strict ou en production, toute route /api non publique exige un
-      // contexte réellement authentifié. Ce garde-fou est volontairement
-      // INDÉPENDANT de la présence d'une clé API : auparavant, l'application du
-      // 401 en production dépendait entièrement du bloc `if (config.apiKey)` du
-      // middleware — une clé absente faisait donc retomber l'API sur le repli
-      // d'en-têtes non signés (x-tenant-id / x-user-role), c'est-à-dire sur une
-      // identité choisie librement par le client.
-      // Il s'appuie sur `pathname` (URL normalisée par new URL), jamais sur
-      // `req.url` brut — même raison que dans le middleware.
+      // Production : le garde-fou inclut le point de lecture unifié (config.strictAuth)
       {
-        const guardedMode = config.env === 'production' || process.env.VOLACO_STRICT_AUTH === '1';
+        const guardedMode = config.env === 'production' || config.strictAuth;
         const isPublicApiPath = pathname.startsWith(`${config.apiPrefix}/auth/`)
           || pathname === `${config.apiPrefix}/health`
           || pathname === `${config.apiPrefix}/status`;

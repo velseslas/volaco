@@ -28,6 +28,10 @@ import {
   type RunMemory
 } from './types.js';
 import { AgentStateMachine } from './agent/state-machine.js';
+// LOT RUN_TESTS (CDC §23, 2026-11-03) — exécuteur réel : le préflight
+// d'ingénierie (même moteur que la validation §25 du flux) s'exécute sur les
+// fichiers réels du projet et produit des verdicts honnêtes par fichier.
+import { runEngineeringPreflight } from '../validation/engineering-preflight.js';
 import { AgentRegistry } from './agent/registry.js';
 import { IntentEngine } from './intent/intent-engine.js';
 import { ContextRequirementEngine } from './context/requirements.js';
@@ -216,6 +220,50 @@ export class AgentRuntimeService {
         };
       });
     }
+
+    // LOT RUN_TESTS (CDC §23, 2026-11-03, audit moteurs) — handler RÉEL :
+    // exécute le préflight d'ingénierie (même moteur que la validation §25
+    // du flux de génération) sur chaque fichier HTML réel du projet et
+    // produit des verdicts honnêtes par fichier (PASS / PASS_WITH_WARNINGS /
+    // FAIL). `testPattern` filtre les fichiers ciblés. `passed` = aucun
+    // verdict FAIL (bloqueur) ; les WARN restent visibles sans faire échouer
+    // — même sémantique que la route du flux. Jamais un faux "testsRun".
+    this.toolRegistry.registerHandler('run_tests', async (input, ctx) => {
+      const all = fileStore.getAllProjectFiles(ctx.tenantId, ctx.projectId);
+      const pattern = typeof input.testPattern === 'string' ? input.testPattern.trim().toLowerCase() : '';
+      const targets = Object.keys(all)
+        .filter((p) => /\.html?$/i.test(p))
+        .filter((p) => (pattern ? p.toLowerCase().includes(pattern) : true));
+      const results: Array<{
+        file: string;
+        verdict: string;
+        checks: number;
+        blockers: readonly string[];
+        warnings: readonly string[];
+      }> = [];
+      let testsRun = 0;
+      for (const path of targets) {
+        const content = all[path];
+        if (typeof content !== 'string') continue;
+        const report = runEngineeringPreflight(content, path);
+        testsRun += report.checks.length;
+        results.push({
+          file: path,
+          verdict: report.verdict,
+          checks: report.checks.length,
+          blockers: report.blockers,
+          warnings: report.warnings
+        });
+      }
+      const failed = results.filter((r) => r.verdict === 'FAIL');
+      return {
+        passed: failed.length === 0,
+        testsRun,
+        filesChecked: results.length,
+        failures: failed,
+        results
+      };
+    });
 
     // P2 — SEARCH_CODE RÉEL : grep sur tous les fichiers du projet.
     this.toolRegistry.registerHandler('search_code', async (input, ctx) => {

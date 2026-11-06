@@ -129,12 +129,15 @@ export const OPENAI_COMPATIBLE_PROVIDERS: readonly OpenAiCompatibleProviderConfi
   },
   {
     providerId: 'groq',
-    providerName: 'Groq (Llama)',
+    providerName: 'Groq',
     envKeys: ['GROQ_API_KEY'],
     modelEnvKey: 'GROQ_MODEL',
     baseUrl: 'https://api.groq.com/openai/v1',
-    defaultModel: 'llama-3.3-70b-versatile',
-    models: ['llama-3.3-70b-versatile', 'deepseek-r1-distill-llama-70b', 'llama-3.1-8b-instant'],
+    // Catalogue groq vérifié le 2026-11-02 avec une clé réelle : Groq a retiré
+    // llama-3.3-70b-versatile ; les modèles de chat actuels portent un
+    // préfixe d'espace de noms (openai/, qwen/) — voir le /models public.
+    defaultModel: 'openai/gpt-oss-120b',
+    models: ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'qwen/qwen3.8-27b'],
     contextWindow: 131072,
     capabilities: ['FAST', 'CODE_GENERATION', 'STRUCTURED_OUTPUT', 'STREAMING', 'TOOL_CALLING'],
     reasoning: false,
@@ -327,12 +330,72 @@ export function resetActiveProviderState(nextActive: string | null = null): void
 
 // ============ Clés enregistrées depuis les cartes du tableau de bord ============
 // Stockage runtime global (mono-opérateur local) : {dataDir}/ai-provider-keys.json
-// (gitignored). Une clé enregistrée n'est JAMAIS renvoyée en clair — uniquement
-// un indice masqué (4 derniers caractères). Priorité de résolution :
-//   credentials du tenant (flux internes) > clé de carte > env.
+// (gitignored). LOT S4 — chiffrement at-rest : la clé n'est JAMAIS écrite en
+// clair. Elle est chiffrée AES-256-GCM (même keyring que MCP distant, vivante
+// de AUTH_SECRET) avant écriture ; la lecture déchiffre l'enveloppe. Sans
+// keyring valide, l'écriture échoue avec un message explicite (fail-closed,
+// jamais un downgrade en clair).
+//
+// Format chiffré (compatibilité ascendante si le fichier existait en clair) :
+//   { "updatedAt": "...", "keys": { "<providerId>": { "keyId", "iv", "ciphertext", "authTag" } } }
+// Ancien format clair est ignoré (héritage env), jamais déchiffré en clair.
 
 let storedKeys: Map<string, string> = new Map();
 let keysLoaded = false;
+
+import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+
+const PROVIDER_KEY_BYTES = 32;
+function providerDataKey(): { keyId: string; key: Buffer } | null {
+  const rawKeyId = process.env.VOLACO_MCP_REMOTE_KEY_ID;
+  const rawKey = process.env.VOLACO_MCP_REMOTE_KEY;
+  if (typeof rawKeyId !== 'string' || rawKeyId.length === 0) return null;
+  if (typeof rawKey !== 'string' || rawKey.length === 0) return null;
+  const decoded = Buffer.from(rawKey, 'base64');
+  if (decoded.length !== PROVIDER_KEY_BYTES || decoded.toString('base64') !== rawKey) return null;
+  return { keyId: rawKeyId, key: decoded };
+}
+
+function aadForProviderKey(providerId: string): Buffer {
+  return Buffer.from(`provider-keys:v1:${providerId}`, 'utf8');
+}
+
+function encryptProviderKey(providerId: string, plaintext: string): Record<string, string> {
+  const ring = providerDataKey();
+  if (!ring) {
+    throw new Error(
+      'Chiffrement des clés provider indisponible : VOLACO_MCP_REMOTE_KEY_ID et VOLACO_MCP_REMOTE_KEY (base64 32 octets, clé dédiée distincte de AUTH_SECRET) sont requis.'
+    );
+  }
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', ring.key, iv);
+  cipher.setAAD(aadForProviderKey(providerId));
+  const ciphertext = Buffer.concat([cipher.update(Buffer.from(plaintext, 'utf8')), cipher.final()]);
+  const authTag = cipher.getAuthTag().toString('base64');
+  return {
+    keyId: ring.keyId,
+    iv: iv.toString('base64'),
+    ciphertext: ciphertext.toString('base64'),
+    authTag
+  };
+}
+
+function decryptProviderKey(providerId: string, env: Record<string, string>): string | null {
+  const ring = providerDataKey();
+  if (!ring) return null;
+  if (typeof env.keyId !== 'string' || env.keyId !== ring.keyId) return null;
+  try {
+    const iv = Buffer.from(String(env.iv), 'base64');
+    const authTag = Buffer.from(String(env.authTag), 'base64');
+    if (iv.length !== 12 || authTag.length !== 16) return null;
+    const decipher = createDecipheriv('aes-256-gcm', ring.key, iv);
+    decipher.setAAD(aadForProviderKey(providerId));
+    decipher.setAuthTag(authTag);
+    return Buffer.concat([decipher.update(Buffer.from(String(env.ciphertext), 'base64')), decipher.final()]).toString('utf8');
+  } catch {
+    return null;
+  }
+}
 
 function dataStateKeysPath(): string | undefined {
   const dataRoot = (process.env.VOLACO_DATA_DIR ?? '').trim().length > 0
@@ -352,11 +415,19 @@ function loadKeysOnce(): void {
   try {
     const p = dataStateKeysPath();
     if (!p) return;
-    const parsed = JSON.parse(readFileSync(p, 'utf8')) as { keys?: Record<string, string> };
+    const parsed = JSON.parse(readFileSync(p, 'utf8')) as { keys?: Record<string, unknown> };
     if (parsed?.keys && typeof parsed.keys === 'object') {
-      for (const [id, key] of Object.entries(parsed.keys)) {
-        if (typeof key === 'string' && key.trim().length > 0 && getCatalogEntry(id)) {
-          storedKeys.set(id, key.trim());
+      for (const [id, raw] of Object.entries(parsed.keys)) {
+        if (!getCatalogEntry(id)) continue;
+        if (typeof raw === 'string') {
+          // Ancien format en clair : ignoré (héritage env), jamais déchiffré en clair.
+          continue;
+        }
+        if (raw && typeof raw === 'object') {
+          const decrypted = decryptProviderKey(id, raw as Record<string, string>);
+          if (decrypted && decrypted.trim().length > 0) {
+            storedKeys.set(id, decrypted.trim());
+          }
         }
       }
     }
@@ -370,8 +441,8 @@ function persistKeys(): void {
     const p = dataStateKeysPath();
     if (!p) return;
     mkdirSync(join(p, '..'), { recursive: true });
-    const obj: Record<string, string> = {};
-    for (const [id, key] of storedKeys) obj[id] = key;
+    const obj: Record<string, Record<string, string>> = {};
+    for (const [id, key] of storedKeys) obj[id] = encryptProviderKey(id, key);
     writeFileSync(p, JSON.stringify({ updatedAt: new Date().toISOString(), keys: obj }, null, 2) + '\n', 'utf8');
   } catch {
     // persist best-effort : l'état en mémoire reste la vérité d'exécution
@@ -404,8 +475,18 @@ export function setProviderStoredKey(providerId: string, apiKey: string | undefi
   if (trimmed.length > 512) {
     throw new Error('Clé API trop longue (512 caractères maximum).');
   }
+  if (!providerDataKey()) {
+    throw new Error(
+      'Chiffrement des clés provider indisponible : VOLACO_MCP_REMOTE_KEY_ID et VOLACO_MCP_REMOTE_KEY (base64 32 octets, clé dédiée distincte de AUTH_SECRET) sont requis.'
+    );
+  }
   storedKeys.set(providerId, trimmed);
-  persistKeys();
+  try { persistKeys(); } catch (err) {
+    // Gérer l'écriture chiffrée : si le fichier ne peut pas être écrit,
+    // la clé reste en mémoire et le fichier intact (pas de version au clair).
+    storedKeys.delete(providerId);
+    throw err;
+  }
   return { stored: true, hint: maskedKeyHint(trimmed) };
 }
 

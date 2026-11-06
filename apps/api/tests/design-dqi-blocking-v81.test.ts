@@ -9,6 +9,8 @@
  * design-dqi-colors-e44p3 (cas 1-5) qui reste le juge du terme couleur.
  */
 
+import './_lot-b-legacy-env.js';
+
 process.env.VOLACO_EXECUTION_TIMELINE = 'off';
 
 import { describe, it, before, after } from 'node:test';

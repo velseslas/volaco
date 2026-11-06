@@ -47,6 +47,10 @@ import { withProjectDesignContext } from '../../../../packages/core/src/ai-nativ
 import type { RequestContext } from '../middleware/auth.js';
 
 import { readBody } from '../middleware/body.js';
+import {
+  runAgentGenerationPipeline,
+  type AgentChainStepReport
+} from './agent-generation-pipeline.js';
 import { setProjectFormat } from '../../../../packages/core/src/app-pipeline.js';
 import {
   allVerifiedUnsplashIds,
@@ -69,8 +73,12 @@ import {
   UNSPLASH_SEARCH_TIMEOUT_MS,
 } from '../../../../packages/core/src/image/unsplash-dynamic.js';
 import { recordAdoptedImageIds } from '../../../../packages/core/src/image/image-adoptions.js';
-import { deriveSectorPhotoQuery } from '../../../../packages/core/src/image/sector-queries.js';
+import { deriveSectorPhotoQuery, resolveImageSubject } from '../../../../packages/core/src/image/sector-queries.js';
 import { classifyIntent } from '../../../../packages/core/src/ai-native/conversation-intelligence/engine/intent-engine.js';
+// CDC §16 — LOT ASSOMPTIONS FLUX (2026-11-03) : moteur réel, déterministe,
+// zero-LLM ; mêmes hypothèses que ConversationEngine (/turns), désormais
+// visibles dans le flux /stream (frame + panneau Studio).
+import { deriveAssumptions } from '../../../../packages/core/src/ai-native/conversation-intelligence/engine/assumption-engine.js';
 /**
  * Instance unique du service de conversation pour tout le serveur.
  * Le moteur IA réel (Gemini/Mistral) ou le simulateur (Mock, avec avertissement)
@@ -293,10 +301,14 @@ export function applyStreamFileMutationWithStreamEngine(
  * V7-WIRE-3 — DECISION ENGINE consultatif sur le flux principal.
  *
  * Le DecisionEngine réel est injecté par server.ts (même instance que la route
- * `/decide`), mais le flux l'appelle en mode `record: false` : décision réelle
- * (contraintes + alternatives + contradictions), SANS écriture dans le ledger.
- * Le ledger reste réservé aux décisions de la route /decide et aux décisions
- * humainement confirmées — pas de pollution ni de croissance par génération.
+ * `/decide`). Décision réelle (contraintes + alternatives + contradictions),
+ * consultative par défaut (aucune écriture au ledger).
+ *
+ * CDC §15 — LOT ADR AUTO (2026-11-03) : `record: true` = la décision est
+ * écrite au ledger après déduplication (voir decide.ts). Le flux active le
+ * flag seulement hors node:test, pour les intentions qui changent réellement
+ * l'application (CREATE/MODIFY/DELETE/REFACTOR), et sauf interrupteur
+ * `VOLACO_DECISION_AUTORECORD=0`.
  */
 export interface StreamDecisionSummary {
   readonly decisionId: string;
@@ -315,7 +327,10 @@ export interface StreamDecisionSummary {
   readonly rationale: string;
   /** Optionnel pour compatibilité avec les conseillers de test/anciens. */
   readonly memory?: MemorySignals | undefined;
-  readonly recorded: false;
+  /** CDC §15 ADR auto : `true` = décision écrite au ledger, `false` = consultatif ou doublon. */
+  readonly recorded: boolean;
+  /** Raison d'un non-enregistrement en mode ADR auto (doublon, ledger indisponible). */
+  readonly recordNote?: string | undefined;
 }
 
 export interface StreamDecisionInput {
@@ -325,6 +340,8 @@ export interface StreamDecisionInput {
   readonly intent: IntentResult;
   /** Mémoire projet préparée par le moteur ; absente = mémoire vide. */
   readonly memory?: ProjectMemory | undefined;
+  /** CDC §15 ADR auto : `true` = demander l'enregistrement dédupliqué de la décision. */
+  readonly record?: boolean | undefined;
 }
 
 export type StreamDecisionAdvisor = (
@@ -335,6 +352,34 @@ let streamDecisionAdvisor: StreamDecisionAdvisor | undefined;
 
 export function configureStreamDecisionAdvisor(advisor: StreamDecisionAdvisor | undefined): void {
   streamDecisionAdvisor = advisor;
+}
+
+/**
+ * CDC §31 — DNA EVOLUTION (LOT 2026-11-03, audit moteurs) : le captureur est
+ * injecté par server.ts (DNAVersionStore + ApplicationDNAService réels). Le
+ * flux capture la version APRÈS chaque mutation persistée,avec provenance
+ * (revisionId + décision) ; NAND dédoublonnage par hash réel côté store.
+ */
+export interface DnaVersionCaptureResult {
+  readonly created: boolean;
+  readonly version: number;
+  readonly versions: number;
+}
+
+export type DnaVersionCapture = (input: {
+  tenantId: string;
+  projectId: string;
+  requestId: string;
+  sessionId: string;
+  decisionId?: string | undefined;
+  revisionId?: string | undefined;
+  trigger: 'stream-mutation' | 'manual' | 'rollback';
+}) => DnaVersionCaptureResult | null;
+
+let dnaVersionCaptureFn: DnaVersionCapture | undefined;
+
+export function configureDnaVersionCapture(capture: DnaVersionCapture | undefined): void {
+  dnaVersionCaptureFn = capture;
 }
 
 export type StreamDecisionOutcome =
@@ -641,6 +686,16 @@ export function extractPageTitle(source: string): { title: string | null; cleane
     return '';
   });
   return { title, cleaned };
+}
+
+/**
+ * LOT LEAK-FIX — les commentaires HTML (`<!-- PAGE_TITLE: … -->`, DESIGN_DNA,
+ * notes internes du protocole de génération) ne doivent JAMAIS s'afficher
+ * comme texte parlé dans le chat. On retire aussi tout commentaire entamé et
+ * jamais refermé (fin de stream coupée) : mieux vaut le perdre que le montrer.
+ */
+export function stripHtmlComments(text: string): string {
+  return text.replace(/<!--[\s\S]*?-->/g, '').replace(/<!--[\s\S]*$/g, '');
 }
 
 export function escapeHtmlText(text: string): string {
@@ -1003,6 +1058,10 @@ export function buildRegeneratePrompts(
 ): RegeneratePrompts {
   const isModification = currentHtml.trim().length > 200;
   const imageTheme = detectImageTheme(userMessage || '', pageTitleHint(currentHtml));
+  // LOT MÉTIERS (30/10) — sujet résolu côté serveur pour le long tail
+  // ('autre' + métier du lexique) : même brief sujet-imposé que le chemin
+  // conversationnel. `pageTitleHint` est pur : rappel sans effet.
+  const imageSubject = resolveImageSubject(imageTheme, userMessage || '', pageTitleHint(currentHtml));
   const mode = isModification ? 'modify' : 'create';
   const systemPrompt = isModification
     ? "Tu es le Lead Ingénieur IA de VibeCode Studio. Tu dois MODIFIER l'application web existante selon le plan d'ingénierie approuvé et la demande de l'utilisateur.\n\n" +
@@ -1013,7 +1072,7 @@ export function buildRegeneratePrompts(
     : "Tu es le Lead Designer UI/UX et Ingénieur IA principal de VibeCode Studio. Conçois une application web complète, moderne et interactive avec Tailwind CSS.\n" +
       "Réponds UNIQUEMENT avec le code HTML complet dans un bloc ```html ... ```, sans explication.";
   const sectorAppendix = '\n\n' + buildSectorContract(imageTheme, mode)
-    + '\n\n' + buildImageBrief(imageTheme, mode)
+    + '\n\n' + buildImageBrief(imageTheme, mode, 0, imageSubject ? { subjectHint: imageSubject.hint } : undefined)
     + '\n\nTITRE : émets <!-- PAGE_TITLE: Vrai titre du site --> correspondant à la demande actuelle. Ne recopie jamais un titre hérité d’un autre secteur (ex. « Authentic Italian Cuisine » sur un site barbier).';
   const userPrompt = isModification
     ? `Voici le code HTML actuel de l'application :\n\`\`\`html\n${currentHtml}\n\`\`\`\n\nPlan d'ingénierie approuvé : ${planSummary}\n\nDemande initiale de l'utilisateur : ${userMessage}`
@@ -1138,18 +1197,58 @@ export interface ClosingFacts {
   sections: Array<{ name: string; mode: string }>;
   gateScore: number | null;
   findings: string[];
+  siteContent?: { title: string; description: string; headings: string[] };
+}
+
+/** LOT CONVERS-CHIPS — ce que le site contient VRAIMENT (le voile levé de
+ *  l'appel de clôture) : titre, meta description et premières rubriques
+ *  h1-h3. Sans cela, le LLM de clôture ne connaît pas la demande et propose
+ *  des puces méta génériques (palette / responsive) inutiles à l'utilisateur. */
+export function extractSiteContent(html: string): { title: string; description: string; headings: string[] } {
+  if (!html) return { title: '', description: '', headings: [] };
+  const titleMatch = /<title[^>]*>([^<]{1,140})<\/title>/i.exec(html);
+  const title = titleMatch && titleMatch[1] ? titleMatch[1].replace(/\s+/g, ' ').trim() : '';
+  let description = '';
+  const descMatch = /<meta[^>]+name=["']description["'][^>]*content=["']([^"']{1,220})["']/i.exec(html);
+  if (descMatch && descMatch[1]) description = descMatch[1].replace(/\s+/g, ' ').trim();
+  const headings: string[] = [];
+  const re = /<h[1-3][^>]*>([\s\S]{1,160}?)<\/h[1-3]>/gi;
+  let match: RegExpExecArray | null;
+  let guard = 0;
+  while ((match = re.exec(html)) !== null && headings.length < 12 && guard < 60) {
+    guard++;
+    const rawHeading = match[1];
+    if (!rawHeading) continue;
+    const text = rawHeading.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+    if (text && !headings.includes(text)) headings.push(text);
+  }
+  return { title, description, headings };
+}
+
+export function describeSiteContent(site: { title: string; description: string; headings: string[] }): string {
+  const lines: string[] = [];
+  if (site.title) lines.push('Titre du site : ' + site.title);
+  if (site.description) lines.push('Description annoncée : ' + site.description);
+  if (site.headings.length) lines.push('Rubriques réellement présentes : ' + site.headings.join(' | '));
+  return lines.join('\n');
 }
 
 const CLOSING_SYSTEM_PROMPT =
   "Tu es le Lead Engineer IA de VibeCode Studio. Tu viens de terminer un travail sur le site de l'utilisateur et tu lui parles en français, avec un ton chaleureux et concret.\n" +
-  'Réponds UNIQUEMENT avec un objet JSON valide, sans aucun texte autour : {"summary": "...", "suggestions": ["...", "...", "..."]}\n' +
+  'Réponds UNIQUEMENT avec un objet JSON valide, sans aucun texte autour : {"summary": "...", "suggestions": ["...", "...", "..."], "tip": "..."}\n' +
   "- summary : 2 à 3 phrases. Dis ce que tu as fait et ce que ça change pour le site. Si les constats de qualité révèlent un vrai point faible, signale-le honnêtement en une phrase. N'écris AUCUN chiffre (sections, lignes, score) : ils sont déjà affichés ailleurs.\n" +
-  "- suggestions : exactement 3 actions courtes (3 à 7 mots), à l'impératif, spécifiques à CE site et à CETTE demande, que tu peux exécuter immédiatement. Aucun doublon avec ce qui vient d'être fait.";
+  "- suggestions : exactement 3 actions courtes (3 à 7 mots), à l'impératif, que tu peux exécuter immédiatement. Chacune doit nommer un élément RÉEL du site fourni. Aucun doublon avec ce qui vient d'être fait.\n" +
+  "- tip : UNE seule astuce d'usage (moins de 110 caractères, à l'impératif) pour aider l'utilisateur à exploiter immédiatement ce que tu viens de faire, liée à un élément RÉEL du site fourni. Laisse une chaîne vide si rien de pertinent.\n" +
+  "- LOT CONVERS-CHIPS — les suggestions DOIVENT nommer un élément RÉEL de CE site (une rubrique, un plat du menu, un service, un pont de réservation, un témoignage…) à partir du contenu du site fourni. INTERDIT de proposer des méta-actions génériques (palette de couleurs, responsive, SEO, mode sombre…) sauf si l'utilisateur les a demandées.";
 
 export function buildClosingUserPrompt(facts: ClosingFacts): string {
   const lines: string[] = [];
   lines.push("Demande de l'utilisateur : « " + facts.request.replace(/\s+/g, ' ').trim().slice(0, 400) + ' »');
   lines.push('Travail effectué : ' + (facts.mode === 'modify' ? "modification d'un site existant" : "création d'un nouveau site"));
+  if (facts.siteContent) {
+    const described = describeSiteContent(facts.siteContent);
+    if (described) lines.push('Contenu RÉEL du site préparé :\n' + described);
+  }
   if (facts.sections.length) {
     lines.push('Sections touchées : ' + facts.sections.map((s) => s.name + ' (' + s.mode + ')').join(', '));
   }
@@ -1158,7 +1257,7 @@ export function buildClosingUserPrompt(facts: ClosingFacts): string {
   return lines.join('\n');
 }
 
-export function parseClosingJson(raw: string): { summary: string; suggestions: string[] } | null {
+export function parseClosingJson(raw: string): { summary: string; suggestions: string[]; tip?: string } | null {
   if (typeof raw !== 'string') return null;
   const start = raw.indexOf('{');
   const end = raw.lastIndexOf('}');
@@ -1186,14 +1285,19 @@ export function parseClosingJson(raw: string): { summary: string; suggestions: s
       if (suggestions.length === 3) break;
     }
   }
-  return { summary, suggestions };
+  // LOT CONVERS-TIP — champ optionnel et tolérant : absent, trop court ou
+  // trop long ⇒ La clé disparaît du résultat (rétrocompatibilité : les
+  // anciens payloads sans tip gardent leur forme exacte).
+  const tipRaw = typeof rec['tip'] === 'string' ? (rec['tip'] as string).replace(/\s+/g, ' ').trim() : '';
+  const tip = tipRaw.length >= 10 && tipRaw.length <= 200 ? tipRaw : '';
+  return tip ? { summary, suggestions, tip } : { summary, suggestions };
 }
 
 export async function generateClosing(
   ask: (systemPrompt: string, userPrompt: string) => Promise<string>,
   facts: ClosingFacts,
-  timeoutMs = 8000
-): Promise<{ summary: string; suggestions: string[] } | null> {
+  timeoutMs = 20000
+): Promise<{ summary: string; suggestions: string[]; tip?: string } | null> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const raw = await Promise.race([
@@ -1317,6 +1421,87 @@ export async function handleConversationRoutes(
     return true;
   }
 
+  // CDC §16 — CONFIRMATION INTERACTIVE DES HYPOTHÈSES (audit moteurs, 04/11).
+  // POST /api/v1/projects/:projectId/conversation/sessions/:sessionId/assumptions
+  // → verdicts opérateur (CONFIRMED | REJECTED). Le verdict vit sur la session
+  // (activeAssumptions) et, pour les CONFIRMED, le libellé rejoint la mémoire
+  // projet (knownConventions) — consommée par deriveAssumptions et le contexte
+  // des agents. Batch supporté (un POST pour toute la liste d'un tour).
+  if (sessionId && action === 'assumptions' && req.method === 'POST') {
+    assertPermission(context.role, 'PROJECT_READ', requestId);
+    const body = await parseJsonBody<{
+      verdicts?: Array<{
+        id?: unknown;
+        statement?: unknown;
+        verdict?: unknown;
+        confidence?: unknown;
+        evidence?: unknown;
+        risk?: unknown;
+        reversible?: unknown;
+      }>;
+    }>(req, requestId);
+    const raw = Array.isArray(body.verdicts) ? body.verdicts : [];
+    const invalid = raw.filter(
+      (v) =>
+        !v ||
+        typeof v.id !== 'string' ||
+        v.id.trim().length === 0 ||
+        typeof v.statement !== 'string' ||
+        v.statement.trim().length === 0 ||
+        (v.verdict !== 'CONFIRMED' && v.verdict !== 'REJECTED')
+    );
+    if (raw.length === 0 || invalid.length > 0) {
+      throw new ValidationError(
+        'Chaque verdict requiert {id, statement, verdict: "CONFIRMED" | "REJECTED"}',
+        undefined,
+        requestId
+      );
+    }
+    const session = conversationIntelligenceService.recordAssumptionVerdicts({
+      tenantId: context.tenantId,
+      projectId,
+      sessionId,
+      verdicts: raw.map((v) => ({
+        id: v.id as string,
+        statement: v.statement as string,
+        verdict: v.verdict as 'CONFIRMED' | 'REJECTED',
+        confidence: typeof v.confidence === 'number' ? v.confidence : undefined,
+        evidence: typeof v.evidence === 'string' ? v.evidence : undefined,
+        risk: v.risk === 'LOW' || v.risk === 'MEDIUM' || v.risk === 'HIGH' ? v.risk : undefined,
+        reversible: typeof v.reversible === 'boolean' ? v.reversible : undefined
+      })),
+      userRole: context.role,
+      requestId
+    });
+    if (!session) {
+      throw new NotFoundError(`Session de conversation ${sessionId}`, requestId);
+    }
+    sendJson(res, 200, {
+      activeAssumptions: session.activeAssumptions,
+      knownConventions: session.projectMemory.knownConventions,
+      requestId
+    });
+    return true;
+  }
+
+  // GET /api/v1/projects/:projectId/conversation/sessions/:sessionId/assumptions
+  // → lecture des hypothèses actives de la session (statuts opérateur inclus).
+  if (sessionId && action === 'assumptions' && req.method === 'GET') {
+    assertPermission(context.role, 'PROJECT_READ', requestId);
+    const session = conversationIntelligenceService.getSession(
+      context.tenantId,
+      projectId,
+      sessionId,
+      context.role,
+      requestId
+    );
+    if (!session) {
+      throw new NotFoundError(`Session de conversation ${sessionId}`, requestId);
+    }
+    sendJson(res, 200, { activeAssumptions: session.activeAssumptions, requestId });
+    return true;
+  }
+
   // POST /api/v1/projects/:projectId/conversation/sessions/:sessionId/back
   // → RETOUR ARRIÈRE (CDC §11) : annule le dernier tour par le VRAI moteur
   // (ConversationCompass : l'état conversationnel est restauré, la trace du
@@ -1437,13 +1622,52 @@ export async function handleConversationRoutes(
     // Récupère le projet + fichier existant pour déterminer si modif ou création
     const existing = fileStore.getFile(context.tenantId, projectId, 'index.html');
     const currentHtml = existing?.content || '';
-    const isModification = body.isModification ?? (currentHtml.trim().length > 200);
+    // LOT CLARIF-RESUME — lit et CONSOMME une clarification en attente (TTL
+    // 10 min) : CE message devient la RÉPONSE à la question posée. Consommé
+    // dès la lecture ; une re-clarification repose sa propre marque, un
+    // flux qui échoue ensuite ne ré-arme pas la question. Toute erreur de
+    // lecture conserve le comportement à froid (jamais bloquant).
+    let clarifResume: { question: string; mode: 'create' | 'modify' } | undefined;
+    try {
+      const pendSession = conversationIntelligenceService.getSession(context.tenantId, projectId, sessionId, context.role, requestId);
+      const pend = pendSession?.pendingClarification;
+      if (pend && (Date.now() - pend.questionAskedAt) < 10 * 60 * 1000) {
+        clarifResume = { question: pend.question, mode: pend.mode };
+        conversationIntelligenceService.clearPendingClarification({
+          tenantId: context.tenantId,
+          projectId,
+          sessionId,
+          userRole: context.role,
+          requestId
+        });
+        logger.info('CLARIF-RESUME : réponse consumée', {
+          component: 'conversation-route-stream',
+          tenantId: context.tenantId,
+          projectId,
+          mode: pend.mode
+        });
+      }
+    } catch (resumeError) {
+      logger.warn('CLARIF-RESUME : marque illisible (comportement à froid conservé)', {
+        component: 'conversation-route-stream',
+        tenantId: context.tenantId,
+        error: resumeError instanceof Error ? resumeError.message : String(resumeError)
+      });
+    }
+    // Le mode suit la QUESTION posée : une réponse à « modifier ou créer ? »
+    // sur un projet avec site est une MODIFICATION, jamais une création.
+    const isModification = (body.isModification ?? (currentHtml.trim().length > 200)) || clarifResume?.mode === 'modify';
 
     // P0 IMAGES — thème visuel détecté côté serveur (demande + titre de page
     // en contexte) : le LLM n'est plus l'unique source du thème. Servi aux
     // deux prompts (brief par section) et au log de traçabilité final.
     const titleHint = pageTitleHint(currentHtml);
     const imageTheme: ImageTheme = detectImageTheme(body.message || '', titleHint);
+    // LOT MÉTIERS (30/10) — sujet métier résolu pour le long tail :
+    // 'autre' + métier reconnu par le lexique sectoriel → directive SUJET
+    // IMPOSÉ dans le brief (pool neutre remplacé). Thèmes mappés et
+    // chemin dynamic (clé usager) : aucune incidence.
+    const imageSubject = resolveImageSubject(imageTheme, body.message || '', titleHint);
     // PATCH PERTINENCE — seed de rotation déterministe : UNE valeur pour
     // toute la génération (briefs, sanitize, replis onerror) — cohérence
     // intra-génération garantie, variation seulement entre générations.
@@ -1584,7 +1808,26 @@ export async function handleConversationRoutes(
     // P2 — INTENTION RÉELLE : le moteur conversationnel (LLM, temp 0,
     // repli regex intégré) remplace la regex 6 catégories. L'intention
     // détermine le plan affiché et les phrases du LLM.
-    const realIntent = await classifyIntent(body.message || '', undefined, context.tenantId, projectId);
+    let realIntent = await classifyIntent(body.message || '', undefined, context.tenantId, projectId);
+    // LOT CLARIF-RESUME — la catégorie suit la QUESTION posée : « une page
+    // galerie photo » en réponse à « modifier ou créer ? » est MODIFY (et
+    // non CREATE inventé par le repli regex — le piège d'origine du bruit,
+    // mais avec des mots porteurs).
+    if (clarifResume) {
+      const forcedCategory = clarifResume.mode === 'modify' ? 'MODIFY' : 'CREATE';
+      if (realIntent.category !== forcedCategory) {
+        realIntent = {
+          ...realIntent,
+          category: forcedCategory,
+          confidence: Math.max(realIntent.confidence, 0.5)
+        };
+        emitNamed('on_intent_classified', {
+          category: realIntent.category,
+          confidence: realIntent.confidence,
+          label: 'Réponse à la question reçue — je reprends...'
+        });
+      }
+    }
     // P2-SIGNAUX — tue le blanc aveugle : l'intention classifiée est annoncée
     // aussitôt (avant plan, fournisseur et génération).
     emitNamed('on_intent_classified', {
@@ -1602,7 +1845,101 @@ export async function handleConversationRoutes(
     const BUILD_VERBS = /créer|crée|ajoute|ajouter|modifie|modifier|change|changer|supprime|supprimer|génère|générer|construis|construire|enlève|enlever|create|add|update|delete|generate|build|fix|corrige|corriges/i;
     const wantsAnswerOnly = (realIntent.category === 'QUESTION' || realIntent.category === 'EXPLAIN')
       && body.isModification !== true
-      && !BUILD_VERBS.test(body.message || '');
+      && !BUILD_VERBS.test(body.message || '')
+      // LOT CLARIF-RESUME — pendant une clarification, le message suivant est
+      // la RÉPONSE : il agit, il ne re-déclenche pas une réponse-pure.
+      && clarifResume === undefined;
+    // LOT CONVERS-CLARIFY — la demande qui ne porte AUCUN mot lisible
+    // (ex: « crée un site fdfdfdfdf ») obtient une question de clarification
+    // au lieu d'un site inventé. Sœur du chemin question (wantsAnswerOnly :
+    // frames chat, tour enregistré en mémoire de session, compass
+    // COMPLETED, done sans code) — le build ne démarre pas. Le verrou est
+    // borné au bruit : une demande vague mais PORTANTE (« crée un site de
+    // restaurant ») traverse normalement.
+    // LOT CONVERS-CLARIFY-2 — le gate couvre aussi la MODIFICATION :
+    // « dfdfdf » sur une page existante a déclenché une modification
+    // inventée (titre + bouton) au lieu d'une question. isModification ne
+    // prime plus ici : c'est le détecteur de bruit (moteur, borné absence
+    // d'entité) qui décide, et le texte de la question suit le mode.
+    const incoherentClarif = realIntent.ambiguities.find(a => a.id === 'clarif_incoherent_input');
+    if (incoherentClarif) {
+      // LOT CLARIF-CTX — la question de clarification suit la VÉRITÉ du
+      // pipeline (isModification calculé l.1489 : flag du client OU site
+      // réel existant via index.html > 200 car). Avant : elle ne regardait
+      // que body.isModification — « DSDSD » sur un projet AVEC un site réel
+      // tombait sur la question création (« quel site construire ») et
+      // présumait une intention de construction, jamais vérifiée.
+      const clarifyText = isModification
+        ? `Ta demande n'est pas claire : « ${(body.message || '').trim().slice(0, 60)} » ne me dit rien de précis. Tu veux modifier ton site actuel, ou créer autre chose ? (ex. « change le titre du menu », ou « crée une page galerie photo ») — je m'y mets aussitôt.`
+        : `Ta demande n'est pas claire : « ${(body.message || '').trim().slice(0, 60)} » ne me dit pas quel site construire. Précise-moi le type de site (restaurant, portfolio, boutique…), pour qui, et ce qu'il doit faire en premier — je m'y mets aussitôt.`;
+      emit({ type: 'chat', text: clarifyText, scripted: true });
+      try {
+        await conversationIntelligenceService.recordStreamTurn({
+          tenantId: context.tenantId,
+          projectId,
+          sessionId,
+          userMessage: body.message || '',
+          assistantMessage: clarifyText,
+          intent: realIntent,
+          durationMs: 0,
+          requestId
+        });
+      } catch (clarifyRecordError) {
+        logger.warn('Tour clarification non enregistré (mémoire inchangée)', {
+          component: 'conversation-route-stream',
+          tenantId: context.tenantId,
+          projectId,
+          error: clarifyRecordError instanceof Error ? clarifyRecordError.message : String(clarifyRecordError)
+        });
+      }
+      // LOT CLARIF-RESUME — la question est marquée EN ATTENTE : le prochain
+      // message de CETTE session sera traité comme la RÉPONSE (mode forcé
+      // modify/create, catégorie forcée, réponse-pure by-passée). Écrasé par
+      // toute nouvelle clarification ; consommé au premier message suivant.
+      try {
+        conversationIntelligenceService.setPendingClarification({
+          tenantId: context.tenantId,
+          projectId,
+          sessionId,
+          question: clarifyText,
+          mode: isModification ? 'modify' : 'create',
+          userRole: context.role,
+          requestId
+        });
+      } catch (clarifyMarkError) {
+        logger.warn('Marque CLARIF-RESUME non posée (clarify inchangé)', {
+          component: 'conversation-route-stream',
+          tenantId: context.tenantId,
+          projectId,
+          error: clarifyMarkError instanceof Error ? clarifyMarkError.message : String(clarifyMarkError)
+        });
+      }
+      emitNamed('on_question_answered', { text: clarifyText });
+      emit({ type: 'compass', state: 'COMPLETED' });
+      emit({ type: 'done', updated: false });
+      // LOT CLARIF-CLOSE — une clarification finalise son exécution. Avant :
+      // AUCUN appel de finalisation sur ce chemin — chaque question posée
+      // laissait une ligne RUNNING zombie au store (23 recelées, découvertes
+      // lors de l'hygiène du 29/10 : de 89 min à 10,5 jours d'ancienneté).
+      // Une question posée = un flux COMPLETED (tour enregistré, marque
+      // CLARIF-RESUME posée) — pas une exécution sans fin.
+      try {
+        if (recorder) {
+          executionStore.completeExecution(executionId, {});
+        }
+      } catch (clarifCloseError) {
+        logger.warn('Clôture CLARIF-CLOSE non persistée (fin de flux inchangée)', {
+          component: 'conversation-route-stream',
+          tenantId: context.tenantId,
+          projectId,
+          error: clarifCloseError instanceof Error ? clarifCloseError.message : String(clarifCloseError)
+        });
+      }
+      activeCancelFlags.delete(executionId);
+      res.end();
+      return true;
+    }
+
     if (wantsAnswerOnly) {
       const questionStart = Date.now();
       const qAdapter = resolveStreamingAdapter();
@@ -1689,6 +2026,29 @@ export async function handleConversationRoutes(
           emit({ type: 'done', updated: false });
         }
       }
+      // LOT ANSWER-CLOSE — la voie réponse-pure finalise son exécution.
+      // Même trou que CLARIF-CLOSE : aucun appel de finalisation dans ce
+      // chemin — deux « explique-moi » trouvés zombie RUNNING (hygiène du
+      // 29/10) après les E2E de la clé .env. Une réponse envoyée = un flux
+      // COMPLETED ; une réelle annulation = CANCELLED avec raison lexicale.
+      // La finalisation tourne même si le client a déjà coupé (comme
+      // CLARIF-CLOSE) — jamais un flux sans statut terminal.
+      try {
+        if (recorder) {
+          if (cancelFlag.cancelled) {
+            executionStore.cancelExecution(executionId, "Réponse-pure annulée par l'utilisateur");
+          } else {
+            executionStore.completeExecution(executionId, {});
+          }
+        }
+      } catch (answerCloseError) {
+        logger.warn('Clôture ANSWER-CLOSE non persistée (fin de flux inchangée)', {
+          component: 'conversation-route-stream',
+          tenantId: context.tenantId,
+          projectId,
+          error: answerCloseError instanceof Error ? answerCloseError.message : String(answerCloseError)
+        });
+      }
       clearInterval(qWaitTicker);
       activeCancelFlags.delete(executionId);
       res.end();
@@ -1752,12 +2112,55 @@ export async function handleConversationRoutes(
     // détecte les contradictions avec les décisions passées. Mode CONSULTATIF
     // (`record: false`) : rien n'est écrit dans le Decision Ledger. Le verdict
     // est affiché et persisté ; il ne bloque jamais la génération dans ce lot.
+    // CDC §14→§15 — CORRECTIF (2026-11-03, audit moteurs) : la Décision
+    // consultative reçoit la MÉMOIRE PROJET RÉELLE au lieu d'une mémoire
+    // vide. Avant : la mémoire n'arrivait ici QUE si
+    // VOLACO_UNIFIED_PIPELINE=1 (preparedTurn), sinon `emptyMemory()` nous
+    // condamnait à ignorer les contraintes/décisions actives/risques du
+    // ProjectMemory à chaque tour. Source = MÊME moteur que la route
+    // GET /conversation/memory (L1325) ; consultatif : ne jamais casser la
+    // génération (échec de lecture = repli honnête sur mémoire vide + warn).
+    let realProjectMemory: ProjectMemory | null = null;
+    try {
+      realProjectMemory = conversationIntelligenceService.getLatestProjectMemory(
+        context.tenantId,
+        projectId,
+        context.role,
+        requestId
+      );
+    } catch (memoryError) {
+      logger.warn('Mémoire projet indisponible pour la Décision consultative (mémoire vide)', {
+        component: 'conversation-route-stream',
+        tenantId: context.tenantId,
+        projectId,
+        error: memoryError instanceof Error ? memoryError.message : String(memoryError)
+      });
+    }
+    // Mémoire résolue — utilisée à la fois par la Décision (CDC §15) et par
+    // les hypothèses (CDC §16) : une seule source, jamais deux lectures.
+    const decisionMemory = preparedTurn?.projectMemory ?? realProjectMemory ?? undefined;
+    // CDC §15 — LOT ADR AUTO (2026-11-03, audit moteurs) : la décision
+    // consultative est ENREGISTRÉE au Decision Ledger quand elle porte sur
+    // une vraie modification de l'application (CREATE/MODIFY/DELETE/
+    // REFACTOR). Portes : jamais sous node:test (anti-pollution des suites),
+    // interrupteur `VOLACO_DECISION_AUTORECORD=0` pour désactiver. La
+    // déduplication (même catégorie + même but actif) vit dans decide.ts.
+    const adrAutoEligible =
+      realIntent.category === 'CREATE' ||
+      realIntent.category === 'MODIFY' ||
+      realIntent.category === 'DELETE' ||
+      realIntent.category === 'REFACTOR';
+    const decisionAutoRecord =
+      adrAutoEligible &&
+      process.env.NODE_TEST_CONTEXT === undefined &&
+      process.env.VOLACO_DECISION_AUTORECORD !== '0';
     const decisionOutcome = await assessConfiguredStreamDecision({
       tenantId: context.tenantId,
       projectId,
       sessionId,
       intent: realIntent,
-      memory: preparedTurn?.projectMemory
+      memory: decisionMemory,
+      record: decisionAutoRecord
     });
     let decisionSummary: StreamDecisionSummary | null = null;
     if (decisionOutcome.available) {
@@ -1791,7 +2194,8 @@ export async function handleConversationRoutes(
           memoryRisks: decisionSummary.memory?.matchedRisks.length ?? 0,
           memoryConstraints: decisionSummary.memory?.matchedConstraints.length ?? 0,
           memoryDecisions: decisionSummary.memory?.activeDecisions ?? 0,
-          recorded: false
+          recorded: decisionSummary.recorded,
+          recordNote: decisionSummary.recordNote ?? null
         }
       });
       if (decisionSummary.verdict !== 'READY') {
@@ -1812,6 +2216,48 @@ export async function handleConversationRoutes(
       });
     }
 
+    // CDC §16 — LOT ASSOMPTIONS FLUX (2026-11-03, audit moteurs) : le moteur
+    // d'hypothèses RÉEL (deriveAssumptions, déterministe, zéro LLM — le même
+    // que ConversationEngine) tourne sur l'intention réelle et les conventions
+    // mémoire du projet. Frame additive `on_assumptions_proposed` (phase PLAN)
+    // persistée via recordOnly : affichée dans le panneau Studio, jamais
+    // bloquante. La confirmation interactive reste un lot ultérieur (§16).
+    const realAssumptions = deriveAssumptions(
+      realIntent,
+      decisionMemory?.knownConventions ?? []
+    );
+    if (realAssumptions.length > 0) {
+      emitNamed('on_assumptions_proposed', {
+        assumptions: realAssumptions.map((a) => ({
+          id: a.id,
+          statement: a.statement,
+          confidence: a.confidence,
+          evidence: a.evidence,
+          risk: a.risk,
+          reversible: a.reversible,
+          requiresConfirmation: a.requiresConfirmation,
+          status: a.status
+        }))
+      }, {
+        type: 'ASSUMPTIONS_PROPOSED',
+        phase: 'PLAN',
+        status: 'COMPLETED',
+        title: `${realAssumptions.length} hypothèse(s) explicite(s) dérivée(s)`,
+        detail: {
+          count: realAssumptions.length,
+          ids: realAssumptions.map((a) => a.id),
+          risks: realAssumptions.map((a) => a.risk)
+        }
+      });
+      logger.info('Hypothèses explicites dérivées (CDC §16)', {
+        component: 'conversation-route-stream',
+        tenantId: context.tenantId,
+        projectId,
+        count: realAssumptions.length,
+        ids: realAssumptions.map((a) => a.id)
+      });
+    }
+
     // Le plan préparé par le moteur est la source quand elle est disponible ;
     // le générateur local reste le repli exact du chemin historique.
     const plan = preparedTurn?.plan ?? planGenerator.generatePlan({
@@ -1825,6 +2271,85 @@ export async function handleConversationRoutes(
       status: 'COMPLETED',
       title: `Plan créé — ${plan.steps.length} étape(s)`,
       detail: { planId: plan.planId, steps: plan.steps.length }
+    });
+
+    // VISIBILITÉ (2026-11-02) — le Studio rend les pas de la chaîne UNIQUEMENT
+    // via la vue `activity` normalisée (LOT C+D : l'ActivityStream est le
+    // moteur de rendu ACTIF, le vieux traceur DOM est inert sur ce flux) :
+    // chaque frame d'agent porte donc SA vue. Id STABLE par pas : le frame
+    // RUNNING puis le frame terminal (même id) remplacent la ligne EN PLACE
+    // (◉ violet vivant → ✓ vert / ✗ rouge) dans le fil d'activité du chat.
+    const chainStepActivity = (report: AgentChainStepReport): Record<string, unknown> => {
+      const labels: Record<AgentChainStepReport['step'], string> = {
+        decision: 'Agent Décision',
+        architecture: 'Agent Architecture',
+        ui: 'Agent UI',
+        backend: 'Agent Backend',
+        securite: 'Agent Sécurité'
+      };
+      const statuses: Record<AgentChainStepReport['status'], string> = {
+        running: 'RUNNING',
+        ok: 'COMPLETED',
+        degraded: 'COMPLETED',
+        failed: 'FAILED',
+        skipped: 'SKIPPED'
+      };
+      const dur = report.durationMs > 0 ? ` · ${(report.durationMs / 1000).toFixed(1).replace('.', ',')} s` : '';
+      const cred = report.credentialProviderId
+        ? ` — ${report.credentialProviderId}${report.credentialSlot ? '@' + report.credentialSlot : ''}`
+        : '';
+      let title: string;
+      switch (report.status) {
+        case 'running':
+          title = 'travail en cours…';
+          break;
+        case 'ok':
+          title = `validé${cred}${dur}`;
+          break;
+        case 'degraded':
+          title = `partiel — ${report.note ?? 'LLM indisponible'}${dur}`;
+          break;
+        case 'failed':
+          title = `en échec — ${report.note ?? 'impossible de continuer'}`;
+          break;
+        default:
+          title = 'ignoré';
+      }
+      return {
+        id: `agent-chain-${report.step}`,
+        type: 'agent',
+        action: labels[report.step],
+        status: statuses[report.status],
+        title,
+        detail: {
+          step: report.step,
+          agentId: report.agentId,
+          provider: report.credentialProviderId ?? null,
+          slot: report.credentialSlot ?? null
+        }
+      };
+    };
+    // CHAÎNE D'AGENTS (demande opérateur 2026-11-02) — étapes 1 et 2 déjà
+    // exécutées ci-dessus par les moteurs existants : intention (classifyIntent)
+    // puis plan (PlanGenerator/Decision Engine). Les frames ci-dessous font
+    // la traçabilité honnête de ces deux pas (AUCUNE ressource relancée) ; les
+    // pas 3-5 (Agent UI → Backend → Sécurité via l'orchestrateur) arrivent au
+    // moment de la génération (voir le branchement du stream plus bas).
+    emitNamed('on_agent_step', { step: 'decision', agentId: 'decision-engine', status: 'running', note: 'analyse de l intention (moteur existant)', activity: chainStepActivity({ step: 'decision', agentId: 'decision-engine', status: 'running', durationMs: 0, note: 'analyse de l intention (moteur existant)' }) });
+    emitNamed('on_agent_step', {
+      step: 'decision',
+      agentId: 'decision-engine',
+      status: 'ok',
+      note: `Intention ${realIntent.category} (confiance ${Math.round(Math.min(1, Math.max(0, realIntent.confidence)) * 100)}%) — moteur d'intention existant`,
+      activity: chainStepActivity({ step: 'decision', agentId: 'decision-engine', status: 'ok', durationMs: 0, note: `Intention ${realIntent.category} — moteur d'intention existant` })
+    });
+    emitNamed('on_agent_step', { step: 'architecture', agentId: 'plan-generator', status: 'running', note: 'planification (moteur existant)', activity: chainStepActivity({ step: 'architecture', agentId: 'plan-generator', status: 'running', durationMs: 0, note: 'planification (moteur existant)' }) });
+    emitNamed('on_agent_step', {
+      step: 'architecture',
+      agentId: 'plan-generator',
+      status: 'ok',
+      note: `Plan ${plan.steps.length} étape(s) — générateur de plan existant`,
+      activity: chainStepActivity({ step: 'architecture', agentId: 'plan-generator', status: 'ok', durationMs: 0, note: `Plan ${plan.steps.length} étape(s) — générateur de plan existant` })
     });
 
     // V7 — IMPACT INTELLIGENCE branchée sur le flux principal : avant toute
@@ -1982,7 +2507,9 @@ export async function handleConversationRoutes(
       "NARRATION VIVANTE (très important) : Avant CHAQUE section, raconte en 1-2 phrases chaleureuses et concrètes ce que tu construis et POURQUOI, comme un designer qui parle à son client (ex: « Je pose un header translucide avec le logo à gauche, ça donne tout de suite une impression de pro. » / « Maintenant le hero : une grande image chaleureuse et un gros titre qui claque. »). Utilise le tutoiement, sois naturel, jamais technique.\n\n" +
       "QUALITÉ DESIGN (obligatoire) : une palette limitée et cohérente, des dégradés subtils, des ombres douces, des hover states sur chaque bouton, une vraie hiérarchie typographique (grands titres, textes lisibles) et un espacement généreux. Le résultat doit avoir l'air conçu par un designer senior.\n\n" +
       buildSectorContract(imageTheme, 'create') + "\n\n" +
-      buildImageBrief(imageTheme, 'create', imageSeed, dynamicImages !== undefined ? { poolOverride: [...dynamicImages.dynamicIds] } : undefined) + "\n\n" +
+      buildImageBrief(imageTheme, 'create', imageSeed, dynamicImages !== undefined
+        ? { poolOverride: [...dynamicImages.dynamicIds] }
+        : (imageSubject ? { subjectHint: imageSubject.hint } : undefined)) + "\n\n" +
       "FORMAT OBLIGATOIRE de ta réponse :\n\n" +
       "0. EMPREINTE DESIGN (OBLIGATOIRE, PREMIÈRE LIGNE de ta réponse) : un commentaire HTML avec ton brief design en JSON — palette hex RÉELLE (fond, texte, accent) cohérente avec la demande, UNE police Google Fonts (ex: \"Fraunces\", \"Space Grotesk\", \"Playfair Display\", \"Inter\", \"Poppins\"), et le mode d'ambiance :\n" +
       "   <!-- DESIGN_DNA: {\"palette\":{\"bg\":\"#f8fafc\",\"fg\":\"#0f172a\",\"accent\":\"#0284c7\"},\"font\":\"Inter\",\"mode\":\"light\"} -->\n" +
@@ -2058,7 +2585,9 @@ export async function handleConversationRoutes(
       "- Si la demande concerne plusieurs sections, renvoie-les toutes avec leur propre bloc <SECTION>\n" +
       "- Le texte décrivant chaque modification doit être COURT (1 phrase max) et conversationnel\n" +
       "- TITRE : si le <title> actuel ne décrit pas le projet ou la demande (titre hérité d'un autre secteur, ex. « Authentic Italian Cuisine » sur un site barbier), corrige-le en émettant le marqueur <!-- PAGE_TITLE: Vrai titre du site -->. Sinon, répète le titre actuel.\n\n" +
-      buildImageBrief(imageTheme, 'modify', imageSeed, dynamicImages !== undefined ? { poolOverride: [...dynamicImages.dynamicIds] } : undefined) + "\n\n" +
+      buildImageBrief(imageTheme, 'modify', imageSeed, dynamicImages !== undefined
+        ? { poolOverride: [...dynamicImages.dynamicIds] }
+        : (imageSubject ? { subjectHint: imageSubject.hint } : undefined)) + "\n\n" +
       buildSectorContract(imageTheme, 'modify') + "\n\n" +
       "EXEMPLE pour demande \"change le bouton du Hero en bleu\" :\n\n" +
       "OK, je passe le bouton du Hero en bleu avec une ombre.\n\n" +
@@ -2125,14 +2654,126 @@ export async function handleConversationRoutes(
     const llmWaitStart = Date.now();
     let firstTokenSeen = false;
     let providerWaitTicker: ReturnType<typeof setInterval> | null = null;
+    // =====================================================================
+    // CHAÎNE D'AGENTS SPÉCIALISÉS — demande opérateur (2026-11-02)
+    // ---------------------------------------------------------------------
+    // Décision + Architecture ont déjà tourné ci-dessus (moteurs existants).
+    // Ici : Agent UI (génère le HTML) → Agent Backend (logique métier) →
+    // Agent Sécurité (vérifie), via l'orchestrateur É32 et les CLÉS D'AGENTS
+    // stockées côté serveur (créneau primary → fallback → chaîne legacy).
+    // Le texte final remplace l'appel direct au provider : il est réinjecté
+    // en source « stream » (générateur async) dans le parser de sections
+    // ci-dessous — aucun changement du contrat SSE. En échec, repli strict
+    // sur l'appel direct historique.
+    // =====================================================================
+    let upstreamSource: AsyncIterable<string> | null = null;
+    let agentChainFailures: string[] = [];
+    try {
+      const agentChain = await runAgentGenerationPipeline({
+        tenantId: context.tenantId,
+        projectId,
+        userRole: context.role,
+        requestId,
+        userMessage: body.message || '',
+        intentCategory: realIntent.category,
+        planSteps: plan.steps.map((step) => step.title),
+        userPrompt,
+        isModificationMode,
+        currentHtml,
+        onStep: (stepReport: AgentChainStepReport): void => {
+          emitNamed('on_agent_step', {
+            step: stepReport.step,
+            agentId: stepReport.agentId,
+            status: stepReport.status,
+            credentialSlot: stepReport.credentialSlot ?? null,
+            credentialProviderId: stepReport.credentialProviderId ?? null,
+            failoverReason: stepReport.failoverReason ?? null,
+            durationMs: stepReport.durationMs,
+            note: stepReport.note ?? null,
+            activity: chainStepActivity(stepReport)
+          });
+        }
+      });
+      agentChainFailures = agentChain.steps.filter((s) => s.status !== 'ok').map((s) => `${s.step}:${s.status}`);
+      if (agentChain.ok && agentChain.text.trim().length > 200 && /<SECTION\s+name=/.test(agentChain.text)) {        upstreamSource = (async function* (): AsyncGenerator<string, void, undefined> {
+          // Réinjection progressive : le parser de sections du flux consomme
+          // le texte de la chaîne d'agents EXACTEMENT comme un stream LLM.
+          // PACING (2026-11-02 soir — « l'effet construction du preview
+          // n'existe plus ») : en rafale (aucune attente), TOUT le HTML
+          // arrivait en < 100 ms → LivePaint/stitch/SSE fires consommaient
+          // tout d'un coup : plus de construction visible du tout. ~45 ms
+          // par tranche ≈ 3 Ko/s : les sections arrivent l'une après l'autre
+          // (skeleton → pose → ✓) comme sur un stream LLM réel.
+          const chunkSize = 140;
+          for (let i = 0; i < agentChain.text.length; i += chunkSize) {
+            if (clientGone || cancelFlag.cancelled) return;
+            yield agentChain.text.slice(i, i + chunkSize);
+            if (i + chunkSize < agentChain.text.length) {
+              await new Promise<void>((resolve) => setTimeout(resolve, 45));
+            }
+          }
+        })();
+        emitNamed('on_agent_chain_complete', {
+          steps: agentChain.steps,
+          chars: agentChain.text.length
+        });
+        emit({ type: 'chat', text: `La chaîne d agents a fini son travail (Décision → Architecture → Agent UI → Agent Backend → Agent Sécurité) — j assemble la page ${isModification ? 'et j applique les modifications' : 'section par section'} !`, scripted: true });
+        logger.info('Génération : le flux provient de la CHAÎNE D AGENTS (la chaîne a produit le HTML)', {
+          component: 'conversation-route-stream',
+          tenantId: context.tenantId,
+          projectId,
+          chars: agentChain.text.length,
+          steps: agentChain.steps.map((s) => `${s.step}=${s.status}(${s.credentialProviderId ?? '-'})`).join(' ')
+        });
+      } else {
+        logger.warn('Chaîne d agents non exploitable — repli sur l appel direct au provider', {
+          component: 'conversation-route-stream',
+          tenantId: context.tenantId,
+          projectId,
+          reason: agentChain.ok ? 'sortie sans <SECTION>' : (agentChain.reason ?? 'chaîne en échec'),
+          failures: agentChainFailures.join(',')
+        });
+        emitNamed('on_agent_chain_fallback', {
+          reason: agentChain.ok ? 'sortie sans SECTION' : (agentChain.reason ?? 'chain-failed'),
+          activity: {
+            id: 'agent-chain-fallback',
+            type: 'agent',
+            action: 'Chaîne d agents',
+            status: 'FAILED',
+            title: `indisponible — appel direct utilisé (${agentChain.ok ? 'sortie sans SECTION' : (agentChain.reason ?? 'chain-failed')})`,
+            detail: { failures: agentChainFailures.join(',') }
+          }
+        });
+      }
+    } catch (chainError) {
+      logger.warn('Chaîne d agents en erreur — repli sur l appel direct au provider', {
+        component: 'conversation-route-stream',
+        tenantId: context.tenantId,
+        projectId,
+        error: chainError instanceof Error ? chainError.message : String(chainError)
+      });
+      emitNamed('on_agent_chain_fallback', {
+        reason: 'agent-chain-exception',
+        activity: {
+          id: 'agent-chain-fallback',
+          type: 'agent',
+          action: 'Chaîne d agents',
+          status: 'FAILED',
+          title: `indisponible — appel direct utilisé (${chainError instanceof Error ? chainError.message.slice(0, 80) : 'agent-chain-exception'})`
+        }
+      });
+    }
     try {
       providerWaitTicker = setInterval(() => {
         if (!firstTokenSeen && !clientGone) {
           emitNamed('on_provider_waiting', { elapsedMs: Date.now() - llmWaitStart });
         }
       }, 2000);
-      // @ts-expect-error — generateStream existe sur MistralProviderAdapter
-      const stream = adapter.generateStream(
+      // CHAÎNE D'AGENTS — la source finale du stream : le texte produit par
+      // la chaîne (UI → Backend → Sécurité) s'il existe, sinon l'appel direct
+      // historique tel quel (plamen repli, non-régression stricte).
+      // @ts-expect-error — generateStream existe sur les adaptateurs concrets (Mistral/Gemini)
+      const legacyStream: unknown = upstreamSource ? null : adapter.generateStream(
         {
           tenantId: context.tenantId,
           projectId,
@@ -2145,6 +2786,8 @@ export async function handleConversationRoutes(
         },
         resolveStreamCredentials(req, context.tenantId, adapter.descriptor.providerId)
       );
+      const stream = (upstreamSource ?? legacyStream) as AsyncIterable<string>;
+      if (upstreamSource) firstTokenSeen = true;
 
       for await (const chunk of stream) {
         if (clientGone || cancelFlag.cancelled) break;
@@ -2163,7 +2806,9 @@ export async function handleConversationRoutes(
           if (preambleDna.dna && !streamDesignDna) streamDesignDna = preambleDna.dna;
           if (textBeforeSection.trim()) {
             // Nettoie les marqueurs de section déjà émis + le bloc DNA
-            const cleanText = preambleDna.cleaned.replace(/<SECTION[^>]*>/g, '').trim();
+            // + tout commentaire HTML (LOT LEAK-FIX : <!-- PAGE_TITLE: … -->
+            // ne doit pas fuir dans la bulle de chat).
+            const cleanText = stripHtmlComments(preambleDna.cleaned).replace(/<SECTION[^>]*>/g, '').trim();
             if (cleanText) {
               sendSSE({ type: 'chat', text: cleanText });
             }
@@ -2292,7 +2937,9 @@ export async function handleConversationRoutes(
 
       // À la fin, envoie tout texte restant comme chat final
       if (fullText.trim()) {
-        const cleanText = fullText.replace(/<SECTION[^>]*>[\s\S]*?<\/SECTION>/g, '').trim();
+        // LOT LEAK-FIX — même assainissement que le préambule : les
+        // commentaires internes (PAGE_TITLE…) ne fuient pas en clôture.
+        const cleanText = stripHtmlComments(fullText.replace(/<SECTION[^>]*>[\s\S]*?<\/SECTION>/g, '')).trim();
         if (cleanText) {
           sendSSE({ type: 'chat', text: cleanText });
         }
@@ -2750,6 +3397,55 @@ export async function handleConversationRoutes(
               error: modelRefresh.reason
             });
           }
+          // CDC §31 — LOT DNA EVOLUTION (2026-11-03, audit moteurs) : la
+          // version DNA réelle est archivée quand l'architecture a réellement
+          // changé (dédoublonnage par hash côté store), avec provenance
+          // complète (revisionId + décision). Le rollback réel passera par
+          // LA RÉVISION archivée (film revisionStore, jamais de falsification
+          // du DNA). PORTE anti-pollution des suites (NODE_TEST_CONTEXT)
+          // identique à celle de la chaîne d'agents ; jamais bloquant.
+          if (dnaVersionCaptureFn && process.env.NODE_TEST_CONTEXT === undefined) {
+            try {
+              const dnaCapture = dnaVersionCaptureFn({
+                tenantId: context.tenantId,
+                projectId,
+                requestId,
+                sessionId,
+                decisionId: decisionSummary?.decisionId,
+                revisionId: savedRevisionId ?? undefined,
+                trigger: 'stream-mutation'
+              });
+              if (dnaCapture && dnaCapture.created) {
+                emitNamed('on_dna_version', {
+                  version: dnaCapture.version,
+                  versions: dnaCapture.versions
+                }, {
+                  type: 'DNA_VERSION_CAPTURED',
+                  phase: 'VALIDATE',
+                  status: 'COMPLETED',
+                  title: `DNA v${dnaCapture.version} archivée (architecture réellement changée)`,
+                  detail: {
+                    revisionId: savedRevisionId ?? null,
+                    decisionId: decisionSummary?.decisionId ?? null
+                  }
+                });
+                logger.info('DNA Evolution : version archivée (CDC §31)', {
+                  component: 'conversation-route-stream',
+                  tenantId: context.tenantId,
+                  projectId,
+                  version: dnaCapture.version,
+                  revisionId: savedRevisionId
+                });
+              }
+            } catch (dnaError) {
+              logger.warn('DNA Evolution : capture impossible (génération poursuivie)', {
+                component: 'conversation-route-stream',
+                tenantId: context.tenantId,
+                projectId,
+                error: dnaError instanceof Error ? dnaError.message : String(dnaError)
+              });
+            }
+          }
           // LOT 3 — Compass : l'état COMPLETED sera émis APRÈS le Quality Gate
           // (le client ne doit pas voir « Terminé » pendant la vérification).
           logger.info('HTML final sauvegardé dans fileStore après stream', {
@@ -2999,6 +3695,62 @@ export async function handleConversationRoutes(
         'Améliorer le responsive mobile'
       ];
 
+      // CDC §23 — LOT RUN_TESTS FLUX (audit moteurs, 2026-11-03) : balayage de
+      // tests RÉEL sur les fichiers HTML du projet — UNIQUEMENT multi-pages
+      // (≥ 2 fichiers HTML). En mono-page, le gate d'ingénierie §25 ci-dessus
+      // exécute exactement le même moteur (runEngineeringPreflight) sur le
+      // même contenu : dupliquer une fois de plus ne serait que du bruit.
+      // Même exécuteur que le tool RUN_TESTS (Lot 1). Additif, jamais
+      // bloquant : frame `on_tests_completed` + event TESTS_COMPLETED.
+      try {
+        const allProjectFiles = fileStore.getAllProjectFiles(context.tenantId, projectId);
+        const htmlEntries = Object.entries(allProjectFiles).filter(([p]) => /\.html?$/i.test(p) && p.startsWith('app/') === false);
+        if (htmlEntries.length >= 2) {
+          const testFailures: string[] = [];
+          let testsRun = 0;
+          for (const [pathHtml, contentHtml] of htmlEntries) {
+            if (typeof contentHtml !== 'string' || contentHtml.trim().length === 0) continue;
+            const tcReport = runEngineeringPreflight(contentHtml, pathHtml);
+            testsRun += tcReport.checks.length;
+            if (!tcReport.passed) {
+              testFailures.push(`${pathHtml} → ${tcReport.verdict} (${tcReport.blockers.length} bloqueur${tcReport.blockers.length > 1 ? 's' : ''})`);
+            }
+          }
+          const testsSummary = { filesChecked: htmlEntries.length, testsRun, failed: testFailures };
+          emitNamed('on_tests_completed', {
+            filesChecked: testsSummary.filesChecked,
+            testsRun: testsSummary.testsRun,
+            failed: testsSummary.failed
+          }, {
+            type: 'TESTS_COMPLETED',
+            phase: 'VALIDATE',
+            status: testFailures.length > 0 ? 'FAILED' : 'COMPLETED',
+            title: testFailures.length > 0
+              ? `Tests projet : ${testFailures.length} fichier(s) en échec sur ${htmlEntries.length}`
+              : `Tests projet : ${testsRun} vérifications passées sur ${htmlEntries.length} page(s)`,
+            detail: {
+              filesChecked: testsSummary.filesChecked,
+              testsRun: testsSummary.testsRun,
+              failed: testsSummary.failed
+            }
+          });
+          logger.info('Balayage de tests du projet (CDC §23, multi-pages)', {
+            component: 'conversation-route-stream',
+            tenantId: context.tenantId,
+            projectId,
+            filesChecked: testsSummary.filesChecked,
+            testsRun: testsSummary.testsRun,
+            failures: testFailures.length
+          });
+        }
+      } catch (sweepErr) {
+        logger.warn('Balayage de tests multi-pages indisponible (génération poursuivie)', {
+          component: 'conversation-route-stream',
+          projectId,
+          error: sweepErr instanceof Error ? sweepErr.message : String(sweepErr)
+        });
+      }
+
       emit({
         type: 'done',
         updated: true,
@@ -3020,7 +3772,17 @@ export async function handleConversationRoutes(
       // séparée après « done » (repli : textes déterministes ci-dessus).
       if (!clientGone && !cancelFlag.cancelled) {
         let closingText = closingMessage;
-        let closingChips = quickSuggestions;
+        // LOT CONVERS-CHIPS — le repli reflète le VRAI site : les rubriques
+        // h1-h3 réellement générées deviennent des actions concrètes. Le trio
+        // générique historique ne subsiste qu'en ultime recours (site sans
+        // aucun heading lisible).
+        const siteExtract = extractSiteContent(assembledHtml || '');
+        const derivedChips = siteExtract.headings
+          .filter((h) => h.length >= 3)
+          .slice(0, 3)
+          .map((h) => 'Retoucher la section « ' + h + ' »');
+        const fallbackChips = derivedChips.length >= 2 ? derivedChips : quickSuggestions;
+        let closingChips = fallbackChips;
         const llmClosing = await generateClosing(
           (closingSystem, closingUser) => adapter.generate(
             {
@@ -3030,7 +3792,7 @@ export async function handleConversationRoutes(
               systemPrompt: closingSystem,
               temperature: 0.4,
               maxTokens: 400,
-              timeoutMs: 8000,
+              timeoutMs: 20000,
               requestId
             },
             resolveStreamCredentials(req, context.tenantId, adapter.descriptor.providerId)
@@ -3040,8 +3802,10 @@ export async function handleConversationRoutes(
             mode: isModificationMode ? 'modify' : 'create',
             sections: serverSections.map((s) => ({ name: s.name, mode: s.mode })),
             gateScore: gateResult ? gateResult.score : null,
-            findings: gateResult ? gateResult.findings.slice(0, 3).map((f) => f.title) : []
-          }
+            findings: gateResult ? gateResult.findings.slice(0, 3).map((f) => f.title) : [],
+            siteContent: siteExtract
+          },
+          20000
         );
         if (llmClosing) {
           closingText = llmClosing.summary;
@@ -3051,6 +3815,7 @@ export async function handleConversationRoutes(
           type: 'closing',
           closingMessage: closingText,
           suggestions: closingChips,
+          ...(llmClosing?.tip ? { tip: llmClosing.tip } : {}),
           source: llmClosing ? 'llm' : 'fallback'
         });
       }

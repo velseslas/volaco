@@ -15,6 +15,8 @@
  * (GET /preview-bundle) — jamais sur les prompts seuls.
  */
 
+import './_lot-b-legacy-env.js';
+
 process.env.VOLACO_EXECUTION_TIMELINE = 'off';
 process.env.MISTRAL_API_KEY = 'fake-key-for-tests';
 

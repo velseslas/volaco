@@ -184,6 +184,29 @@ export class AIOrchestratorService {
     this.browserSandbox = browserSandbox ?? new ChromiumBrowserSandbox();
   }
 
+  /**
+   * PAGE CLÉS API — roster sérialisable des agents (id/name/domain/description/
+   * capabilities). L'INSTANCE d'exécution n'est jamais exposée ; c'est la vue
+   * du même Registry (source unique) sans duplication de données.
+   */
+  public agentRoster(): readonly {
+    id: string;
+    name: string;
+    domain: string;
+    description: string;
+    capabilities: readonly string[];
+    requiresProviderCapabilities: readonly string[];
+  }[] {
+    return this.agentRegistry.list().map((entry) => ({
+      id: entry.id,
+      name: entry.name,
+      domain: entry.domain,
+      description: entry.description,
+      capabilities: [...entry.capabilities] as readonly string[],
+      requiresProviderCapabilities: [...entry.requiresProviderCapabilities]
+    }));
+  }
+
   public async orchestratePlan(params: OrchestratePlanParams): Promise<OrchestrationRun> {
     const {
       tenantId,

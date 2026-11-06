@@ -3,13 +3,15 @@
  * (aucun réseau), registry, endpoint generate + service d'assets.
  */
 
+import './_lot-b-legacy-env.js';
+
 process.env.VOLACO_EXECUTION_TIMELINE = 'off';
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { PollinationsImageProvider } from '../../../packages/core/src/image/pollinations-provider.js';
+import { ImageProviderUnavailableError, PollinationsImageProvider } from '../../../packages/core/src/image/pollinations-provider.js';
 import { imageProviderRegistry } from '../../../packages/core/src/image/registry.js';
 import { projectStore } from '../../../packages/core/src/identity/project.js';
 
@@ -40,24 +42,80 @@ describe('P4 : Pollinations provider (fetch injecté)', () => {
     assert.ok(capturedUrl.includes('seed='), 'seed présent (image unique)');
   });
 
-  it('2. réponse non-image → erreur honnête', async () => {
-    const provider = new PollinationsImageProvider(5000);
+  it('2. réponse non-image → erreur honnête (après backoff injecté)', async () => {
+    const provider = new PollinationsImageProvider(5000, [2, 2]);
+    let calls = 0;
     await assert.rejects(
       () => provider.generate('test', {
-        fetchImpl: (async () => new Response('{"error":"boom"}', { status: 200, headers: { 'Content-Type': 'application/json' } })) as typeof fetch
+        fetchImpl: (async () => { calls += 1; return new Response('{"error":"boom"}', { status: 200, headers: { 'Content-Type': 'application/json' } }); }) as typeof fetch
       }),
       /non-image/
     );
+    assert.equal(calls, 3, 'LOT 2 : 3 tentatives (initiale + 2 retries)');
   });
 
-  it('3. image tronquée (< 1000 octets) → erreur honnête', async () => {
-    const provider = new PollinationsImageProvider(5000);
+  it('3. image tronquée (< 1000 octets) → erreur honnête (après backoff injecté)', async () => {
+    const provider = new PollinationsImageProvider(5000, [2, 2]);
+    let calls = 0;
     await assert.rejects(
       () => provider.generate('test', {
-        fetchImpl: (async () => new Response(Buffer.alloc(50), { status: 200, headers: { 'Content-Type': 'image/jpeg' } })) as typeof fetch
+        fetchImpl: (async () => { calls += 1; return new Response(Buffer.alloc(50), { status: 200, headers: { 'Content-Type': 'image/jpeg' } }); }) as typeof fetch
       }),
       /tronquée/
     );
+    assert.equal(calls, 3, 'LOT 2 : échec technique aussi réessayé');
+  });
+
+  it('4. LOT 2 : 402 puis 503 puis 200 → retry (backoff injecté) et image fournie', async () => {
+    const provider = new PollinationsImageProvider(5000, [2, 2]);
+    const statuses = [402, 503, 200];
+    let calls = 0;
+    const image = await provider.generate('une vitrine de boucherie', {
+      width: 640,
+      height: 360,
+      fetchImpl: (async () => {
+        const status = statuses[Math.min(calls, statuses.length - 1)] ?? 200;
+        calls += 1;
+        if (status === 200) {
+          return new Response(FAKE_PNG, { status: 200, headers: { 'Content-Type': 'image/png' } });
+        }
+        return new Response('quota exhausted', { status, headers: { 'Content-Type': 'text/plain' } });
+      }) as typeof fetch
+    });
+    assert.equal(calls, 3, '3 tentatives programmées (1 s puis 3 s en production)');
+    assert.equal(image.contentType, 'image/png');
+  });
+
+  it('5. LOT 2 : statut éphémère persistant (402 ×3) → ImageProviderUnavailableError tracée', async () => {
+    const provider = new PollinationsImageProvider(5000, [2, 2]);
+    let calls = 0;
+    await assert.rejects(
+      () => provider.generate('test', {
+        fetchImpl: (async () => { calls += 1; return new Response('HTTP 402 payment required', { status: 402, headers: { 'Content-Type': 'text/plain' } }); }) as typeof fetch
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof ImageProviderUnavailableError);
+        const unavailable = error as ImageProviderUnavailableError;
+        assert.equal(unavailable.provider, 'pollinations');
+        assert.equal(unavailable.attempts, 3, 'initiale + 2 retries');
+        assert.equal(unavailable.status, 402);
+        assert.match(unavailable.message, /HTTP 402/);
+        return true;
+      }
+    );
+    assert.equal(calls, 3);
+  });
+
+  it("6. LOT 2 : statut NON réessayable (404) → échec immédiat (1 seul appel)", async () => {
+    const provider = new PollinationsImageProvider(5000, [2, 2]);
+    let calls = 0;
+    await assert.rejects(
+      () => provider.generate('test', {
+        fetchImpl: (async () => { calls += 1; return new Response('no such resource', { status: 404, headers: { 'Content-Type': 'text/plain' } }); }) as typeof fetch
+      }),
+      /HTTP 404/
+    );
+    assert.equal(calls, 1, 'pas de fiction de résilience sur un statut définitif');
   });
 });
 

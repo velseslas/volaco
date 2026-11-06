@@ -32,7 +32,10 @@ import {
   imageProviderRegistry,
   type ImageProvider
 } from '../../../../packages/core/src/image/registry.js';
-import { PollinationsImageProvider } from '../../../../packages/core/src/image/pollinations-provider.js';
+import {
+  ImageProviderUnavailableError,
+  PollinationsImageProvider
+} from '../../../../packages/core/src/image/pollinations-provider.js';
 import type { RequestContext } from '../middleware/auth.js';
 
 import { readBody } from '../middleware/body.js';
@@ -112,10 +115,37 @@ export async function handleImageRoutes(
     const provider = resolveProvider(body.provider);
     logger.info('Génération d image', { component: 'image-routes', provider: provider.id, projectId });
 
-    const image = await provider.generate(prompt, {
-      width: Number(body.width) || 1024,
-      height: Number(body.height) || 576
-    });
+    // LOT 2 (30/10) — provider indisponible (402/429/500/503 polling après
+    // 3 essais) → 502 EXPLICITE au lieu d'une 500 anonyme : le panneau
+    // affiche la cause réelle (quota/charge) et le message du provider
+    // (aucun secret : code HTTP + essais).
+    let image;
+    try {
+      image = await provider.generate(prompt, {
+        width: Number(body.width) || 1024,
+        height: Number(body.height) || 576
+      });
+    } catch (error) {
+      if (error instanceof ImageProviderUnavailableError) {
+        logger.warn('Génération d image — provider indisponible', {
+          component: 'image-routes',
+          provider: error.provider,
+          attempts: error.attempts,
+          status: error.status ?? undefined
+        });
+        res.statusCode = 502;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.end(JSON.stringify({
+          error: 'Provider d’image indisponible : ' + error.provider,
+          detail: error.message,
+          attempts: error.attempts,
+          status: error.status ?? undefined,
+          requestId
+        }));
+        return true;
+      }
+      throw error;
+    }
 
     // Persistance : FileStore (base64 — révisable comme les sources)
     const fileStorePath = 'assets/' + fileName;

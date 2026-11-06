@@ -6,6 +6,8 @@
  * statuts proviennent exactement des traces stockées.
  */
 
+import './_lot-b-legacy-env.js';
+
 process.env.VOLACO_EXECUTION_TIMELINE = 'off';
 // ISOLATION DÉTERMINISTE : le répertoire de persistance est posé AVANT tout
 // import du cœur (les imports du cœur sont dynamiques, dans before()) — le

@@ -16,7 +16,7 @@
  *   thème imposé sans justification.
  */
 
-/** Thèmes : 10 secteurs + sous-thème gelato (P1) + repli générique. */
+/** Thèmes : secteurs mappés + sous-thème gelato (P1) + repli générique. */
 export type ImageTheme =
   | 'restaurant'
   | 'gelato'
@@ -29,6 +29,11 @@ export type ImageTheme =
   | 'immobilier'
   | 'avocat'
   | 'coiffeur'
+  | 'boucherie'
+  | 'plombier'
+  | 'serrurier'
+  | 'patisserie'
+  | 'cordonnier'
   | 'autre';
 
 export const IMAGE_THEMES: readonly ImageTheme[] = [
@@ -43,6 +48,11 @@ export const IMAGE_THEMES: readonly ImageTheme[] = [
   'immobilier',
   'avocat',
   'coiffeur',
+  'boucherie',
+  'plombier',
+  'serrurier',
+  'patisserie',
+  'cordonnier',
   'autre',
 ];
 
@@ -52,11 +62,16 @@ export const IMAGE_THEMES: readonly ImageTheme[] = [
  * (jamais de sous-chaîne : 'auto' ne matche pas 'automatique').
  */
 const THEME_KEYWORDS: Record<Exclude<ImageTheme, 'autre'>, readonly string[]> = {
+  // LOT MÉTIERS (30/10) — 'patisserie' RETIRÉ de cette liste : le mot
+  // captait ici une demande pâtissière vers restaurant (plats chauds) et
+  // créait un ex æquo avec le nouveau thème dédié 'patisserie' (tie →
+  // 'autre' = eucalyptus). « boulangerie » reste restaurant ; une demande
+  // « boulangerie pâtisserie » reste en ex æquo 'autre' — identique à avant.
   restaurant: [
     'restaurant', 'resto', 'restau', 'bistrot', 'brasserie', 'pizzeria',
     'trattoria', 'boulangerie', 'cuisine', 'gastronomie', 'food', 'dinner',
     'lunch', 'cantine', 'snack', 'kebab', 'sushi', 'burger', 'burgers',
-    'pizza', 'pizzas', 'café', 'cafe', 'patisserie', 'traiteur', 'menu',
+    'pizza', 'pizzas', 'café', 'cafe', 'traiteur', 'menu',
     'menus', 'recette', 'recettes', 'bar', 'couscous', 'tajine', 'chorba',
     'mechoui', 'baklava', 'sorbet', 'sorbets',
   ],
@@ -140,6 +155,40 @@ const THEME_KEYWORDS: Record<Exclude<ImageTheme, 'autre'>, readonly string[]> = 
     'coupe masculine', 'coupe femme', 'coupe femmes', 'coupe pour femme',
     'coupe pour femmes', 'coupe feminine', 'coupe de cheveux', 'coupe cheveux',
     'coupe de barbe', 'couper les cheveux', 'couper la barbe',
+  ],
+  // LOT MÉTIERS (30/10) — diagnostic « boucherie → eucalyptus » : les
+  // métiers hors des secteurs mappés tombaient dans le réservoir « ambiance
+  // neutre » car le lexique métiers (sector-queries.ts) ne servait que si
+  // l'utilisateur fournissait une clé Unsplash. Les 5 métiers testés en E2E
+  // deviennent des secteurs à part entière — discipline coiffeur : AUCUN
+  // mot générique (pas de « chaussure », pas de « sanitaire »… trop
+  // partagés avec boutique/clinique), formes plurielles pleines, réservoirs
+  // examinés au pixel (protocole du diag du 30/10, 34 IDs retenus).
+  boucherie: [
+    'boucherie', 'boucheries', 'boucher', 'bouchers', 'bouchere', 'boucheres',
+    'charcuterie', 'charcuteries', 'charcutier', 'charcutiers',
+    'volailler', 'volaillers', 'viande', 'viandes', 'gibier', 'volaille',
+  ],
+  plombier: [
+    'plombier', 'plombiers', 'plomberie', 'tuyauterie', 'tuyau', 'tuyaux',
+    'fuite', 'fuites', 'depannage plomberie', 'chauffe-eau',
+    'robinet', 'robinets', 'mitigeur', 'mitigeurs',
+  ],
+  serrurier: [
+    'serrurier', 'serruriers', 'serrurerie', 'serrure', 'serrures',
+    'cle', 'clef', 'cles', 'clefs', 'cylindre', 'cylindres',
+    'porte blindee', 'blindage', 'deblindage', 'volets roulants',
+  ],
+  patisserie: [
+    'patisserie', 'patisseries', 'patissier', 'patissiers',
+    'patissiere', 'patissieres', 'entremet', 'entremets',
+    'macaron', 'macarons', 'gateau', 'gateaux', 'eclair', 'eclairs',
+    'viennoiserie', 'praline', 'pralines', 'tarte', 'tartes',
+  ],
+  cordonnier: [
+    'cordonnier', 'cordonniers', 'cordonnerie', 'cordonneries',
+    'ressemelage', 'ressemelages', 'soulier', 'souliers',
+    'reparation chaussures', 'reparateur de chaussures',
   ],
 };
 
@@ -451,6 +500,98 @@ export const THEME_IMAGE_RESOURCES: Record<ImageTheme, ThemeImageResources> = {
     hero: 'intérieur de barbier : fauteuil, miroir et lumière chaude',
     cards: 'gestes du métier : coupe, dégradé, taille de barbe en gros plan',
     gallery: '3 angles : salon, geste de coupe, détail rasage ou produits',
+  },
+  // LOT MÉTIERS (30/10) — cinq réservoirs neufs, discipline gelato/immobilier
+  // appliquée à la lettre : chaque ID a été REGARDÉ au pixel (image lue une
+  // à une) ET testé en GET 200 image/jpeg au format réellement servi
+  // (auto=format&fit=crop&w=1200&q=80) le 30/10/2026, 34/34 (boucherie 8,
+  // plombier 8, serrurier 7, patisserie 6, cordonnier 5). Candidats issus
+  // des recherches publiques Unsplash (« butcher-shop-meat », « plumbing-
+  // tools », « plumber-working », « faucet-pipes », « locksmith-key »,
+  // « pastry-shop-cake », « shoe-repair-workshop »), rejets documentés dans
+  // le journal du diagnostic (étiquettes de prix exotiques, atelier vélo
+  // « Park Tool », décor Halloween, rugbyman au lavabo, sac Makita
+  // générique). Aucun sujet ambigu : chaque photo montre le MÉTIER (viande,
+  // tuyauterie, clé dans le barillet, entremets, cuir) — jamais un
+  // eucalyptus.
+  boucherie: {
+    label: 'boucherie / charcuterie',
+    unsplash: [
+      'photo-1632084687062-522d7b1d4b95', // vitrine « BUTCHER SHOP » : balance, saucisses suspendues (héro)
+      'photo-1625643269470-5d3e7b69fa34', // comptoir d'exposition débordant de viandes (héro)
+      'photo-1740586222627-48338edac67d', // étal ibérique : pièces suspendues + trancheuse
+      'photo-1786812594035-d9ff77d0ecb2', // steaks crus sur plateaux, étiquettes de prix
+      'photo-1564068358927-970e567b27e2', // viandes tranchées en gros plan (cartes)
+      'photo-1622992599912-d5ce51fe395b', // pièce de viande sur planche de bois (cartes)
+      'photo-1762088208244-dde4e8b10047', // le boucher dans sa boutique, viande accrochée
+      'photo-1584048603508-4b31894439a9', // second angle du comptoir d'exposition
+    ],
+    picsumSeeds: ['boucherie-comptoir', 'viande-vitrine', 'charcuterie-plateau', 'atelier-boucher'],
+    hero: 'vitrine ou comptoir de boucherie : pièces de viande présentées, balance, lumière chaude',
+    cards: 'gros plans produits : pièces tranchées, plateaux de viande, étiquettes de prix',
+    gallery: '3 angles : comptoir, viande accrochée, détail de pièce sur planche',
+  },
+  plombier: {
+    label: 'plombier / plomberie sanitaire',
+    unsplash: [
+      'photo-1676210134188-4c05dd172f89', // plombier au travail sous évier : siphon, lumière bleue (héro)
+      'photo-1676210134050-6f12c6898395', // pose d'un bâti-support WC suspendu (geste)
+      'photo-1503789146722-cf137a3c0fea', // clé à tuyau et clé à molette sur fond noir (outils)
+      'photo-1596394723269-b2cbca4e6313', // valve en laiton qui fuit, eau jaillissante (détail)
+      'photo-1768321918210-a775e4c88f08', // tuyauterie isolée sur chantier (installation)
+      'photo-1642797735471-3e90055c5ff9', // raccords inox et laiton sur établi (matériel)
+      'photo-1593523474914-2a4fd54075dc', // robinet mural sobre sur mur clair (robinetterie)
+      'photo-1761074342668-c38fc2e62e67', // mur d'atelier : pinces et clés à tuyau (ambiance)
+    ],
+    picsumSeeds: ['plomberie-intervention', 'tuyauterie-detail', 'robinetterie-propre', 'atelier-plombier'],
+    hero: 'plombier à l’œuvre : intervention sous évier ou installation sanitaire, lumière franche',
+    cards: 'outils et pièces du métier : clé à tuyau, robinetterie, raccords, joints',
+    gallery: '3 angles du métier : détection de fuite, tuyauterie apparente, robinetterie posée',
+  },
+  serrurier: {
+    label: 'serrurier / serrurerie',
+    unsplash: [
+      'photo-1609770231080-e321deccc34c', // clé squelette dans le barillet, ombre sur porte (héro)
+      'photo-1677951570313-b0750351c461', // clé dans un cylindre, bois sombre (geste)
+      'photo-1643804926339-e94f0a655185', // trousseau de clés sur bois (cartes)
+      'photo-1584985429926-08867327d3a6', // clé ancienne sur fond neutre (détail)
+      'photo-1575908539614-ff89490f4a78', // trois clés en tôle, fond clair (cartes)
+      'photo-1585914641050-fa9883c4e21c', // serrure patinée + béquille en fer sur porte blanche
+      'photo-1584045446619-7146285c9811', // quincaillerie de porte, acier brossé (détail)
+    ],
+    picsumSeeds: ['serrurerie-porte', 'cles-trousseau', 'cylindre-serrure', 'atelier-serrurier'],
+    hero: 'détail de serrure saine : clé dans le barillet, porte noble en lumière rasante',
+    cards: 'pièces du métier : clés, trousseaux, cylindres, quincaillerie de porte',
+    gallery: '3 angles : serrure posée, trousseau de clés, détail de quincaillerie',
+  },
+  patisserie: {
+    label: 'pâtisserie / pâtissier',
+    unsplash: [
+      'photo-1711141326113-e6b607fd78ef', // vitrine pâtissière chargée : entremets, mousses, fraises (héro)
+      'photo-1739132124985-6c9277e268b5', // vitrine éclairée : entremets et tartes alignés (héro bis)
+      'photo-1626263468007-a9e0cf83f1ac', // gâteau chocolat au nappage coulant (produit)
+      'photo-1693040775922-6aa218c689ec', // bundt framboise, vue zénithale, sucre glace (produit)
+      'photo-1623049397342-ed7fdc71ac6d', // pâtissière au travail : dressage au pinceau (geste)
+      'photo-1694067609280-5837ebf9e64f', // entremets chocolat, figues et roses (produit signature)
+    ],
+    picsumSeeds: ['patisserie-vitrine', 'entremets-produit', 'chocolat-gateau', 'atelier-patissier'],
+    hero: 'vitrine pâtissière remplie : entremets et tartes en pleine lumière',
+    cards: 'produits en gros plan : gâteaux, entremets, fruits dressés, gestes de dressage',
+    gallery: '3 angles : vitrine, produit signature, geste de dressage',
+  },
+  cordonnier: {
+    label: 'cordonnier / ressemelage',
+    unsplash: [
+      'photo-1529953717281-81a40b131119', // atelier : botte en cuir, pinces et outils sur cuirs (héro)
+      'photo-1790253719855-e6f58150fc7f', // vitrine du cordonnier : machine de ressemelage, paires à réparer
+      'photo-1648343615199-03567050abbb', // derbys noirs sur embauchoirs, clous sur l'établi (cartes)
+      'photo-1707109322343-3fe79f5d5c0b', // nettoyage et remise en état de baskets (geste)
+      'photo-1787005241178-c9006ea9610b', // patron de coupe tracé sur cuir, main posée (détail)
+    ],
+    picsumSeeds: ['cordonnier-atelier', 'ressemelage-detail', 'cuir-chaussure', 'vitrine-cordonnier'],
+    hero: 'atelier du cordonnier : cuirs, outils du métier et paire de chaussures au poste',
+    cards: 'gestes et pièces : ressemelage, clous sur l’établi, cuirs et patrons de coupe',
+    gallery: '3 angles : établi, machine de ressemelage, détail de cuir cousu',
   },
   autre: {
     label: 'sujet général',
@@ -803,6 +944,45 @@ const SECTOR_CONTRACTS: Record<ImageTheme, SectorContract> = {
     copy: 'ton direct et précis du métier ; vocabulaire : coupe, dégradé, taille de barbe, rasage à l’ancienne, rendez-vous ; appels à l’action : « Réserver un créneau », « Prendre rendez-vous ».',
     sections: 'ex. hero, prestations, galerie, tarifs, avis, rendez-vous, footer',
   },
+  // LOT MÉTIERS (30/10) — contrats des 5 nouveaux secteurs : direction
+  // artistique déduite du MÉTIER (comptoir, chantier, porte, établi sucré),
+  // jamais du gabarit générique ; l'entrée 'autre' d'en dessous reste le
+  // repli des demandes sans secteur.
+  boucherie: {
+    label: 'boucherie / charcuterie',
+    palette: 'ambiance de comptoir : fond crème ou ardoise froide, texte brun-brique, accent rouge boucher (#9f1239), jamais criard. Contraste AA minimum.',
+    typography: 'titres robustes façon bistro (serif affirmée ou sans-serif grasse), corps net et lisible ; cartes produits sobres, prix bien lisibles.',
+    copy: 'ton chaleureux d’artisan : vocabulaire métier (pièces, découpe, maturation, provenance, charcuterie maison) ; appels à l’action : « Composer sa commande », « Nous trouver ».',
+    sections: 'ex. hero, spécialités, à la pièce, provenance, horaires, contact, footer',
+  },
+  plombier: {
+    label: 'plombier / plomberie sanitaire',
+    palette: 'fond blanc-bleu opérationnel, texte ardoise, accent bleu technique (#0369a1) ; zone urgence contrastée. Contraste AA minimum.',
+    typography: 'sans-serif technique franche, gros titres lisibles ; cartes prestation avec téléphone et prix clairs.',
+    copy: 'ton rassurant et concret : vocabulaire (dépannage, fuite, chauffe-eau, robinetterie, devis gratuit) ; appels à l’action : « Appeler maintenant », « Demander un devis ».',
+    sections: 'ex. hero, services (fuite, chauffe-eau, salle de bain), urgence, zone d’intervention, avis, contact, footer',
+  },
+  serrurier: {
+    label: 'serrurier / serrurerie',
+    palette: 'fond nuit ardoise ou métal clair, texte nickèle, accent cuivre/doré (#b45309) façon laiton de serrure. Contraste AA minimum.',
+    typography: 'sans-serif compacte et fiable, boutons d’urgence visibles ; cartes interventions numérotées.',
+    copy: 'ton efficace et calme même en urgence : vocabulaire (porte claquée, cylindre, porte blindée, dépannage rapide 24/7) ; appels à l’action : « Appeler un serrurier », « Intervention 24/7 ».',
+    sections: 'ex. hero, interventions (ouverture, cylindre, blindage), urgence, zones, tarifs, avis, contact, footer',
+  },
+  patisserie: {
+    label: 'pâtisserie / pâtissier',
+    palette: 'fond crème-vanille poudré, texte chocolat profond, accent framboise ou caramel (#be185d), jamais criard. Contraste AA minimum.',
+    typography: 'titres serif douce et gourmande (Fraunces, Playfair), corps arrondi lisible ; cartes produits appétissantes bien alignées.',
+    copy: 'ton chaleureux de pâtissier : vocabulaire (entremets, macarons, sur commande, gâteau d’anniversaire) ; appels à l’action : « Commander un gâteau », « Voir la vitrine ».',
+    sections: 'ex. hero, vitrine, spécialités, gâteaux sur commande, avis, horaires, contact, footer',
+  },
+  cordonnier: {
+    label: 'cordonnier / ressemelage',
+    palette: 'atelier vrai : fond cuir clair ou toile désaturée, texte brun profond, accent cuir orangé (#a16207), ambiance établi sans folklore. Contraste AA minimum.',
+    typography: 'série simple de titres (serif ou sans-serif de caractère), corps lisible ; cartes services (ressemelage, cirage, réparation) listées clairement.',
+    copy: 'ton d’atelier honnête : vocabulaire (ressemelage, réparation, cirage, embauchoirs, cuir) ; appels à l’action : « Confier une réparation », « Déposer ses chaussures ».',
+    sections: 'ex. hero, services, savoir-faire, avis, horaires, contact, footer',
+  },
   autre: {
     label: 'sujet général',
     palette: 'direction artistique cohérente DÉDUITE DE LA DEMANDE (aucune palette imposée ici) ; contraste AA minimum, jamais de texte blanc sur fond clair.',
@@ -1007,6 +1187,17 @@ export function detectImageTheme(prompt: string, contextTitle = ''): ImageTheme 
 }
 
 /**
+ * LOT MÉTIERS (30/10) — LOT 3 (couture demandée) : couche explicitement
+ * séparée de detectImageTheme. Aujourd'hui DÉLÈGUE (autorité unique du
+ * scoring, zéro duplication, byte-identique) ; demain, si la taxonomie
+ * métiers doit diverger du scoring de brief, la couture est ici et
+ * detectImageTheme reste la référence des réservoirs.
+ */
+export function detectSector(prompt: string, contextTitle = ''): ImageTheme {
+  return detectImageTheme(prompt, contextTitle);
+}
+
+/**
  * Construit le bloc IMAGES du prompt pour un thème donné.
  * - create : rôles visuels par section + IDs imposés + interdictions
  *   (mémoire, loremflickr, hors-sujet) ;
@@ -1024,9 +1215,15 @@ export function detectImageTheme(prompt: string, contextTitle = ''): ImageTheme 
  * exécution). Le réservoir listé devient ces photos du jour ; le sanitizer
  * les reconnaît (dynamicIds) et les conserve. Absent : réserve
  * déterministe, comportement strictement historique.
+ *
+ * LOT MÉTIERS (30/10) — `subjectHint` = sujet métier résolu côté serveur
+ * pour le LONG TAIL (thème 'autre' + métier reconnu par le lexique
+ * sectoriel) : remplace le pool neutre par une directive SUJET IMPOSÉ.
+ * Sans effet sur les thèmes mappés ni sur le chemin dynamic (clé usager).
  */
 export interface ImageBriefOptions {
   readonly poolOverride?: readonly string[];
+  readonly subjectHint?: string;
 }
 
 export function buildImageBrief(
@@ -1047,22 +1244,44 @@ export function buildImageBrief(
   const base = dynamic ?? r.unsplash;
   const reservoir = rotationSeed === 0 ? base : rotatePool(base, rotationSeed);
   const lines: string[] = [];
-  lines.push(`IMAGES — thème détecté côté serveur : « ${r.label} » (ne le redétecte pas, applique-le).`);
-  lines.push('RÔLES VISUELS PAR SECTION (obligatoire, chaque photo DOIT montrer le sujet de sa section) :');
-  lines.push(`- hero : ${r.hero} ;`);
-  lines.push(`- cartes / produits / menu : ${r.cards} ;`);
-  lines.push(`- galerie : ${r.gallery} ;`);
-  lines.push('- autres sections : illustration du rôle exact de la section, jamais décorative ni hors sujet.');
-  if (base.length > 0) {
-    const source = dynamic !== null
-      ? 'RÉSERVOIR du jour (recherche réelle Unsplash pour ce thème — photos réelles, adoptées pour cette génération)'
-      : 'RÉSERVOIR vérifié (IDs testés vivants, sujet connu)';
-    lines.push(`${source} — choisis EXCLUSIVEMENT dedans : ${reservoir.join(', ')}.`);
+  // LOT MÉTIERS (30/10) — LOT 1 LONG TAIL : les métiers reconnus par le
+  // lexique sectoriel mais SANS réservoir dédié (thème 'autre') ne
+  // recevaient que le pool neutre (archi minimale = l'eucalyptus du
+  // diagnostic « boucherie »). Quand un sujet métier est résolu, ce pool
+  // est remplacé par un SUJET IMPOSÉ textuel : prompt sans IDs, directive
+  // ferme — choisir des images du métier OU laisser la section sans
+  // image. Le sanitiseur (patch C, inchangé) reste le filet : toute URL
+  // inventée non conforme est renvoyée vers le pool neutre.
+  const hint = (options?.subjectHint ?? '').trim();
+  const hintApplies = hint.length > 0 && theme === 'autre' && dynamic === null;
+  if (hintApplies) {
+    lines.push(`IMAGES — sujet imposé du métier (détecté côté serveur) : « ${hint} » (ne le redétecte pas, applique-le).`);
+    lines.push('RÔLES VISUELS PAR SECTION (obligatoire, chaque photo DOIT montrer le sujet de sa section) :');
+    lines.push(`- hero : une scène réelle de « ${hint} » — intérieur du lieu ou geste du métier ; le sujet commande l'image, jamais une ambiance générique ;`);
+    lines.push(`- cartes / produits / menu : objets, productions ou outils directs de « ${hint} » ;`);
+    lines.push(`- galerie : 3 angles différents de « ${hint} » (poste de travail, produit, détail) ;`);
+    lines.push('- autres sections : illustration du rôle exact de la section, jamais décorative ni hors sujet.');
+    lines.push(`choisis EXCLUSIVEMENT des images liées au sujet « ${hint} » — aucune photo d'ambiance générique, aucun végétal décoratif.`);
     lines.push('Format : https://images.unsplash.com/<ID>?auto=format&fit=crop&w=1200&q=80.');
-    lines.push('Si aucun sujet du réservoir ne correspond exactement : choisis l\'image du réservoir la plus proche du rôle de la section (sujet simple, composition sobre) — JAMAIS d\'URL hors réservoir, jamais picsum : la cohérence du site prime.');
+    lines.push(`Si aucune adresse plausiblement liée à « ${hint} » n'existe : laisse la section SANS image — une section sobre vaut mieux qu'une photo hors sujet.`);
   } else {
-    lines.push('RÉSERVOIR : aucun sujet vérifié pour ce thème — fallback obligatoire ci-dessous.');
-    lines.push(`Toute image : https://picsum.photos/seed/<mot-sujet>-<N>/800/520 avec un mot-sujet en rapport avec « ${r.label} » (ex : ${r.picsumSeeds.join(', ')}).`);
+    lines.push(`IMAGES — thème détecté côté serveur : « ${r.label} » (ne le redétecte pas, applique-le).`);
+    lines.push('RÔLES VISUELS PAR SECTION (obligatoire, chaque photo DOIT montrer le sujet de sa section) :');
+    lines.push(`- hero : ${r.hero} ;`);
+    lines.push(`- cartes / produits / menu : ${r.cards} ;`);
+    lines.push(`- galerie : ${r.gallery} ;`);
+    lines.push('- autres sections : illustration du rôle exact de la section, jamais décorative ni hors sujet.');
+    if (base.length > 0) {
+      const source = dynamic !== null
+        ? 'RÉSERVOIR du jour (recherche réelle Unsplash pour ce thème — photos réelles, adoptées pour cette génération)'
+        : 'RÉSERVOIR vérifié (IDs testés vivants, sujet connu)';
+      lines.push(`${source} — choisis EXCLUSIVEMENT dedans : ${reservoir.join(', ')}.`);
+      lines.push('Format : https://images.unsplash.com/<ID>?auto=format&fit=crop&w=1200&q=80.');
+      lines.push('Si aucun sujet du réservoir ne correspond exactement : choisis l\'image du réservoir la plus proche du rôle de la section (sujet simple, composition sobre) — JAMAIS d\'URL hors réservoir, jamais picsum : la cohérence du site prime.');
+    } else {
+      lines.push('RÉSERVOIR : aucun sujet vérifié pour ce thème — fallback obligatoire ci-dessous.');
+      lines.push(`Toute image : https://picsum.photos/seed/<mot-sujet>-<N>/800/520 avec un mot-sujet en rapport avec « ${r.label} » (ex : ${r.picsumSeeds.join(', ')}).`);
+    }
   }
   lines.push('INTERDIT : toute autre adresse inventée de mémoire, loremflickr (service en panne), et toute photo sans rapport avec le thème (ex : un animal sur un site qui n’en parle pas).');
   lines.push('Chaque <img> porte un alt qui décrit ce qu’on doit voir.');

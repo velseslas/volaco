@@ -12,6 +12,8 @@
  *     succès ont disparu du source livré ;
  *  4. non-régression : le titre correct du projet barbier reste intact.
  */
+import './_lot-b-legacy-env.js';
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

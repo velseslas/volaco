@@ -7,6 +7,8 @@
  * stockée (deepEqual), aucun verdict recalculé, aucune fuite cross-tenant.
  */
 
+import './_lot-b-legacy-env.js';
+
 process.env.VOLACO_EXECUTION_TIMELINE = 'off';
 // ISOLATION (infra de test) : répertoire de persistance NEUF — sinon le
 // singleton persist:true partage le répertoire de toute la suite et le cap

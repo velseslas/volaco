@@ -3,9 +3,17 @@
  *
  * UserStore : comptes utilisateurs persistants (scrypt pour les mots de passe,
  * un tenant dédié par utilisateur — CDC §37 Multi-Tenancy).
- * JWT : tokens signés HMAC-SHA256 (AUTH_SECRET — §35/§36 Security & AI
- * Security). Les tokens contiennent le rôle et le tenant : le header
+ * JWT : tokens signés HMAC-SHA256 avec un secret JWT dédié (VOLACO_JWT_SECRET
+ * — LOT B,12h). Les tokens contiennent le rôle et le tenant : le header
  * X-User-Role côté client n'est plus une autorité.
+ *
+ * LOT B (Phase 2, décision 2) — Secret JWT P0 :
+ *   - le secret de signature est DISTINCT de la clé API et de AUTH_SECRET.
+ *     Un secret JWT non conforme (absence, longueur < 256 bits, valeur nulle,
+ *     ou octets égaux à VOLACO_API_KEY) est REFUSÉ au démarrage du service.
+ *   - aucun secret éphémère généré silencieusement ; les JWT émis avant la
+ *     migration (AUTH_SECRET || VOLACO_API_KEY) ne restent PAS valides.
+ *   - procédure de rotation documentée dans mcp-lot-b-report.md §2/§5.3.
  */
 
 import { createHmac, randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
@@ -14,6 +22,7 @@ import { promisify } from 'node:util';
 const scryptAsync = promisify(scrypt);
 import { dataFilePath, readJsonFile, writeJsonFileSync } from '../persistence/json-disk-cache.js';
 import { ValidationError } from '../errors.js';
+import { sessionRevocationStore } from './session-store.js';
 
 export interface UserRecord {
   id: string;
@@ -51,6 +60,16 @@ export class UserStore {
     return Object.values(this.users).find((u) => u.email === normalized);
   }
 
+  /**
+   * Espace utilisateur (GET /api/v1/auth/me) — retrouver un compte par
+   * identifiant JWT (payload.sub). Le record complet reste interne au store ;
+   * l'appelant HTTP le publie UNIQUEMENT via `publicUser` (jamais les champs
+   * secrets passwordSalt/passwordHash).
+   */
+  public findById(id: string): UserRecord | undefined {
+    return this.users[id];
+  }
+
   public async createUser(email: string, password: string, name?: string): Promise<UserRecord> {
     const normalized = (email || '').trim().toLowerCase();
     if (!normalized || !normalized.includes('@')) {
@@ -61,6 +80,12 @@ export class UserStore {
     }
     if (this.findByEmail(normalized)) {
       throw new ValidationError('Un compte existe déjà pour cet email');
+    }
+    // LOT B (décision 5) — application effective de USERS_MAX : le contrôle de
+    // capacité fait partie de la même passe de validation, AVANT tout await
+    // (le hash scrypt est la seule opération asynchrone, elle vient après).
+    if (Object.keys(this.users).length >= USERS_MAX) {
+      throw new ValidationError(`Limite de comptes atteinte (${USERS_MAX}).`);
     }
 
     const id = 'usr_' + randomBytes(8).toString('hex');
@@ -81,6 +106,11 @@ export class UserStore {
     return user;
   }
 
+  /** Révoque toutes les sessions d'un utilisateur (logout global / désactivation). */
+  public revokeSessions(userId: string): number {
+    return sessionRevocationStore.revokeUser(userId);
+  }
+
   public async verifyCredentials(email: string, password: string): Promise<UserRecord | null> {
     const user = this.findByEmail(email);
     if (!user) return null;
@@ -96,24 +126,51 @@ export const userStore = new UserStore();
 
 // ---------------------------------------------------------------------------
 // JWT HMAC-SHA256 — dépend uniquement de node:crypto (pas de dépendance npm)
+// LOT B (Phase 2, décision 2) — Secret JWT P0 :
+//   - secret dédié VOLACO_JWT_SECRET (base64 canonique de ≥ 32 octets) ;
+//   - aucun fallback vers VOLACO_API_KEY ni AUTH_SECRET ;
+//   - aucun secret éphémère généré silencieusement ;
+//   - refus de démarrage si absent/invalide ;
+//   - le secret n'est jamais journalisé.
 // ---------------------------------------------------------------------------
 
-let ephemeralSecret: string | null = null;
-let secretWarningEmitted = false;
+const JWT_SECRET_BYTES_MIN = 32;
 
-function authSecret(): string {
-  const explicit = process.env.AUTH_SECRET || process.env.VOLACO_API_KEY;
-  if (explicit && explicit.length >= 16) return explicit;
-  // Repli éphémère (dev uniquement) : les tokens ne survivent pas au
-  // redémarrage si AUTH_SECRET n'est pas défini.
-  if (!ephemeralSecret) {
-    ephemeralSecret = randomBytes(32).toString('hex');
-    if (!secretWarningEmitted) {
-      secretWarningEmitted = true;
-      console.warn('[VOLACO:AUTH] AUTH_SECRET non défini — tokens JWT éphémères (invalidés à chaque redémarrage). Définissez AUTH_SECRET en production.');
-    }
+function decodeSecretBytes(value: unknown): Buffer | null {
+  if (typeof value !== 'string' || value.length === 0) return null;
+  const decoded = Buffer.from(value, 'base64');
+  if (decoded.length < JWT_SECRET_BYTES_MIN || decoded.toString('base64') !== value) return null;
+  if (decoded.every((byte) => byte === 0)) return null;
+  return decoded;
+}
+
+function envSecretBytes(): Buffer | null {
+  const raw = process.env.VOLACO_JWT_SECRET;
+  return decodeSecretBytes(raw);
+}
+
+function apiKeyBytes(): Buffer | null {
+  const raw = process.env.VOLACO_API_KEY;
+  if (typeof raw !== 'string' || raw.length === 0) return null;
+  const decoded = Buffer.from(raw, 'base64');
+  if (decoded.length >= JWT_SECRET_BYTES_MIN && decoded.toString('base64') === raw) return decoded;
+  return Buffer.from(raw, 'utf8');
+}
+
+export function getJwtSecretBytes(): Buffer {
+  const secret = envSecretBytes();
+  if (secret === null) {
+    throw new Error(
+      'Secret JWT VOLACO_JWT_SECRET absent ou invalide (base64 canonique de ≥ 32 octets, distinct de VOLACO_API_KEY). ' +
+      'Le service refuse de démarrer : aucun secret éphémère n’est généré. ' +
+      'Rotation documentée dans mcp-lot-b-report.md §2/§5.3.'
+    );
   }
-  return ephemeralSecret;
+  const apiKey = apiKeyBytes();
+  if (apiKey !== null && apiKey.equals(secret)) {
+    throw new Error('VOLACO_JWT_SECRET réutilise les octets de VOLACO_API_KEY — interdit.');
+  }
+  return secret;
 }
 
 function base64url(input: Buffer | string): string {
@@ -125,11 +182,28 @@ export interface JwtPayload {
   tenantId: string;
   role: string;
   email: string;
+  /** Identifiant unique du token (révocation métier B3). */
+  jti?: string | undefined;
+  /** Epoch/version de session (révocation métier B3). */
+  sv?: number | undefined;
   iat: number;
   exp: number;
 }
 
-export function signToken(user: Pick<UserRecord, 'id' | 'tenantId' | 'role' | 'email'>, ttlSeconds = 60 * 60 * 24 * 30): string {
+/** Durée de vie par défaut d'un JWT (B3: 12h, plafond recommandé 24h). */
+export const JWT_DEFAULT_TTL_SECONDS = 12 * 60 * 60;
+export const JWT_MAX_TTL_SECONDS = 24 * 60 * 60;
+
+function clampTtlSeconds(ttlSeconds: number): number {
+  if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) return JWT_DEFAULT_TTL_SECONDS;
+  return Math.min(Math.floor(ttlSeconds), JWT_MAX_TTL_SECONDS);
+}
+
+export function signToken(
+  user: Pick<UserRecord, 'id' | 'tenantId' | 'role' | 'email'>,
+  ttlSeconds: number = JWT_DEFAULT_TTL_SECONDS,
+  sessionVersion: number = 0
+): string {
   const header = base64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
   const now = Math.floor(Date.now() / 1000);
   const payload = base64url(JSON.stringify({
@@ -137,15 +211,17 @@ export function signToken(user: Pick<UserRecord, 'id' | 'tenantId' | 'role' | 'e
     tenantId: user.tenantId,
     role: user.role,
     email: user.email,
+    jti: randomBytes(16).toString('hex'),
+    sv: Number.isFinite(sessionVersion) ? sessionVersion : 0,
     iat: now,
-    exp: now + ttlSeconds
+    exp: now + clampTtlSeconds(ttlSeconds)
   } as JwtPayload));
   const mac = hmacSign(`${header}.${payload}`);
   return `${header}.${payload}.${mac}`;
 }
 
 function hmacSign(data: string): string {
-  return createHmac('sha256', authSecret()).update(data).digest('base64url');
+  return createHmac('sha256', getJwtSecretBytes()).update(data).digest('base64url');
 }
 
 export function verifyToken(token: string): JwtPayload | null {

@@ -34,12 +34,52 @@ interface ChatCompletionRequestBody {
 // ne peut plus fixer un max_tokens arbitraire : tout dépassement est
 // clampé, jamais refusé silencieusement augmenté. Les variables
 // d'environnement ne peuvent que DURCIR (baisser) ces plafonds.
+//
+// LOT S6 — Quota par tenant : l'audit a signalé qu'un tenant A ne devait pas
+// pouvoir épuiser le budget d'un autre tenant sur la même IP (NAT partagé) ni
+// sur le quota global (`RATE_LIMIT_AI_MAX`). Compteur par tenantId/minute
+// (clé `context.tenantId` côté serveur) géré ci-dessous ; variable
+// `VOLACO_PROXY_TENANT_REQ_PER_MINUTE` (défaut 100, opérateur-contrôlé).
 const PROXY_HARD_MAX_TOKENS = 8192;
 const PROXY_MAX_MESSAGES = 200;
 const PROXY_MAX_MESSAGE_CHARS = 100_000;
 const PROXY_FETCH_TIMEOUT_MS = 45_000;
 const PROXY_MAX_ATTEMPTS = 3;
 const PROXY_RETRY_BASE_DELAY_MS = 500;
+const PROXY_TENANT_WINDOW_MS = 60_000;
+const tenantProxyBuckets = new Map<string, { count: number; windowStart: number }>();
+
+function tenantProxyQuotaPerMinute(): number {
+  const raw = process.env.VOLACO_PROXY_TENANT_REQ_PER_MINUTE;
+  if (raw) {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return 100;
+}
+
+/** Retourne `true` si le tenant a encore du budget proxy sur la fenêtre. */
+function checkTenantProxyQuota(tenantId: string): boolean {
+  const normalized = (tenantId || '').trim();
+  if (!normalized) return true;
+  const now = Date.now();
+  const max = tenantProxyQuotaPerMinute();
+  const bucket = tenantProxyBuckets.get(normalized);
+  if (!bucket || now - bucket.windowStart >= PROXY_TENANT_WINDOW_MS) {
+    // Purge amortie pour éviter la fuite mémoire sur tenants ephemeral.
+    if (tenantProxyBuckets.size > 10_000) {
+      for (const [k, b] of tenantProxyBuckets) {
+        if (now - b.windowStart >= PROXY_TENANT_WINDOW_MS) {
+          tenantProxyBuckets.delete(k);
+        }
+      }
+    }
+    tenantProxyBuckets.set(normalized, { count: 1, windowStart: now });
+    return true;
+  }
+  bucket.count += 1;
+  return bucket.count <= max;
+}
 
 function clampPositiveInt(value: number, fallback: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return fallback;
@@ -160,6 +200,28 @@ export async function handleAiProxyRoutes(
     throw new ValidationError('Le champ "messages" est obligatoire et ne peut pas être vide', undefined, requestId);
   }
 
+  // LOT S6 — quota par tenant : l'audit a signalé qu'un tenant A ne devait pas
+  // pouvoir épuiser le budget d'un autre tenant sur la même IP (NAT partagé) ni
+  // sur le quota global (`RATE_LIMIT_AI_MAX`). Compteur par tenantId/minute
+  // (clé `context.tenantId` côté serveur) géré ci-dessous ; variable
+  // `VOLACO_PROXY_TENANT_REQ_PER_MINUTE` (défaut 100, opérateur-contrôlé).
+  // Plafond serveur transversal (planchers applicatifs) ; 429 explicite avec
+  // Retry-After quand le plafond par tenant est dépassé.
+  if (!checkTenantProxyQuota(context.tenantId)) {
+    res.statusCode = 429;
+    res.setHeader('Retry-After', '60');
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({
+      error: {
+        code: 'PROXY_TENANT_QUOTA_EXCEEDED',
+        message: 'Quota proxy IA pour ce tenant atteint — réessayez dans une minute.',
+        statusCode: 429,
+        requestId
+      }
+    }));
+    return true;
+  }
+
   // P0-PROD — validation serveur des paramètres client (facture IA bornée).
   const maxOutputTokens = envCeiling('VOLACO_PROXY_MAX_TOKENS', PROXY_HARD_MAX_TOKENS);
   if (body.messages.length > PROXY_MAX_MESSAGES) {
@@ -178,7 +240,11 @@ export async function handleAiProxyRoutes(
   if (body.temperature !== undefined && (!Number.isFinite(body.temperature) || body.temperature < 0 || body.temperature > 2)) {
     throw new ValidationError('Le champ "temperature" doit être compris entre 0 et 2', undefined, requestId);
   }
-  if (body.model !== undefined && (typeof body.model !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(body.model))) {
+  // FIX CLÉS GROQ (2026-11-02) — les identifiers de modèle actuels de Groq
+  // portent un espace de noms avec '/' (openai/gpt-oss-120b…). La whitelist
+  // ci-dessous rejetait tout id contenant '/' → le relais renvoyait 400
+  // pour un corps pourtant valide. '/' est aussi toléré dès le 2e caractère.
+  if (body.model !== undefined && (typeof body.model !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9\/._-]{0,63}$/.test(body.model))) {
     throw new ValidationError('Le champ "model", s il est fourni, doit être un identifiant de modèle valide', undefined, requestId);
   }
   const requestedMaxTokens = body.max_tokens ?? 8192;
@@ -270,6 +336,11 @@ export async function handleAiProxyRoutes(
   // requête HTTP pendre jusqu'à la fermeture socket.
   let upstreamResponse: Response | null = null;
   let lastNetworkError: string | null = null;
+  // FIX TEST-HONNÊTETÉ (page Clés API) : quand la clé client mistral est
+  // rejetée (401) et que le serveur retente avec SA clé env, le client reçoit
+  // un 200 — sans ce marqueur il croirait SA clé valide. La réponse porte
+  // désormais X-Volaco-Client-Key-Rejected: 1 dans ce cas.
+  let clientKeyRejectedMistral = false;
   for (let attempt = 1; attempt <= PROXY_MAX_ATTEMPTS; attempt++) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), PROXY_FETCH_TIMEOUT_MS);
@@ -300,6 +371,7 @@ export async function handleAiProxyRoutes(
             signal: controller.signal
           });
           upstreamResponse = retry;
+          clientKeyRejectedMistral = true;
           break;
         }
       }
@@ -413,6 +485,10 @@ export async function handleAiProxyRoutes(
     }
     res.statusCode = upstreamResponse.status;
     res.setHeader('Content-Type', 'application/json');
+    if (clientKeyRejectedMistral) {
+      // Honnêteté : même si le retry env a réussi, la clé DU CLIENT est invalide.
+      res.setHeader('X-Volaco-Client-Key-Rejected', '1');
+    }
     if (upstreamResponse.status >= 400) {
       // CORRECTIF UX — l'erreur upstream (401 clé invalide, 404 modèle absent,
       // 419 etc.) arrive avec le format propre du fournisseur ; sans traduction,

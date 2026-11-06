@@ -2,6 +2,8 @@
  * n°3 — cache statique : corps identique au disque, ETag/304, gzip.
  * Niveau HTTP (serveur de test isolé), sans toucher aux fichiers du Studio.
  */
+import './_lot-b-secret-env.js';
+
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Server } from 'node:http';

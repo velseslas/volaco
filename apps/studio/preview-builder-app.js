@@ -194,7 +194,20 @@
       // Placeholder quand aucune construction visible
       const totalVisible = groups.reduce((acc, g) => acc + g.nodes.length, 0);
       let ph = canvas.querySelector('.placeholder');
-      if (totalVisible === 0 && !ph) canvas.innerHTML = '<div class="placeholder">construction…</div>';
+      // FIX (2026-11-02 soir) — shimmer vivant avec 3 points (fini le texte
+      // brut « construction… ») : dots colorés qui dansent + barres
+      // squelettes. La classe .placeholder est conservée : la logique de
+      // retrait (ph.remove() dès qu'un nœud est visible) est inchangée, et
+      // le label .ph-label est alimenté EN DIRECT par le nom de l'agent de
+      // la chaîne (livePaintRelay → on_agent_step).
+      if (totalVisible === 0 && !ph) {
+        canvas.innerHTML = '<div class="placeholder placeholderConstruction">'
+          + '<div class="ph-dots"><span></span><span></span><span></span></div>'
+          + '<div class="ph-label">construction…</div>'
+          + '<div class="ph-bar"></div>'
+          + '<div class="ph-bar short"></div>'
+          + '</div>';
+      }
       if (totalVisible > 0 && ph) ph.remove();
 
       groups.forEach((group, i) => {
@@ -1159,8 +1172,12 @@
         return Number.isFinite(v) && v > 0 ? v : fallback;
       } catch (e) { return fallback; }
     }
-    const LIVE_PAINT_MS = livePaintNum('vibe_live_paint_ms', 120);
-    const LIVE_CASCADE_STEP = livePaintNum('vibe_live_paint_cascade', 80);
+    // STITCH-V4b — « chantier lent » : cadence 520 ms (le rythme lent du demo
+    // que l'utilisateur réclame), cascade 240 ms → un bloc un à un, visible.
+    // Toujours réglable via localStorage.vibe_live_paint_ms /
+    // vibe_live_paint_cascade sans toucher au code.
+    const LIVE_PAINT_MS = livePaintNum('vibe_live_paint_ms', 520);
+    const LIVE_CASCADE_STEP = livePaintNum('vibe_live_paint_cascade', 240);
     const LIVE_CASCADE_MAX = 6;
     const LIVE_MAX_ELTS = 60;
 
@@ -1176,7 +1193,33 @@
         '.pvl-live img{opacity:0;transition:opacity .5s ease}',
         '.pvl-live img.pvl-img-ok{opacity:1}',
         '#pvl-counter{position:fixed;right:14px;bottom:14px;z-index:60;font-size:11px;color:#c4b5fd;background:rgba(12,18,36,.92);border:1px solid #2a3658;border-radius:999px;padding:4px 12px;pointer-events:none;display:none}',
-        '@media (prefers-reduced-motion:reduce){.pvl-in{animation:none}.pvl-live img{opacity:1;transition:none}}'
+        '@media (prefers-reduced-motion:reduce){.pvl-in{animation:none}.pvl-live img{opacity:1;transition:none}}',
+        // STITCH-V4 — chorégraphie par nature d'élément (portage du proto
+        // « effet construction » validé en demo). Les règles kind déclarent
+        // APRÈS .pvl-in : spécificité 0,2,0 > 0,1,0 → la chorégraphie
+        // remplace le fade générique sans toucher au filet.
+        '.pvl-live{position:relative}',
+        '@keyframes pvlRiseBig{0%{opacity:0;transform:translateY(34px) scale(.94);filter:blur(10px)}55%{opacity:.92}100%{opacity:1;transform:none;filter:none}}',
+        '@keyframes pvlFromTop{0%{opacity:0;transform:translateY(-26px);filter:blur(4px)}100%{opacity:1;transform:none;filter:none}}',
+        '@keyframes pvlFromBottom{0%{opacity:0;transform:translateY(30px);filter:blur(4px)}100%{opacity:1;transform:none;filter:none}}',
+        '@keyframes pvlPop{0%{opacity:0;transform:scale(.35)}60%{transform:scale(1.1)}100%{opacity:1;transform:scale(1)}}',
+        '@keyframes pvlCurtain{0%{opacity:.15;clip-path:inset(0 0 100% 0)}55%{opacity:1;clip-path:inset(0 0 16% 0)}100%{opacity:1;clip-path:inset(0 0 0 0)}}',
+        '@keyframes pvlElChild{0%{opacity:0;transform:translateY(12px)}100%{opacity:1;transform:none}}',
+        '@keyframes pvlShimmer{0%{background-position:-800px 0}100%{background-position:800px 0}}',
+        '@keyframes pvlPose{0%{box-shadow:0 0 0 5px rgba(99,102,241,.30)}100%{box-shadow:0 0 0 0 rgba(99,102,241,0)}}',
+        '.pvl-in.pvl-title{animation:pvlRiseBig .78s cubic-bezier(.16,1,.3,1) both}',
+        '.pvl-in.pvl-top{animation:pvlFromTop .65s cubic-bezier(.16,1,.3,1) both}',
+        '.pvl-in.pvl-bottom{animation:pvlFromBottom .65s cubic-bezier(.16,1,.3,1) both}',
+        '.pvl-in.pvl-pop{animation:pvlPop .5s cubic-bezier(.34,1.56,.64,1) both}',
+        '.pvl-in.pvl-visual{animation:pvlCurtain .8s cubic-bezier(.22,.9,.34,1) both}',
+        '.pvl-el-child{animation:pvlElChild .45s cubic-bezier(.22,.9,.34,1) both}',
+        '.pvl-skel{border-radius:12px;min-height:110px;margin:14px 0;border:1px dashed rgba(139,92,246,.4);background:linear-gradient(90deg,rgba(99,102,241,.06) 25%,rgba(139,92,246,.2) 50%,rgba(99,102,241,.06) 75%);background-size:800px 100%;animation:pvlShimmer 1.4s infinite linear}',
+        '.pvl-skel-out{opacity:0;transform:scale(.96);filter:blur(3px);transition:all .38s ease}',
+        '.pvl-pose{animation:pvlPose .32s ease}',
+        // Blueprint : pendant une génération, les sections livrées se grisent.
+        'body.pv-stitch-bp [data-pv-id]:not([data-pv-status="building"]){filter:grayscale(.85) brightness(.62) contrast(.97)}',
+        '[data-pv-id]{transition:filter .45s ease}',
+        '@media (prefers-reduced-motion:reduce){.pvl-el-child,.pvl-pose{animation:none !important}.pvl-skel{animation:none !important}}'
       ].join('\n');
       document.head.appendChild(st);
     }
@@ -1186,6 +1229,8 @@
     function livePaintReset() {
       livePaint.sec = null; livePaint.buf = ''; livePaint.count = 0;
       if (livePaint.timer) { clearTimeout(livePaint.timer); livePaint.timer = 0; }
+      // STITCH-V4 — sortie du mode blueprint : tout revient en couleurs.
+      try { document.body.classList.remove('pv-stitch-bp'); } catch (e) { /* best-effort */ }
       pvlCounterHide();
     }
     /* Images en fondu au chargement (pas de pop) : un seul handler onload
@@ -1227,8 +1272,16 @@
       try {
         const id = (window.CSS && CSS.escape) ? CSS.escape(secName) : secName;
         document.querySelectorAll('[data-pv-id="' + id + '"]').forEach(function (n) {
+          // STITCH-V4 — flash de pose : un ring bref marque l'atterrissage
+          // du contenu final (aucune autre animation sur la section).
+          try {
+            n.classList.add('pvl-pose');
+            setTimeout(function () { try { n.classList.remove('pvl-pose'); } catch (e) {} }, 360);
+          } catch (e) { /* best-effort */ }
           const box = n.querySelector(':scope > .pvl-live');
           if (box) box.remove();
+          const skel = n.querySelector(':scope > .pvl-skel');
+          if (skel) skel.remove();
           n.removeAttribute('data-pvl-live');
         });
       } catch (e) { /* best-effort */ }
@@ -1241,14 +1294,39 @@
       if (k < 0) return { name: livePaint.sec, html: '' };
       return { name: livePaint.sec, html: rest.slice(k).replace(/<[^>]*$/, '') };
     }
+    /* STITCH-V4 — nature d'élément → animation d'entrée dédiée (portage
+     * fidèle de stitchClassify du proto 4 modes validé en demo). */
+    function pvlClassify(node) {
+      const tag = (node.tagName || '').toLowerCase();
+      if (tag === 'header' || tag === 'nav') return 'pvl-top';
+      if (tag === 'footer') return 'pvl-bottom';
+      if (tag === 'h1' || tag === 'h2') return 'pvl-title';
+      if (tag === 'img' || tag === 'picture' || tag === 'figure' || tag === 'svg' || tag === 'video' || tag === 'canvas') return 'pvl-visual';
+      if (tag === 'a' || tag === 'button' || tag === 'input' || tag === 'select' || tag === 'label') return 'pvl-pop';
+      return null;
+    }
+    /* STITCH-V4 — squelette de chantier posé dès l'ouverture de la section
+     * (avant le premier bloc). Idempotent ; invisible si le contenu peint. */
+    function pvlEnsureSkeleton(node) {
+      if (!node) return;
+      if (node.querySelector(':scope > .pvl-skel')) return;
+      if (node.querySelector(':scope > .pvl-live')) return;
+      const sk = document.createElement('div');
+      sk.className = 'pvl-skel';
+      node.appendChild(sk);
+    }
     function livePaintNow() {
       livePaint.timer = 0;
       if (!livePaintEnabled()) return;
       const part = livePaintPartial();
-      if (!part || !part.html) return;
+      if (!part) return;
       const id = (window.CSS && CSS.escape) ? CSS.escape(part.name) : part.name;
       const node = document.querySelector('[data-pv-id="' + id + '"][data-pv-status="building"]');
       if (!node || node.querySelector(':scope > .pvz-real')) return;
+      // STITCH-V4 — le squelette de chantier en attendant le premier bloc
+      // (posé même si le flux n'a pas encore de balise complète).
+      try { pvlEnsureSkeleton(node); } catch (e) { /* best-effort */ }
+      if (!part.html) return;
       let doc;
       try {
         doc = new DOMParser().parseFromString('<body>' + part.html + '</body>', 'text/html');
@@ -1264,6 +1342,15 @@
       const all = Array.from(doc.body.querySelectorAll(LIVE_TARGETS));
       const tops = all.filter(function (e) { return !all.some(function (o) { return o !== e && o.contains(e); }); }).slice(0, LIVE_MAX_ELTS);
       if (!tops.length) return;
+      // STITCH-V4 — morphing : le squelette s'efface en place (au lieu de
+      // disparaître) dès que le premier bloc arrive.
+      try {
+        const dyingSkel = node.querySelector(':scope > .pvl-skel');
+        if (dyingSkel) {
+          dyingSkel.classList.add('pvl-skel-out');
+          setTimeout(function () { try { dyingSkel.remove(); } catch (e) {} }, 420);
+        }
+      } catch (e) { /* best-effort */ }
       livePaintStyle();
       node.setAttribute('data-pvl-live', '1');
       let box = node.querySelector(':scope > .pvl-live');
@@ -1277,12 +1364,39 @@
         const cur = box.children[i] || null;
         // Stable (ni nouveau, ni en cours) : jamais retouché → images stables.
         if (cur && cur.getAttribute('data-pvl-done') === '1') continue;
+        // STITCH-V4b — chantier anti-scan : si le dernier bloc n'a PAS changé
+        // (pause LLM), on ne re-peint pas du tout — le re-rendu périodique
+        // rechargeait les images à chaque tick (l'effet « scan » indésirable).
+        if (isLast && cur) {
+          const stamp = (tops[i].childElementCount + 1) + ':' + tops[i].innerHTML.length;
+          if (cur.getAttribute('data-pvl-stamp') === stamp) continue;
+          var pendingStamp = stamp;
+        }
         const fresh = document.importNode(tops[i], true);
         if (!isLast) fresh.setAttribute('data-pvl-done', '1');
+        if (isLast && pendingStamp) fresh.setAttribute('data-pvl-stamp', pendingStamp);
         if (i >= prevCount) {
           // CASCADE : vague visible (pas réglable, vague plafonnée).
           fresh.classList.add('pvl-in');
           fresh.style.animationDelay = Math.min(cascadeIdx, LIVE_CASCADE_MAX) * LIVE_CASCADE_STEP + 'ms';
+          // STITCH-V4 — chorégraphie par nature : titre qui monte fort,
+          // boutons qui pop, visuels en rideau, cascade des enfants directs,
+          // flash de pose (inline, pour ne pas écraser l'animation d'entrée).
+          try {
+            const kind = pvlClassify(fresh);
+            if (kind) fresh.classList.add(kind); // ex. 'pvl-title' → sélecteur .pvl-in.pvl-title
+            const kids = fresh.children;
+            if (kids && kids.length && kids.length <= 12) {
+              for (let ci = 0; ci < kids.length; ci++) {
+                const c = kids[ci];
+                if (!c || c.nodeType !== 1) continue;
+                c.classList.add('pvl-el-child');
+                c.style.animationDelay = (0.06 + ci * 0.06).toFixed(2) + 's';
+              }
+            }
+            fresh.style.boxShadow = '0 0 0 4px rgba(99,102,241,.30)';
+            setTimeout(function () { try { fresh.style.boxShadow = ''; } catch (e) {} }, 320);
+          } catch (e) { /* best-effort */ }
           cascadeIdx += 1;
           lastFreshNode = fresh;
         }
@@ -1316,7 +1430,35 @@
         switch (ev.type) {
           case 'start':
             livePaintReset();
+            // STITCH-V4 — mode blueprint : pendant toute la génération, les
+            // sections déjà livrées se grisent (retour en couleurs au done).
+            try { document.body.classList.add('pv-stitch-bp'); } catch (e) { /* best-effort */ }
             return;
+          case 'on_agent_step':
+          case 'on_agent_chain_fallback': {
+            // CHAÎNE VISIBLE DANS LE PREVIEW (2026-11-02 soir) : pendant les
+            // 5-60 s d'agents (avant le premier token), le shimmer porte le
+            // nom de l'agent en cours — au clic, on VOIT le travail et plus
+            // un label mort. Best-effort : s'il n'y a pas de label, la
+            // construction a déjà commencé, rien à faire.
+            try {
+              const phLabel = document.querySelector('#canvas .placeholder .ph-label');
+              if (!phLabel) return;
+              if (ev.type === 'on_agent_chain_fallback') {
+                phLabel.textContent = 'chaîne indisponible — appel direct en cours…';
+                return;
+              }
+              const names = { decision: 'Agent Décision', architecture: 'Agent Architecture', ui: 'Agent UI', backend: 'Agent Backend', securite: 'Agent Sécurité' };
+              const nm = names[ev.step] || ('Agent ' + ev.step);
+              const cred = ev.credentialProviderId ? ' (' + ev.credentialProviderId + (ev.credentialSlot ? '@' + ev.credentialSlot : '') + ')' : '';
+              if (ev.status === 'running') phLabel.textContent = nm + ' — travail en cours…';
+              else if (ev.status === 'ok') phLabel.textContent = nm + ' validé ✓' + cred;
+              else if (ev.status === 'degraded') phLabel.textContent = nm + ' partiel — appel direct…';
+              else if (ev.status === 'failed') phLabel.textContent = nm + ' en échec — repli appel direct…';
+              else if (ev.status === 'skipped') phLabel.textContent = nm + ' ignoré';
+            } catch (e) { /* best-effort */ }
+            return;
+          }
           case 'section_start':
             if (typeof ev.name !== 'string' || !ev.name) return;
             livePaint.sec = ev.name; livePaint.buf = ''; livePaint.count = 0;

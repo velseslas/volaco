@@ -9,6 +9,8 @@
  *  - la lecture reste isolée par tenant + projet.
  */
 
+import './_lot-b-legacy-env.js';
+
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

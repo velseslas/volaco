@@ -6,6 +6,8 @@
  *    échec de rafraîchissement ne casse jamais la génération.
  */
 
+import './_lot-b-legacy-env.js';
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

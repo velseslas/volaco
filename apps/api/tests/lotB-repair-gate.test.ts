@@ -12,6 +12,8 @@
  *  3. page déjà saine => no-repair-needed (comportement historique intact).
  */
 
+import './_lot-b-legacy-env.js';
+
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Server } from 'node:http';

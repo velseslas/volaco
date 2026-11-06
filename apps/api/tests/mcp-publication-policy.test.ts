@@ -12,8 +12,14 @@
  * identique à génération/édition/rollback ; jamais déclaré conforme.
  */
 
+import './_lot-b-secret-env.js';
+
 process.env.VOLACO_EXECUTION_TIMELINE = 'off';
 
+// MCP-TEST-ISOLATION-001 — Lot A : DOIT rester le PREMIER import de la
+// suite (base SQLite isolée, jamais .volaco-data ; serveur importé
+// dynamiquement après la fixation de AUTH_SECRET).
+import { isolatedVolacoDataDir } from './mcp-remote-isolated-env.js';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -28,15 +34,21 @@ import {
   mcpGuardInspectWorkspace
 } from '../../../packages/core/src/mcp/project-server.js';
 import { writeAppFile } from '../../../packages/core/src/app-pipeline.js';
-import { createApiServer } from '../src/server.js';
+import { signToken } from '../../../packages/core/src/identity/user-store.js';
+
+/** Clé HMAC JWT : fixée AVANT le premier usage (Lot A — identité individuelle). */
+process.env.AUTH_SECRET = 'volaco-test-lota-' + 'jwt-secret-'.repeat(4);
 
 // Racine du dépôt de test (snapshot) : out/apps/api/tests → up^4 = racine snapshot.
 const hereTests = dirname(fileURLToPath(import.meta.url));
 const snapRoot = resolve(hereTests, '..', '..', '..', '..');
-// Le build snapshot isolé (out/) n'existe plus dans cette copie de travail :
-// le VRAI serveur MCP compilé vit dans dist/ (même code que la production,
-// qui résout exactement ce chemin via mcp.ts). On spawn le build réel.
-const mcpServerPath = join(snapRoot, 'dist', 'packages', 'core', 'src', 'mcp', 'project-server.js');
+// Lot A — serveur MCP compilé FRAIS du snapshot (out/) prioritaire : le
+// repli historique dist/ reste valable hors snapshot (comportement original,
+// m résolution utilisée par routes/mcp.ts).
+const mcpOutServer = join(snapRoot, 'out', 'packages', 'core', 'src', 'mcp', 'project-server.js');
+const mcpServerPath = existsSync(mcpOutServer)
+  ? mcpOutServer
+  : join(snapRoot, 'dist', 'packages', 'core', 'src', 'mcp', 'project-server.js');
 const wsRoot = join(snapRoot, 'workspace');
 
 const CONFORM_TSX = 'export default function App() {\n'
@@ -260,7 +272,13 @@ describe('PATCH-R3-A E2E HTTP : /api/v1/mcp/call → /preview-bundle', () => {
   let server: Server;
   let baseUrl = '';
   const tenant = 'tenant_mcp_r3a_http';
-  const H = { 'Content-Type': 'application/json', 'x-tenant-id': tenant, 'x-user-role': 'OWNER' };
+  const USR_R3A = 'usr_r3a_lota';
+  // Lot A : identité individuelle fiable (JWT signé) pour TOUTE la chaîne
+  // MCP (le repli dev n'est plus suffisant pour préparer/exécuter).
+  const H = {
+    'Content-Type': 'application/json',
+    authorization: `Bearer ${signToken({ id: USR_R3A, tenantId: tenant, role: 'OWNER', email: 'r3a@lota.test' }, 3600)}`
+  };
   const projectIds: string[] = [];
 
   async function createProject(name: string): Promise<string> {
@@ -273,12 +291,24 @@ describe('PATCH-R3-A E2E HTTP : /api/v1/mcp/call → /preview-bundle', () => {
     return pid;
   }
 
+  /**
+   * Lot A — contrat gouverné : PRÉPARATION (confirmation 201) puis exécution
+   * avec confirmation consommée. Le CONTRAT EXÉCUTION est conservé : 200
+   * toujours, result|error — c'est ce que les garde-fous PATCH-R3-A vérifient
+   * via le champ error (refus « REFUSÉ par la politique des images », etc.).
+   */
   async function mcpCall(tool: string, projectId: string, args: Record<string, unknown> = {}, timeoutMs = 60000): Promise<{ error?: string; result?: string }> {
+    const payload = { server: 'project', tool, projectId, args, timeoutMs };
+    const prep = await fetch(`${baseUrl}/api/v1/mcp/prepare`, {
+      method: 'POST', headers: H, body: JSON.stringify(payload)
+    });
+    assert.equal(prep.status, 201, 'préparation confirmée (gouvernance Lot A)');
+    const confirmation = ((await prep.json()) as { confirmation: { confirmationId: string } }).confirmation;
     const r = await fetch(`${baseUrl}/api/v1/mcp/call`, {
       method: 'POST', headers: H,
-      body: JSON.stringify({ server: 'project', tool, projectId, args, timeoutMs })
+      body: JSON.stringify({ ...payload, confirmationId: confirmation.confirmationId })
     });
-    assert.equal(r.status, 200, 'la route MCP répond toujours 200 (contrat existant)');
+    assert.equal(r.status, 200, 'la route MCP répond toujours 200 (contrat exécution, existant)');
     return (await r.json()) as { error?: string; result?: string };
   }
 
@@ -291,7 +321,11 @@ describe('PATCH-R3-A E2E HTTP : /api/v1/mcp/call → /preview-bundle', () => {
     // Hygiène : les builds tournent dans l ENFANT spawné, mais on neutralise
     // tout héritage NODE_ENV potentiel (leçon des suites P1-B).
     delete process.env.NODE_ENV;
-    const instance = createApiServer({ port: 0 });
+    // Lot A : import dynamique APRÈS la fixation de AUTH_SECRET (isolation).
+    const mod = (await import('../src/server.js')) as unknown as {
+      createApiServer: (options: { port: number }) => { server: Server };
+    };
+    const instance = mod.createApiServer({ port: 0 });
     server = instance.server;
     await new Promise<void>((res) => {
       server.listen(0, () => {
@@ -306,6 +340,11 @@ describe('PATCH-R3-A E2E HTTP : /api/v1/mcp/call → /preview-bundle', () => {
       await fetch(`${baseUrl}/api/v1/projects/${pid}`, { method: 'DELETE', headers: H });
     }
     await new Promise<void>((res) => server.close(() => res()));
+    try {
+      rmSync(isolatedVolacoDataDir, { recursive: true, force: true });
+    } catch {
+      // Windows : SQLite encore ouvert — répertoire temporaire OS (motif C34).
+    }
   });
 
   it('H1. fs_write poison via HTTP : refus 200 + error, AUCUNE écriture', async () => {

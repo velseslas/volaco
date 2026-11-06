@@ -29,6 +29,7 @@
  * JAMAIS par ce module : leur requête dédiée reste la seule autorité.
  */
 import { fold, stripNegations } from './theme.js';
+import type { ImageTheme } from './theme.js';
 
 export interface SectorQueryEntry {
   /** Formes FR foldées (sans accents) séparées par « | » — mots entiers. */
@@ -131,6 +132,11 @@ export const SECTOR_QUERY_ENTRIES: readonly SectorQueryEntry[] = [
   { pattern: 'torrefacteur|torrefaction', query: 'coffee roastery beans' },
   { pattern: 'chocolaterie|chocolatier', query: 'chocolate shop artisan pralines' },
   { pattern: 'confiserie|bonbons', query: 'candy shop sweets colorful' },
+  // LOT MÉTIERS (30/10) — le pâtissier rejoint le lexique (il devient aussi
+  // un thème mappé côté theme.ts ; cette entrée garantit le SUJET au cas où
+  // un rival ex æquo renverrait la demande vers 'autre'). Même query que
+  // THEME_PHOTO_QUERY.patisserie : autorité unique.
+  { pattern: 'patissier|patissiers|patissiere|patissieres|patisserie|patisseries', query: 'pastry shop cake display desserts' },
   { pattern: 'magasin bio|produits bio', query: 'organic grocery fresh produce' },
   { pattern: 'animalerie', query: 'pet store shelves supplies' },
   { pattern: 'maroquinerie', query: 'leather goods bags craftsmanship' },
@@ -207,4 +213,81 @@ export function deriveSectorPhotoQuery(text: string): string | null {
     }
   }
   return bestQuery;
+}
+
+// ============================================================================
+// LOT MÉTIERS (30/10) — LOT 2 : résolution du SUJET métier pour le long tail.
+// À la différence de deriveSectorPhotoQuery (requête photo ANGLAISE pour la
+// clé usager), resolveImageSubject rend le mot métier FRANÇAIS canonique
+// (première forme du pattern reconnu) qui alimente le `subjectHint` des
+// briefs. Même lexique, même arbitrage : un seul vocabulaire, aucun doublon.
+// ============================================================================
+
+/** Sujet métier résolu pour le brief (thème 'autre' + métier reconnu). */
+export interface ImageSubject {
+  /** Secteur scanné — toujours 'autre' côté appelant aujourd'hui. */
+  readonly sector: ImageTheme;
+  /** Sujet FR exact énoncé dans la demande (« boucherie », « piano »…). */
+  readonly hint: string;
+}
+
+/** Mêmes regex que COMPILED, réutilisées pour extraire le sujet FR trouvé. */
+const SUBJECT_COMPILED: ReadonlyArray<{ readonly re: RegExp }> = SECTOR_QUERY_ENTRIES.map((entry) => ({
+  re: new RegExp('(^|[^a-z])(' + entry.pattern + ')(?=[^a-z]|$)'),
+}));
+
+/** Formes SIMPLES du lexique (sans espace), pour la passe fuzzy singulier/pluriel. */
+const SUBJECT_SIMPLE_FORMS: ReadonlyArray<{ readonly form: string }> = SECTOR_QUERY_ENTRIES.flatMap((entry) =>
+  entry.pattern
+    .split('|')
+    .filter((form) => !form.includes(' '))
+    .map((form) => ({ form })));
+
+/**
+ * Résout le sujet métier d'une demande classée 'autre'.
+ * - secteur mappé → `null` immédiat : son réservoir fait autorité ;
+ * - passe 1 : mots entiers, MÊME arbitrage que deriveSectorPhotoQuery
+ *   (l'expression qui couvre le plus de mots l'emporte ; à égalité,
+ *   l'ordre du lexique tranche) ;
+ * - passe 2 (fuzzy léger, LOT 1.3) : tolérance singulier/pluriel NON
+ *   énumérés — chaque token du texte est essayé avec/sans 's' final
+ *   contre les formes simples. Aucun stemmage au-delà (« viande » ne
+ *   rejoindra jamais « boucheron ») : la précision prime, l'échec retombe
+ *   sur `null` = pool neutre historique (comportement inchangé pour
+ *   l'inconnu).
+ *
+ * Le hint rendu est le SUJET EXACT ÉNONCÉ dans la demande (« boucherie »,
+ * « piano », « magasin bio »...) — pas la première forme du pattern : un
+ * fabricant de piano n'est pas un conservatoire.
+ */
+export function resolveImageSubject(
+  sector: ImageTheme,
+  prompt: string,
+  contextTitle = ''
+): ImageSubject | null {
+  if (sector !== 'autre') return null;
+  const folded = stripNegations(fold(`${prompt ?? ''} ${contextTitle ?? ''}`));
+  if (folded.trim().length === 0) return null;
+  let bestScore = 0;
+  let bestHint: string | null = null;
+  for (const item of SUBJECT_COMPILED) {
+    const match = item.re.exec(folded);
+    if (!match) continue;
+    const matched = (match[2] || '').trim();
+    if (matched.length === 0) continue;
+    const score = matched.split(/\s+/).length;
+    if (score > bestScore) {
+      bestScore = score;
+      bestHint = matched;
+    }
+  }
+  if (bestHint !== null) return { sector, hint: bestHint };
+  const tokens = folded.split(/[^a-z]+/).filter((token) => token.length >= 4);
+  for (const token of tokens) {
+    const variants = token.endsWith('s') ? [token.slice(0, -1), token] : [token, `${token}s`];
+    for (const item of SUBJECT_SIMPLE_FORMS) {
+      if (variants.includes(item.form)) return { sector, hint: item.form };
+    }
+  }
+  return null;
 }

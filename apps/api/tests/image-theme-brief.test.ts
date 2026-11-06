@@ -31,17 +31,36 @@ describe('P0 — détection du thème (9 catégories)', () => {
     ['site pour mon chien et mon chat', 'animalier'],
     ['book an appointment at the vet clinic', 'animalier'],
     ['crée une gelateria artisanale', 'gelato'],
+    // LOT MÉTIERS (30/10) — les 5 nouveaux secteurs mappés
+    ['crée un site vitrine d\'une boucherie', 'boucherie'],
+    ['dépannage chauffe-eau et fuite plombier', 'plombier'],
+    ['serrurier urgence porte claquée et cylindre', 'serrurier'],
+    ['pâtissière entremets et macarons maison', 'patisserie'],
+    ['cordonnier ressemelage et réparation cuir', 'cordonnier'],
   ];
   for (const [prompt, expected] of cases) {
     it(`« ${prompt.slice(0, 40)}… » → ${expected}`, () => {
       assert.equal(detectImageTheme(prompt), expected);
     });
   }
-  it('expose exactement 12 thèmes (lots B et coiffeur : + immobilier, avocat, coiffeur)', () => {
+  it('expose exactement 17 thèmes (LOT MÉTIERS : + boucherie, plombier, serrurier, patisserie, cordonnier)', () => {
     assert.deepEqual(
       [...IMAGE_THEMES].sort(),
-      ['animalier', 'autre', 'avocat', 'boutique', 'clinique', 'coiffeur', 'garage', 'gelato', 'hotel', 'immobilier', 'restaurant', 'saas'].sort(),
+      [
+        'animalier', 'autre', 'avocat', 'boutique', 'boucherie', 'clinique',
+        'cordonnier', 'coiffeur', 'garage', 'gelato', 'hotel', 'immobilier',
+        'patisserie', 'plombier', 'restaurant', 'saas', 'serrurier',
+      ].sort(),
     );
+  });
+  it('LOT MÉTIERS — long tail : un métier du lexique reçoit un SUJET IMPOSÉ, jamais le pool neutre', () => {
+    const brief = buildImageBrief('autre', 'create', 0, { subjectHint: 'fleuriste' });
+    assert.match(brief, /sujet imposé du métier \(détecté côté serveur\) : « fleuriste »/);
+    assert.match(brief, /laisse la section SANS image/);
+    assert.doesNotMatch(brief, /RÉSERVOIR/, 'aucun réservoir listé pour le sujet imposé');
+    assert.doesNotMatch(brief, /photo-[0-9]/, 'aucun ID du pool neutre recraché');
+    // sans hint : comportement historique inchangé (pool neutre)
+    assert.match(buildImageBrief('autre', 'create'), /RÉSERVOIR vérifié/);
   });
   it('LOT COIFFEUR : la barbierie gagne contre un <title> résiduel « cuisine » (preuve proj_ilamxm3di)', () => {
     // Le site barbier portait encore le titre « Authentic Italian Cuisine »

@@ -1,4 +1,6 @@
-﻿import { describe, it } from 'node:test';
+﻿import './_lot-b-secret-env.js';
+
+import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadConfig, StructuredLogger, generateRequestId, AppError, NotFoundError, ValidationError } from '../src/index.js';
 

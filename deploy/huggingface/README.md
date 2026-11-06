@@ -18,9 +18,11 @@ Studio complet à l'ouverture du Space (connexion : écran de login intégré).
 | Secret | Rôle |
 |---|---|
 | `MISTRAL_API_KEY` | Clé API Mistral (génération) |
-| `AUTH_SECRET` | Secret de signature JWT (≥ 32 caractères, fixe) |
+| `VOLACO_JWT_SECRET` | **Secret de signature des JWT (OBLIGATOIRE).** Base64 canonique ≥ 32 octets, distinct de `VOLACO_API_KEY`. Absent/invalide ⇒ le service refuse de démarrer. |
+| `AUTH_SECRET` | Historique : ne signe plus les JWT (servait à dériver la clé d'API). Ne pas réutiliser comme `VOLACO_JWT_SECRET`. |
 
 Ne jamais commiter ces valeurs dans le dépôt du Space.
+Générer `VOLACO_JWT_SECRET` : `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`.
 
 ## Limites du plan gratuit
 

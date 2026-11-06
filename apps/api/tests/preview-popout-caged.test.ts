@@ -3,6 +3,8 @@
  * COOP (origine opaque même en onglet) ; le blob: a disparu du popout ;
  * l'aperçu isolé exige un dépôt authentifié et oublie tout au redémarrage.
  */
+import './_lot-b-legacy-env.js';
+
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Server } from 'node:http';
