@@ -389,14 +389,25 @@ function setCorsHeaders(req: IncomingMessage, res: ServerResponse, config: AppCo
 
 // --- Rate limiting en mémoire (par IP + catégorie de route) -----------------
 const RATE_LIMIT_WINDOW_MS = 60_000;
-const RATE_LIMIT_API_MAX = 600;   // requêtes /api génériques / minute / IP
-const RATE_LIMIT_AI_MAX = 60;     // appels proxy IA / minute / IP (quota Mistral)
+// CAP-02 (audit maître backend) — surchargeable pour le BANC de charge :
+// le limiteur (par conception) s'active bien avant la capacité réelle du
+// serveur, ce qui rendait `scripts/load-test.mjs` incapable de mesurer quoi
+// que ce soit (100 % de 429 dès la 1ʳᵉ étape). Sur une instance de banc
+// UNIQUE (jamais une instance exposée), on relève les plafonds :
+//   VOLACO_RATE_LIMIT_API_MAX=10000000 node --env-file=... server.js
+// En production, laisser les défauts ci-dessous.
+function resolveRateLimit(envName: string, fallback: number): number {
+  const raw = Number.parseInt(process.env[envName] || '', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+}
+const RATE_LIMIT_API_MAX = resolveRateLimit('VOLACO_RATE_LIMIT_API_MAX', 600);   // requêtes /api génériques / minute / IP
+const RATE_LIMIT_AI_MAX = resolveRateLimit('VOLACO_RATE_LIMIT_AI_MAX', 60);     // appels proxy IA / minute / IP (quota Mistral)
 // n°5 — le statique/santé (/health, /, /preview-builder/*, assets…) n'était
 // PAS limité : la surface la plus facile à saturer était ouverte (§5 bench).
 // Bucket séparé à 2 000/min/IP (~33/s : 200× un chargement de page, 30× sous
 // la capacité mesurée) — un flood mono-IP est contenu, sans toucher au
 // budget API/IA. Plafond anti-abus, pas anti-DDoS (LB/WAF requis au-delà).
-const RATE_LIMIT_STATIC_MAX = 2_000;
+const RATE_LIMIT_STATIC_MAX = resolveRateLimit('VOLACO_RATE_LIMIT_STATIC_MAX', 2_000);
 
 const rateBuckets = new Map<string, { count: number; windowStart: number }>();
 
@@ -783,7 +794,34 @@ if (isMain) {
   // requêtes suivantes échouent en ERR_CONNECTION_REFUSED, même la simple
   // page d'accueil. On journalise l'erreur au lieu de laisser le serveur
   // mourir silencieusement.
+  //
+  // GATE-01 (audit maître backend) — CORRECTIF : ce filet AVAILAIT les
+  // erreurs de DÉMARRAGE. Exemple réel : `loadConfig` refuse de démarrer sans
+  // `VOLACO_JWT_SECRET`, ce refus devenait une `uncaughtException`, le journal
+  // annonçait « le serveur continue de fonctionner » alors que `listen()`
+  // n'avait JAMAIS été appelé → processus zombie sans port, supervision
+  // aveugle. Désormais, AVANT le bind toute erreur est FATALE (message clair +
+  // exit 1) ; APRÈS le bind le filet d'origine est conservé (un bug isolé ne
+  // doit pas tuer le service en production).
+  let serverListening = false;
+
+  const fatalBoot: (kind: string, err: unknown) => never = (kind, err) => {
+    const detail = err instanceof Error ? (err.stack || err.message) : String(err);
+    console.error('==================================================');
+    console.error(`FATAL - echec de demarrage (${kind}) :`);
+    console.error(detail);
+    console.error("Le service N'EST PAS en ecoute. Arret (code 1).");
+    console.error('==================================================');
+    logger.error('Echec de demarrage - arret du processus', {
+      component: 'server-bootstrap',
+      kind,
+      error: detail
+    });
+    process.exit(1);
+  };
+
   process.on('uncaughtException', (err) => {
+    if (!serverListening) fatalBoot('uncaughtException (avant le bind)', err);
     logger.warn('Exception non interceptée — le serveur continue de fonctionner', {
       component: 'process-safety-net',
       error: err instanceof Error ? err.message : String(err),
@@ -791,13 +829,25 @@ if (isMain) {
     });
   });
   process.on('unhandledRejection', (reason) => {
+    if (!serverListening) fatalBoot('unhandledRejection (avant le bind)', reason);
     logger.warn('Promesse rejetée sans gestion — le serveur continue de fonctionner', {
       component: 'process-safety-net',
       error: reason instanceof Error ? reason.message : String(reason)
     });
   });
 
-  const { server, config } = createApiServer();
+  // Configuration/initialisation : un refus de `loadConfig` (secret JWT absent,
+  // strict désactivé en production, repli dev sur une interface exposée…) doit
+  // se voir et s'arrêter — jamais un « serveur » sans port.
+  let boot: ReturnType<typeof createApiServer> | undefined;
+  try {
+    boot = createApiServer();
+  } catch (err) {
+    fatalBoot('configuration / initialisation', err);
+  }
+  if (!boot) fatalBoot('configuration / initialisation', new Error('createApiServer() a échoué silencieusement'));
+  const { server, config } = boot;
+
   // MÉNAGE — purge les workspaces orphelins au démarrage (bornée, best
   // effort : ne bloque jamais le boot). Avec le hook DELETE, plus aucun
   // orphelin ne devrait apparaître ; ce balayage résorbe le stock existant.
@@ -817,6 +867,22 @@ if (isMain) {
       error: err instanceof Error ? err.message : String(err)
     });
   }
+
+  // Erreurs HTTP du serveur lui-même (EADDRINUSE, EACCES…) : message net +
+  // arrêt — sans cela Node les remonte comme uncaughtException, ce qui
+  // laissait croire à un service démarré alors que le port n'est pas lié.
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (!serverListening) {
+      fatalBoot(`ecoute du port ${config.port} (${err.code || 'inconnu'})`, err);
+    }
+    logger.error('Erreur du serveur HTTP — arrêt', {
+      component: 'server-bootstrap',
+      error: err.message,
+      code: err.code
+    });
+    process.exit(1);
+  });
+
   // SÉCURITÉ : sans adresse d'écoute explicite, Node écoute sur TOUTES les
   // interfaces (0.0.0.0 / ::) — un outil de développement devenait joignable
   // depuis le réseau local, alors que la console annonçait 127.0.0.1.
@@ -824,10 +890,29 @@ if (isMain) {
   //   $env:VOLACO_BIND_HOST='0.0.0.0'   (à n'utiliser qu'avec l'authentification active)
   const bindHost = process.env.VOLACO_BIND_HOST || '127.0.0.1';
   server.listen(config.port, bindHost, () => {
+    serverListening = true;
     console.log(`==================================================`);
-    console.log(`ðŸš€ VIBECODE STUDIO CORE DÃ‰MARRÃ‰ SUR LE PORT ${config.port}`);
-    console.log(`ðŸ–¥ï¸  Interface Studio : http://127.0.0.1:${config.port}/`);
-    console.log(`ðŸ©º Healthcheck API   : http://127.0.0.1:${config.port}/health`);
+    console.log(`🚀 VIBECODE STUDIO CORE DÉMARRÉ SUR LE PORT ${config.port}`);
+    console.log(`🖥️  Interface Studio : http://127.0.0.1:${config.port}/`);
+    console.log(`🩺 Healthcheck API   : http://127.0.0.1:${config.port}/health`);
     console.log(`==================================================`);
   });
+
+  // CAP-01 — rien ne doit être perdu à l'arrêt : la fenêtre de coalescence
+  // des écritures projet (≤ 500 ms) est vidée avant la sortie. `flush()` est
+  // synchrone, il peut donc tourner dans un handler de signal.
+  const shutdown = (signal: string): void => {
+    try {
+      projectStore.flush();
+    } catch (err) {
+      logger.warn('Flush final des projets impossible', {
+        component: 'server-bootstrap',
+        error: err instanceof Error ? err.message : String(err)
+      });
+    }
+    logger.info('Arrêt demandé — écritures projet vidées', { component: 'server-bootstrap', signal });
+    process.exit(0);
+  };
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
 }

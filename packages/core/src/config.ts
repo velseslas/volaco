@@ -107,6 +107,28 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   if (!strictAuth && env === 'production') {
     throw new Error('Mode strict désactivé en production — refusé.');
   }
+  // SEC-01 (audit maître backend) — fail-fast : le repli dev par en-têtes
+  // spoofables (`VOLACO_STRICT_AUTH=0`) n'est toléré QUE sur une instance
+  // fermée en boucle locale. Sans ce garde-fou, un déploiement oublié avec
+  // NODE_ENV non-production (ou un VOLACO_BIND_HOST='0.0.0.0') exposait
+  // toutes les routes API sans aucune authentification — vérifié pendant
+  // l'audit : GET /api/v1/projects sans jeton → 200.
+  // Échappatoire explicite et délibérée : VOLACO_ALLOW_INSECURE_DEV='1'
+  // (banc de charge / démo locale sur autre interface que la boucle).
+  // La production reste INÉCHAPABLE (le throw ci-dessus s'applique avant).
+  if (!strictAuth) {
+    const bindHost = (process.env.VOLACO_BIND_HOST || '127.0.0.1').trim();
+    const loopback = bindHost === '127.0.0.1' || bindHost === '::1' || bindHost === '[::1]' || bindHost === 'localhost';
+    if (!loopback && process.env.VOLACO_ALLOW_INSECURE_DEV !== '1') {
+      throw new Error(
+        `Mode non strict (VOLACO_STRICT_AUTH=0) refusé : le service écoutera sur ${bindHost} ` +
+        "(interface exposée). Le repli d'authentification par en-têtes spoofables n'est " +
+        "autorisé qu'en boucle locale. Configurez l'authentification (VOLACO_JWT_SECRET + " +
+        "JWT/clé API) ou, pour un banc de charge local dédié, " +
+        "VOLACO_ALLOW_INSECURE_DEV='1'."
+      );
+    }
+  }
 
   return {
     env,
