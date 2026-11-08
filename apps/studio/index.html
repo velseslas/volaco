@@ -1165,6 +1165,32 @@
                 <span class="active-nav-badge hidden text-[9px] bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded font-bold font-mono">Actif</span>
               </button>
 
+              <button onclick="switchSystemView('mcphub'); toggleProjectDropdown();" id="menuNav-mcphub" class="w-full text-left px-2.5 py-1.5 rounded-xl text-xs text-slate-300 hover:bg-[#151c33] hover:text-white flex items-center justify-between transition group">
+                <div class="flex items-center space-x-2.5">
+                  <div class="w-6 h-6 rounded-lg bg-violet-500/15 text-violet-400 flex items-center justify-center text-xs">
+                    <i class="fa-solid fa-book-open"></i>
+                  </div>
+                  <div>
+                    <div class="font-bold text-white text-xs">Connecteurs</div>
+                    <div class="text-[9px] text-slate-400">Bibliotheque MCP</div>
+                  </div>
+                </div>
+                <span class="active-nav-badge hidden text-[9px] bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded font-bold font-mono">Actif</span>
+              </button>
+
+              <button onclick="switchSystemView('mcpadmin'); toggleProjectDropdown();" id="menuNav-mcpadmin" class="w-full text-left px-2.5 py-1.5 rounded-xl text-xs text-slate-300 hover:bg-[#151c33] hover:text-white flex items-center justify-between transition group hidden">
+                <div class="flex items-center space-x-2.5">
+                  <div class="w-6 h-6 rounded-lg bg-amber-500/15 text-amber-400 flex items-center justify-center text-xs">
+                    <i class="fa-solid fa-shield-halved"></i>
+                  </div>
+                  <div>
+                    <div class="font-bold text-white text-xs">Gestion MCP</div>
+                    <div class="text-[9px] text-slate-400">Catalogue global (admin)</div>
+                  </div>
+                </div>
+                <span class="active-nav-badge hidden text-[9px] bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded font-bold font-mono">Actif</span>
+              </button>
+
               <button onclick="switchSystemView('connecteurs'); toggleProjectDropdown();" id="menuNav-connecteurs" class="w-full text-left px-2.5 py-1.5 rounded-xl text-xs text-slate-300 hover:bg-[#151c33] hover:text-white flex items-center justify-between transition group">
                 <div class="flex items-center space-x-2.5">
                   <div class="w-6 h-6 rounded-lg bg-cyan-500/15 text-cyan-400 flex items-center justify-center text-xs">
@@ -3315,6 +3341,42 @@
       <div id="mcpServersList" class="space-y-3">
         <div class="text-xs text-slate-500 italic"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Handshake MCP en cours…</div>
       </div>
+    </div>
+  </div>
+
+  <!-- ==================== VUE MCP HUB (UTILISATEUR - LOT UI-MCP) ==================== -->
+  <div id="view-mcphub" class="flex-1 flex-col overflow-y-auto hidden bg-[#06080e]">
+    <div class="sticky top-0 z-20 bg-[#06080e]/95 backdrop-blur border-b border-[#141a2e] px-6 py-4 flex items-center justify-between">
+      <div class="flex items-center space-x-3">
+        <div class="w-9 h-9 rounded-xl bg-violet-500/15 text-violet-400 flex items-center justify-center"><i class="fa-solid fa-book-open"></i></div>
+        <div>
+          <div class="text-sm font-bold text-white">Connecteurs</div>
+          <div class="text-[10px] text-slate-500">Bibliotheque MCP - decouverte, activation, imports personnels</div>
+        </div>
+      </div>
+      <button onclick="switchSystemView('workspace')" class="px-3 py-1.5 rounded-xl text-xs bg-[#0e1220] border border-[#1c223a] text-slate-300 hover:text-white transition">Retour</button>
+    </div>
+    <div class="px-6 py-5 max-w-6xl mx-auto w-full">
+      <!-- Greffon du module mcp-user-hub.js (construction DOM textContent uniquement). -->
+      <div id="mcpUserHubMount"></div>
+    </div>
+  </div>
+
+  <!-- ==================== VUE GESTION MCP (ADMIN - LOT UI-MCP) ==================== -->
+  <div id="view-mcpadmin" class="flex-1 flex-col overflow-y-auto hidden bg-[#06080e]">
+    <div class="sticky top-0 z-20 bg-[#06080e]/95 backdrop-blur border-b border-[#141a2e] px-6 py-4 flex items-center justify-between">
+      <div class="flex items-center space-x-3">
+        <div class="w-9 h-9 rounded-xl bg-amber-500/15 text-amber-400 flex items-center justify-center"><i class="fa-solid fa-shield-halved"></i></div>
+        <div>
+          <div class="text-sm font-bold text-white">Gestion MCP (administration)</div>
+          <div class="text-[10px] text-slate-500">Catalogue global - publication, tests, historique</div>
+        </div>
+      </div>
+      <button onclick="switchSystemView('workspace')" class="px-3 py-1.5 rounded-xl text-xs bg-[#0e1220] border border-[#1c223a] text-slate-300 hover:text-white transition">Retour</button>
+    </div>
+    <div class="px-6 py-5 max-w-6xl mx-auto w-full">
+      <!-- Greffon du module mcp-admin.js (MCP_CATALOG_MANAGE verifie COTE SERVEUR). -->
+      <div id="mcpAdminMount"></div>
     </div>
   </div>
 
@@ -8443,7 +8505,7 @@ npx serve .
     // ===== Routage hash pour MCP / Connecteurs / Skills (Étape B) =====
     // URL ↔ interface : #mcp, #connecteurs, #skills survivent au F5,
     // alimentent précédent/suivant, sans dupliquer switchSystemView.
-    const HASH_VIEWS = ['mcp', 'connecteurs', 'skills', 'apikeys'];
+    const HASH_VIEWS = ['mcp', 'connecteurs', 'skills', 'apikeys', 'mcphub', 'mcpadmin'];
     let currentSystemView = 'workspace';
 
     function syncHashForView(viewName) {
@@ -8483,7 +8545,7 @@ npx serve .
       }
       currentSystemView = viewName;
 
-      ['home', 'dashboard', 'workspace', 'settings', 'mcp', 'connecteurs', 'skills', 'apikeys'].forEach(v => {
+      ['home', 'dashboard', 'workspace', 'settings', 'mcp', 'connecteurs', 'skills', 'apikeys', 'mcphub', 'mcpadmin'].forEach(v => {
         const p = document.getElementById('view-' + v);
         const b = document.getElementById('sysBtn-' + v);
         const mb = document.getElementById('menuNav-' + v);
@@ -8520,6 +8582,14 @@ npx serve .
       if (viewName === 'connecteurs') {
         renderConnecteursView();
       }
+      if (viewName === 'mcphub') {
+        // LOT UI-MCP : (re)chargement du hub utilisateur a chaque ouverture.
+        if (window.__mcpUserHub && typeof window.__mcpUserHub.onShow === 'function') window.__mcpUserHub.onShow();
+      }
+      if (viewName === 'mcpadmin') {
+        // LOT UI-MCP : (re)chargement de la surface admin a chaque ouverture.
+        if (window.__mcpAdminUi && typeof window.__mcpAdminUi.onShow === 'function') window.__mcpAdminUi.onShow();
+      }
       if (viewName === 'skills') {
         renderSkillsView();
       }
@@ -8528,6 +8598,10 @@ npx serve .
         // Section agents : recharge roster + état des slots serveur à chaque ouverture.
         if (typeof window.refreshAgentKeys === 'function') window.refreshAgentKeys();
       }
+      // LOT UI-MCP : la reecriture du className ci-dessus remet tout le menu
+      // visible ; on re-applique immediatement la visibilite role (fail-closed
+      // : le menu admin reste masque sauf OWNER/ADMIN).
+      if (typeof window.syncMcpAdminMenu === 'function') window.syncMcpAdminMenu();
       syncHashForView(viewName);
     }
 
@@ -19688,6 +19762,8 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
 </script>
 <script src="mcp-remote.js" defer></script>
 <script src="mcp-hub.js" defer></script>
+<script src="mcp-user-hub.js" defer></script>
+<script src="mcp-admin.js" defer></script>
 <script>
 // ==================== PAGE CLÉS API — saisie par fournisseur (navigateur) ====================
 // Choix scellés avec l'opérateur : catalogue IA complet (10 fournisseurs),

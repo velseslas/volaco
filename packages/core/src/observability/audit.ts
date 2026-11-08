@@ -39,6 +39,12 @@ const AUDIT_CRITICAL_ACTIONS: ReadonlySet<string> = new Set([
   'MCP_REMOTE_TOOL_CALLED',
   'MCP_REMOTE_TOOL_CALL_REFUSED',
   'MCP_REMOTE_TOOL_CALL_FAILED',
+  // LOT UI-MCP — gouvernance du catalogue global : opérations administratives
+  // sensibles, flush SYNCHRONE immédiat (aucune perte tolérée).
+  'MCP_CATALOG_CREATED',
+  'MCP_CATALOG_UPDATED',
+  'MCP_CATALOG_DELETED',
+  'MCP_CATALOG_TRANSITIONED',
   'ROLLBACK_TRIGGERED',
   'DNA_ROLLBACK_TRIGGERED'
 ]);
@@ -182,6 +188,29 @@ export class AuditStore {
       if (filter?.resourceType && e.resourceType !== filter.resourceType) return false;
       return true;
     });
+  }
+
+  /**
+   * LOT UI-MCP — lecture ADDITIVE par type de ressource, SANS filtre tenant
+   * (le catalogue MCP est global : son historique administratif croise les
+   * tenants opérateurs). `resourceId` borne à une ressource exacte (historique
+   * d'une entrée) ; `limit` borne la fenêtre retournée (les plus récents en
+   * dernier). Mémoire uniquement (store borné à 5 000 événements).
+   */
+  public queryByResourceType(
+    resourceType: string,
+    filter?: { action?: string; resourceId?: string; limit?: number }
+  ): AuditEvent[] {
+    const matched = this.events.filter(e => {
+      if (e.resourceType !== resourceType) return false;
+      if (filter?.action && e.action !== filter.action) return false;
+      if (filter?.resourceId && e.resourceId !== filter.resourceId) return false;
+      return true;
+    });
+    if (filter?.limit !== undefined && filter.limit > 0 && matched.length > filter.limit) {
+      return matched.slice(matched.length - filter.limit);
+    }
+    return matched;
   }
 
   public clear(): void {

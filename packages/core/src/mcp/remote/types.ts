@@ -12,6 +12,18 @@
 
 export type RemoteMcpTransport = 'url';
 
+/**
+ * LOT UI-MCP — Portée d'une ligne de `mcp_remote_connectors` :
+ *   - 'tenant'  : connecteur de configuration du tenant (comportement
+ *     historique, géré via TENANT_MANAGE, visible par le tenant) ;
+ *   - 'personal': import PERSONNEL privé (owner_user_id requis), jamais dans
+ *     le catalogue global, invisible des autres utilisateurs ;
+ *   - 'catalog' : instance d'activation d'une entrée du catalogue global
+ *     (catalog_id requis), appartenant à son activateur.
+ * Les lignes non-'tenant' sont soumises au contrôle de propriété côté route.
+ */
+export type RemoteMcpConnectorScope = 'tenant' | 'personal' | 'catalog';
+
 export type RemoteMcpToolApprovalStatus = 'APPROVED' | 'REVOKED';
 
 /** SHA-256 hexadécimal minuscule (64 caractères). */
@@ -68,6 +80,12 @@ export interface RemoteMcpConnectorRecord {
   readonly url: string;
   readonly transport: RemoteMcpTransport;
   readonly enabled: boolean;
+  /** LOT UI-MCP — portée de la ligne (voir RemoteMcpConnectorScope). */
+  readonly scope: RemoteMcpConnectorScope;
+  /** Propriétaire pour scope 'personal'/'catalog' ; null pour 'tenant'. */
+  readonly ownerUserId: string | null;
+  /** Entrée de catalogue activée pour scope 'catalog' ; null sinon. */
+  readonly catalogId: string | null;
   readonly secretMeta: RemoteMcpSecretMeta | null;
   readonly toolPolicies: readonly RemoteMcpToolPolicy[];
   readonly createdAt: string;

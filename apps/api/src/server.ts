@@ -20,6 +20,7 @@ import { handlePreviewStandaloneRoutes } from './routes/preview-standalone.js';
 import { handleAppGeneratorRoutes } from './routes/app-generator.js';
 import { handleAppEditRoutes } from './routes/app-edit.js';
 import { handleMcpRoutes } from './routes/mcp.js';
+import { handleMcpCatalogRoutes } from './routes/mcp-catalog.js';
 import { handleMcpRemoteRoutes } from './routes/mcp-remote.js';
 import { handleImageRoutes } from './routes/images.js';
 import { handleExecutionRoutes } from './routes/executions.js';
@@ -557,8 +558,9 @@ const API_ROUTES: readonly RouteEntry[] = [
   { name: 'preview-standalone (PV-01 — aperçu HTML cagé)', handler: handlePreviewStandaloneRoutes },
   { name: 'app-generator (P1/P2 — React réel)', handler: handleAppGeneratorRoutes },
   { name: 'app-edit (P3 — édition IA par fichiers)', handler: handleAppEditRoutes },
-  { name: 'mcp (P3 — Model Context Protocol)', handler: handleMcpRoutes },
-  { name: 'mcp-remote (C3.2-B — connecteurs MCP distants)', handler: handleMcpRemoteRoutes },
+  { name: 'mcp (P3 - Model Context Protocol)', handler: handleMcpRoutes },
+  { name: 'mcp-catalog (LOT UI-MCP - catalogue global + activations)', handler: handleMcpCatalogRoutes },
+  { name: 'mcp-remote (C3.2-B - connecteurs MCP distants)', handler: handleMcpRemoteRoutes },
   { name: 'images (P4 — génération d images)', handler: handleImageRoutes },
   { name: 'settings (CORE-006)', handler: handleSettingsRoutes },
   { name: 'projects (FND-003)', handler: projectsWithAudit },

@@ -69,6 +69,12 @@ export interface RemoteMcpCreateConnectorInput {
   readonly tenantId: string;
   readonly name: string;
   readonly url: string;
+  /** LOT UI-MCP — défaut 'tenant' (comportement historique inchangé). */
+  readonly scope?: 'tenant' | 'personal' | 'catalog';
+  /** Requis pour scope 'personal' et 'catalog' (propriétaire de la ligne). */
+  readonly ownerUserId?: string;
+  /** Requis pour scope 'catalog' (entrée de catalogue activée). */
+  readonly catalogId?: string;
 }
 
 export interface RemoteMcpApproveToolInput {
@@ -85,6 +91,9 @@ interface ConnectorRow {
   name: string;
   url: string;
   enabled: number;
+  scope: string;
+  owner_user_id: string | null;
+  catalog_id: string | null;
   secret_key_id: string | null;
   secret_iv: string | null;
   secret_ciphertext: string | null;
@@ -118,6 +127,9 @@ export function ensureRemoteMcpSchema(db: DatabaseSync): void {
       url TEXT NOT NULL CHECK(length(url) <= ${REMOTE_MCP_URL_MAX_LENGTH}),
       transport TEXT NOT NULL CHECK(transport = 'url'),
       enabled INTEGER NOT NULL CHECK(enabled IN (0, 1)),
+      scope TEXT NOT NULL DEFAULT 'tenant' CHECK(scope IN ('tenant','personal','catalog')),
+      owner_user_id TEXT,
+      catalog_id TEXT,
       secret_key_id TEXT,
       secret_iv TEXT,
       secret_ciphertext TEXT,
@@ -132,6 +144,10 @@ export function ensureRemoteMcpSchema(db: DatabaseSync): void {
     );
     CREATE INDEX IF NOT EXISTS idx_mcp_remote_connectors_tenant
       ON mcp_remote_connectors (tenant_id);
+    CREATE INDEX IF NOT EXISTS idx_mcp_remote_connectors_owner
+      ON mcp_remote_connectors (tenant_id, scope, owner_user_id);
+    CREATE INDEX IF NOT EXISTS idx_mcp_remote_connectors_catalog
+      ON mcp_remote_connectors (catalog_id);
     CREATE TABLE IF NOT EXISTS mcp_remote_tool_policies (
       tenant_id TEXT NOT NULL CHECK(length(tenant_id) <= 64),
       connector_id TEXT NOT NULL CHECK(length(connector_id) <= 64),
@@ -246,7 +262,7 @@ function invalidatePendingConfirmations(
 let permissionsApplied = false;
 
 /** 0o600 sur le fichier SQLite, 0o700 sur le dossier (best-effort Windows). */
-function hardenSqlitePermissions(): void {
+export function hardenSqlitePermissions(): void {
   if (permissionsApplied) return;
   permissionsApplied = true;
   try {
@@ -313,6 +329,36 @@ function ensureLegacyLastTestColumns(db: DatabaseSync): void {
   }
 }
 
+/**
+ * LOT UI-MCP — colonnes de portée ajoutées NON destructivement (même pattern
+ * que ensureLegacyLastTestColumns) : bases préexistantes → toutes les lignes
+ * deviennent scope 'tenant' (comportement historique strictement préservé) ;
+ * bases neuves → colonnes déjà présentes dans le DDL, aucune ALTER.
+ * owner_user_id/catalog_id restent NULL pour les lignes tenant.
+ */
+function ensureScopeColumns(db: DatabaseSync): void {
+  const columns = db
+    .prepare("SELECT name FROM pragma_table_info('mcp_remote_connectors')")
+    .all() as unknown as Array<{ name: string }>;
+  if (columns.length === 0) return;
+  const present = new Set(columns.map((one) => one.name));
+  if (!present.has('scope')) {
+    db.exec("ALTER TABLE mcp_remote_connectors ADD COLUMN scope TEXT NOT NULL DEFAULT 'tenant'");
+  }
+  if (!present.has('owner_user_id')) {
+    db.exec('ALTER TABLE mcp_remote_connectors ADD COLUMN owner_user_id TEXT');
+  }
+  if (!present.has('catalog_id')) {
+    db.exec('ALTER TABLE mcp_remote_connectors ADD COLUMN catalog_id TEXT');
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_mcp_remote_connectors_owner
+      ON mcp_remote_connectors (tenant_id, scope, owner_user_id);
+    CREATE INDEX IF NOT EXISTS idx_mcp_remote_connectors_catalog
+      ON mcp_remote_connectors (catalog_id);
+  `);
+}
+
 export class RemoteMcpConnectorStore {
   private cipher: RemoteMcpSecretCipher;
   private schemaReady = false;
@@ -339,6 +385,7 @@ export class RemoteMcpConnectorStore {
     if (this.schemaReady) return;
     ensureRemoteMcpSchema(db);
     ensureLegacyLastTestColumns(db);
+    ensureScopeColumns(db);
     this.schemaReady = true;
   }
 
@@ -361,17 +408,37 @@ export class RemoteMcpConnectorStore {
     if (url.length > REMOTE_MCP_URL_MAX_LENGTH) {
       throw new RemoteMcpStoreError('URL trop longue', 'INVALID_INPUT');
     }
+    // LOT UI-MCP — portée : 'tenant' (défaut historique), 'personal'
+    // (propriétaire obligatoire), 'catalog' (propriétaire + entrée activée).
+    const scope = input.scope ?? 'tenant';
+    if (scope !== 'tenant' && scope !== 'personal' && scope !== 'catalog') {
+      throw new RemoteMcpStoreError('scope invalide', 'INVALID_INPUT');
+    }
+    let ownerUserId: string | null = null;
+    let catalogId: string | null = null;
+    if (scope === 'personal' || scope === 'catalog') {
+      if (typeof input.ownerUserId !== 'string' || input.ownerUserId.length === 0 || input.ownerUserId.length > 128) {
+        throw new RemoteMcpStoreError('ownerUserId requis pour une ligne non-tenant', 'INVALID_INPUT');
+      }
+      ownerUserId = input.ownerUserId;
+    }
+    if (scope === 'catalog') {
+      if (typeof input.catalogId !== 'string' || !ID_PATTERN.test(input.catalogId)) {
+        throw new RemoteMcpStoreError('catalogId requis pour une instance du catalogue', 'INVALID_INPUT');
+      }
+      catalogId = input.catalogId;
+    }
     const db = this.db();
     const connectorId = randomUUID();
     const nowIso = new Date().toISOString();
     withRemoteMcpTransaction(db, () => {
       db.prepare(`
         INSERT INTO mcp_remote_connectors
-          (tenant_id, connector_id, name, url, transport, enabled,
+          (tenant_id, connector_id, name, url, transport, enabled, scope, owner_user_id, catalog_id,
            secret_key_id, secret_iv, secret_ciphertext, secret_tag, secret_created_at,
            created_at, updated_at)
-        VALUES (?, ?, ?, ?, 'url', 0, NULL, NULL, NULL, NULL, NULL, ?, ?)
-      `).run(tenantId, connectorId, name, url, nowIso, nowIso);
+        VALUES (?, ?, ?, ?, 'url', 0, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)
+      `).run(tenantId, connectorId, name, url, scope, ownerUserId, catalogId, nowIso, nowIso);
     });
     const record = this.getConnector(tenantId, connectorId);
     if (record === null) {
@@ -391,9 +458,15 @@ export class RemoteMcpConnectorStore {
   listConnectors(tenantId: string): RemoteMcpConnectorRecord[] {
     const tenant = assertIdentifier(tenantId, 'tenantId');
     const db = this.db();
+    // LOT UI-MCP — la liste « tenant » ne retourne QUE les lignes de
+    // configuration du tenant : les imports personnels et les instances du
+    // catalogue n'y apparaissent JAMAIS (séparation démontrable). Toutes les
+    // lignes préexistantes sont scope 'tenant' → comportement identique.
     const rows = db
       .prepare(
-        'SELECT * FROM mcp_remote_connectors WHERE tenant_id = ? ORDER BY created_at ASC, connector_id ASC'
+        `SELECT * FROM mcp_remote_connectors
+         WHERE tenant_id = ? AND scope = 'tenant'
+         ORDER BY created_at ASC, connector_id ASC`
       )
       .all(tenant) as unknown as ConnectorRow[];
     return rows.map((row) => ({
@@ -402,7 +475,100 @@ export class RemoteMcpConnectorStore {
     }));
   }
 
+  /**
+   * LOT UI-MCP — « mes connecteurs » : les lignes personnelles ET les
+   * instances de catalogue appartenant à `ownerUserId` (jamais celles des
+   * autres utilisateurs, jamais les lignes tenant).
+   */
+  listConnectorsForUser(tenantId: string, ownerUserId: string): RemoteMcpConnectorRecord[] {
+    const tenant = assertIdentifier(tenantId, 'tenantId');
+    if (typeof ownerUserId !== 'string' || ownerUserId.length === 0 || ownerUserId.length > 128) {
+      throw new RemoteMcpStoreError('ownerUserId invalide', 'INVALID_INPUT');
+    }
+    const db = this.db();
+    const rows = db
+      .prepare(
+        `SELECT * FROM mcp_remote_connectors
+         WHERE tenant_id = ? AND scope IN ('personal', 'catalog') AND owner_user_id = ?
+         ORDER BY created_at ASC, connector_id ASC`
+      )
+      .all(tenant, ownerUserId) as unknown as ConnectorRow[];
+    return rows.map((row) => ({
+      ...this.rowToRecord(row),
+      toolPolicies: this.readToolPolicies(tenant, row.connector_id)
+    }));
+  }
+
+  /** LOT UI-MCP — instances d'activation d'une entrée (contrôle dépendance). */
+  countByCatalogId(catalogId: string): number {
+    if (typeof catalogId !== 'string' || !ID_PATTERN.test(catalogId)) {
+      throw new RemoteMcpStoreError('catalogId invalide', 'INVALID_INPUT');
+    }
+    const db = this.db();
+    const row = db
+      .prepare('SELECT COUNT(*) AS n FROM mcp_remote_connectors WHERE catalog_id = ?')
+      .get(catalogId) as { n: number } | undefined;
+    return row?.n ?? 0;
+  }
+
+  /**
+   * LOT UI-MCP — agrégats GLOBAUX du store (TOUS tenants, COMpteurs SEULS) :
+   * alimentent le tableau de bord admin. Aucune donnée de ligne n'est
+   * retournée (ni nom, ni URL, ni propriétaire) — uniquement des compteurs.
+   */
+  globalAggregateStats(): {
+    byScope: Array<{ scope: string; total: number; enabled: number }>;
+    lastTest: { ok: number; failed: number; neverTested: number };
+  } {
+    const db = this.db();
+    const byScopeRows = db
+      .prepare(
+        `SELECT scope, COUNT(*) AS total, COALESCE(SUM(enabled), 0) AS enabled
+         FROM mcp_remote_connectors GROUP BY scope ORDER BY scope ASC`
+      )
+      .all() as unknown as Array<{ scope: string; total: number; enabled: number }>;
+    const lastTest = db
+      .prepare(
+        `SELECT
+           COALESCE(SUM(CASE WHEN last_test_status = 'OK' THEN 1 ELSE 0 END), 0) AS ok,
+           COALESCE(SUM(CASE WHEN last_test_status = 'FAILED' THEN 1 ELSE 0 END), 0) AS failed,
+           COALESCE(SUM(CASE WHEN last_test_at IS NULL THEN 1 ELSE 0 END), 0) AS never
+         FROM mcp_remote_connectors`
+      )
+      .get() as { ok: number; failed: number; never: number } | undefined;
+    return {
+      byScope: byScopeRows.map((row) => ({ scope: row.scope, total: row.total, enabled: row.enabled })),
+      lastTest: {
+        ok: lastTest?.ok ?? 0,
+        failed: lastTest?.failed ?? 0,
+        neverTested: lastTest?.never ?? 0
+      }
+    };
+  }
+
+  /**
+   * LOT UI-MCP — index (connectorId → ownerUserId) des lignes NON-tenant du
+   * tenant : filtre de propriété du journal MCP (un import personnel ou une
+   * instance de catalogue n'est jamais visible par un autre utilisateur).
+   */
+  listNonTenantOwnerIndex(tenantId: string): Map<string, string> {
+    const tenant = assertIdentifier(tenantId, 'tenantId');
+    const db = this.db();
+    const rows = db
+      .prepare(
+        `SELECT connector_id, owner_user_id FROM mcp_remote_connectors
+         WHERE tenant_id = ? AND scope != 'tenant'`
+      )
+      .all(tenant) as unknown as Array<{ connector_id: string; owner_user_id: string | null }>;
+    const index = new Map<string, string>();
+    for (const row of rows) {
+      index.set(row.connector_id, row.owner_user_id ?? '');
+    }
+    return index;
+  }
+
   private rowToRecord(row: ConnectorRow): RemoteMcpConnectorRecord {
+    const scope = row.scope === 'personal' || row.scope === 'catalog' ? row.scope : 'tenant';
     return {
       tenantId: row.tenant_id,
       connectorId: row.connector_id,
@@ -410,6 +576,9 @@ export class RemoteMcpConnectorStore {
       url: row.url,
       transport: 'url',
       enabled: row.enabled === 1,
+      scope,
+      ownerUserId: row.owner_user_id,
+      catalogId: row.catalog_id,
       secretMeta: secretMetaFromRow(row),
       toolPolicies: [],
       createdAt: row.created_at,

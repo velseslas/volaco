@@ -47,7 +47,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { assertPermission } from '../../../../packages/core/src/identity/permissions.js';
-import { AppError, ForbiddenError, NotFoundError, ValidationError } from '../../../../packages/core/src/errors.js';
+import { AppError, ForbiddenError, NotFoundError, UnauthorizedError, ValidationError } from '../../../../packages/core/src/errors.js';
 import { auditStore } from '../../../../packages/core/src/observability/audit.js';
 import { logger } from '../../../../packages/core/src/logger.js';
 import { RemoteMcpConnectorStore, RemoteMcpStoreError } from '../../../../packages/core/src/mcp/remote/store.js';
@@ -222,8 +222,11 @@ let cachedConnectorStore: RemoteMcpConnectorStore | undefined;
  * Store paresseux. Si le keyring est absent/invalide, l'erreur remonte à
  * chaque requête (503 explicite) SANS être mise en cache : la configuration
  * peut être corrigée sans redémarrage fantôme.
+ *
+ * LOT UI-MCP — exporté pour le routeur catalogue (activation : matérialisation
+ * d'une instance scope 'catalog' sur le MÊME store, seam de test comprise).
  */
-function getConnectorStore(): RemoteMcpConnectorStore {
+export function getConnectorStore(): RemoteMcpConnectorStore {
   if (runtimeForTests?.connectorStore) {
     return runtimeForTests.connectorStore();
   }
@@ -277,7 +280,7 @@ function buildClient(
  * Helpers de réponse / audit / parsing
  * ------------------------------------------------------------------------- */
 
-function reply(res: ServerResponse, status: number, payload: unknown): void {
+export function reply(res: ServerResponse, status: number, payload: unknown): void {
   res.statusCode = status;
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.end(JSON.stringify(payload));
@@ -359,7 +362,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /** Corps JSON ≤1 Mo (readBody) : objet requis ({} accepté). */
-async function parseJsonObjectBody(req: IncomingMessage, requestId: string): Promise<Record<string, unknown>> {
+export async function parseJsonObjectBody(req: IncomingMessage, requestId: string): Promise<Record<string, unknown>> {
   const text = await readBody(req);
   if (text.length === 0) return {};
   let parsed: unknown;
@@ -418,7 +421,7 @@ function requireOptionalSecret(value: unknown): string | undefined {
 }
 
 /** timeoutMs borné exactement comme le client (1000..120000 ; défaut = client : 10 s, C3.3). */
-function clampTimeoutMs(value: unknown): number {
+export function clampTimeoutMs(value: unknown): number {
   if (value === undefined || value === null) return REMOTE_MCP_DEFAULT_TIMEOUT_MS;
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     throw new ValidationError('timeoutMs invalide (nombre de millisecondes)');
@@ -434,6 +437,12 @@ function connectorView(record: RemoteMcpConnectorRecord): Record<string, unknown
     url: record.url,
     transport: record.transport,
     enabled: record.enabled,
+    // LOT UI-MCP — portée + propriété (aucun secret) : 'tenant' = config du
+    // tenant ; 'personal'/'catalog' = lignes strictement propriétaires (les
+    // routes excluent déjà celles des autres utilisateurs de la réponse).
+    scope: record.scope,
+    ownerUserId: record.ownerUserId,
+    catalogId: record.catalogId,
     secretPresent: record.secretMeta !== null,
     // keyId NON secret (désigné pour la résolution du keyring, cf. types.ts C3.1).
     secretKeyId: record.secretMeta !== null ? record.secretMeta.keyId : null,
@@ -612,13 +621,75 @@ function toApiError(error: unknown, requestId: string): AppError {
  * Handlers
  * ------------------------------------------------------------------------- */
 
+/* ---------------------------------------------------------------------------
+ * LOT UI-MCP — propriété des lignes non-'tenant' (imports personnels et
+ * instances de catalogue). Règle unique, vérifiée SERVEUR à chaque accès :
+ *   - scope 'tenant'  : comportement historique inchangé (permission de
+ *     gestion du handler) ;
+ *   - scope 'personal'/'catalog' : SEUL le propriétaire (JWT sub) y accède,
+ *     avec la permission MCP_REMOTE_INVOKE ; sinon 404 indiscernable (aucun
+ *     oracle d'existence sur les imports des autres).
+ * ------------------------------------------------------------------------- */
+
+/** Refus 404 sans oracle pour une ligne non-tenant non possédée. */
+function assertConnectorOwnership(
+  record: RemoteMcpConnectorRecord,
+  context: RequestContext,
+  requestId: string
+): void {
+  if (record.scope === 'tenant') return;
+  if (context.userId === undefined || context.userId === '' || context.userId !== record.ownerUserId) {
+    throw new NotFoundError('Connecteur MCP distant', requestId);
+  }
+}
+
+/**
+ * Accès « gestion » : tenant → la permission demandée par le handler ;
+ * non-tenant → propriétaire + MCP_REMOTE_INVOKE.
+ */
+function assertConnectorManagementAccess(
+  record: RemoteMcpConnectorRecord,
+  context: RequestContext,
+  requestId: string,
+  tenantPermission: 'TENANT_MANAGE' | 'PROJECT_READ'
+): void {
+  if (record.scope === 'tenant') {
+    assertPermission(context.role, tenantPermission, requestId);
+    return;
+  }
+  assertConnectorOwnership(record, context, requestId);
+  assertPermission(context.role, 'MCP_REMOTE_INVOKE', requestId);
+}
+
+/**
+ * GET /connectors — liste du tenant (scope 'tenant' par défaut, historique
+ * inchangé) ou `?scope=mine` : MES imports personnels + MES instances de
+ * catalogue (identité JWT obligatoire ; jamais celles des autres).
+ */
 async function handleListConnectors(
+  req: IncomingMessage,
   res: ServerResponse,
   context: RequestContext,
   requestId: string
 ): Promise<void> {
   assertPermission(context.role, 'PROJECT_READ', requestId);
   const store = getConnectorStore();
+  const url = new URL(req.url ?? '/', 'http://localhost');
+  const scope = url.searchParams.get('scope');
+  if (scope === 'mine') {
+    if (context.userId === undefined || context.userId === '') {
+      throw new UnauthorizedError(
+        'Identité utilisateur requise (JWT) pour consulter vos connecteurs personnels',
+        requestId
+      );
+    }
+    const records = store.listConnectorsForUser(context.tenantId, context.userId);
+    reply(res, 200, { connectors: records.map(connectorView), requestId });
+    return;
+  }
+  if (scope !== null && scope !== '' && scope !== 'tenant') {
+    throw new ValidationError('scope invalide (tenant | mine)');
+  }
   const records = store.listConnectors(context.tenantId);
   reply(res, 200, { connectors: records.map(connectorView), requestId });
 }
@@ -629,8 +700,32 @@ async function handleCreateConnector(
   context: RequestContext,
   requestId: string
 ): Promise<void> {
-  assertPermission(context.role, 'TENANT_MANAGE', requestId);
   const body = await parseJsonObjectBody(req, requestId);
+  // LOT UI-MCP — portée de création : 'tenant' (gérée, historique) ou
+  // 'personal' (import privé). 'catalog' est RÉSERVÉ à l'activation d'une
+  // entrée du catalogue (route dédiée) : jamais créable ici.
+  const scopeRaw = body.scope === undefined ? 'tenant' : body.scope;
+  if (scopeRaw !== 'tenant' && scopeRaw !== 'personal') {
+    throw new ValidationError(
+      "scope invalide ('tenant' ou 'personal' — 'catalog' est réservé aux activations du catalogue)"
+    );
+  }
+  let personalOwner: string | null = null;
+  if (scopeRaw === 'tenant') {
+    assertPermission(context.role, 'TENANT_MANAGE', requestId);
+  } else {
+    // Import personnel : identité JWT fiable (jamais un champ du corps) +
+    // droit MCP distant (DENY par défaut conservé : sans MCP_REMOTE_INVOKE,
+    // aucun connecteur n'est configurable).
+    if (context.userId === undefined || context.userId === '') {
+      throw new UnauthorizedError(
+        'Identité utilisateur requise (JWT) pour un import personnel',
+        requestId
+      );
+    }
+    assertPermission(context.role, 'MCP_REMOTE_INVOKE', requestId);
+    personalOwner = context.userId;
+  }
   const name = requireName(body.name);
   const url = requireUrl(body.url);
   const secret = requireOptionalSecret(body.secret);
@@ -639,7 +734,16 @@ async function handleCreateConnector(
   // La création DOIT précéder l'écriture du secret (API distincte PUT
   // /secret) : seule l'écriture du secret peut échouer après création, et
   // uniquement pour une cause crypto/BD — l'utilisateur peut la rejouer.
-  const created = store.createConnector({ tenantId: context.tenantId, name, url });
+  const created =
+    personalOwner !== null
+      ? store.createConnector({
+          tenantId: context.tenantId,
+          name,
+          url,
+          scope: 'personal',
+          ownerUserId: personalOwner
+        })
+      : store.createConnector({ tenantId: context.tenantId, name, url });
   if (secret !== undefined) {
     store.setConnectorSecret(context.tenantId, created.connectorId, secret);
   }
@@ -664,6 +768,8 @@ async function handleGetConnector(
     // Indiscernable pour un connecteur d'un autre tenant (aucun oracle).
     throw new NotFoundError('Connecteur MCP distant', requestId);
   }
+  // LOT UI-MCP — ligne non-tenant : propriétaire seul (404 sans oracle).
+  assertConnectorManagementAccess(record, context, requestId, 'PROJECT_READ');
   reply(res, 200, { connector: connectorView(record), requestId });
 }
 
@@ -680,7 +786,15 @@ async function handlePatchConnector(
   context: RequestContext,
   requestId: string
 ): Promise<void> {
-  assertPermission(context.role, 'TENANT_MANAGE', requestId);
+  // LOT UI-MCP — accès AVANT parsing : tenant → TENANT_MANAGE (historique
+  // 403 avant 400/404) ; ligne non-tenant → propriétaire + MCP_REMOTE_INVOKE.
+  const store = getConnectorStore();
+  const existing = store.getConnector(context.tenantId, connectorId);
+  if (existing === null) {
+    assertPermission(context.role, 'TENANT_MANAGE', requestId);
+    throw new NotFoundError('Connecteur MCP distant', requestId);
+  }
+  assertConnectorManagementAccess(existing, context, requestId, 'TENANT_MANAGE');
   const body = await parseJsonObjectBody(req, requestId);
   const hasName = body.name !== undefined;
   const hasUrl = body.url !== undefined;
@@ -693,7 +807,6 @@ async function handlePatchConnector(
   const url = hasUrl ? requireUrl(body.url) : undefined;
   const enabled = hasEnabled ? requireEnabled(body.enabled) : undefined;
 
-  const store = getConnectorStore();
   let revokedToolNames: readonly string[] | undefined;
   let invalidatedConfirmations: number | undefined;
   if (url !== undefined) {
@@ -749,14 +862,21 @@ async function handleDeleteConnector(
   context: RequestContext,
   requestId: string
 ): Promise<void> {
-  assertPermission(context.role, 'TENANT_MANAGE', requestId);
+  // LOT UI-MCP — tenant → TENANT_MANAGE (historique) ; ligne non-tenant →
+  // propriétaire + MCP_REMOTE_INVOKE (404 sans oracle pour les autres).
   const store = getConnectorStore();
+  const existing = store.getConnector(context.tenantId, connectorId);
+  if (existing === null) {
+    assertPermission(context.role, 'TENANT_MANAGE', requestId);
+    throw new NotFoundError('Connecteur MCP distant', requestId);
+  }
+  assertConnectorManagementAccess(existing, context, requestId, 'TENANT_MANAGE');
   // CASCADE vérifiée au store : politiques + confirmations du couple supprimées.
   const removed = store.deleteConnector(context.tenantId, connectorId);
   if (!removed) {
     throw new NotFoundError('Connecteur MCP distant', requestId);
   }
-  recordAudit(AUDIT_ACTION_DELETED, connectorId, context, requestId);
+  recordAudit(AUDIT_ACTION_DELETED, connectorId, context, requestId, { scope: existing.scope });
   reply(res, 200, { removed: true, requestId });
 }
 
@@ -767,7 +887,15 @@ async function handleSetSecret(
   context: RequestContext,
   requestId: string
 ): Promise<void> {
-  assertPermission(context.role, 'TENANT_MANAGE', requestId);
+  // LOT UI-MCP — accès avant écriture du secret (propriétaire des lignes
+  // non-tenant uniquement ; le secret reste chiffré et jamais renvoyé).
+  const bootstrap = getConnectorStore();
+  const existingSecretTarget = bootstrap.getConnector(context.tenantId, connectorId);
+  if (existingSecretTarget === null) {
+    assertPermission(context.role, 'TENANT_MANAGE', requestId);
+    throw new NotFoundError('Connecteur MCP distant', requestId);
+  }
+  assertConnectorManagementAccess(existingSecretTarget, context, requestId, 'TENANT_MANAGE');
   const body = await parseJsonObjectBody(req, requestId);
   const secret = requireOptionalSecret(body.secret);
   if (secret === undefined) {
@@ -794,8 +922,15 @@ async function handleRemoveSecret(
   context: RequestContext,
   requestId: string
 ): Promise<void> {
-  assertPermission(context.role, 'TENANT_MANAGE', requestId);
+  // LOT UI-MCP — accès : tenant → TENANT_MANAGE ; non-tenant → propriétaire.
   const store = getConnectorStore();
+  const existing = store.getConnector(context.tenantId, connectorId);
+  if (existing === null) {
+    assertPermission(context.role, 'TENANT_MANAGE', requestId);
+    // Connecteur absent OU secret absent : 404 unique, indiscernable.
+    throw new NotFoundError('Secret du connecteur MCP distant', requestId);
+  }
+  assertConnectorManagementAccess(existing, context, requestId, 'TENANT_MANAGE');
   const removed = store.removeConnectorSecret(context.tenantId, connectorId);
   if (!removed) {
     // Connecteur absent OU secret absent : 404 unique, indiscernable.
@@ -820,7 +955,16 @@ async function handleTestConnection(
   context: RequestContext,
   requestId: string
 ): Promise<void> {
-  assertPermission(context.role, 'TENANT_MANAGE', requestId);
+  // LOT UI-MCP — accès avant test réseau : tenant → TENANT_MANAGE (D5) ;
+  // ligne non-tenant → propriétaire + MCP_REMOTE_INVOKE. Le test reste borné
+  // par les protections SSRF du client (aucune voie de contournement).
+  const bootstrap = getConnectorStore();
+  const existingTestTarget = bootstrap.getConnector(context.tenantId, connectorId);
+  if (existingTestTarget === null) {
+    assertPermission(context.role, 'TENANT_MANAGE', requestId);
+    throw new NotFoundError('Connecteur MCP distant', requestId);
+  }
+  assertConnectorManagementAccess(existingTestTarget, context, requestId, 'TENANT_MANAGE');
   const body = await parseJsonObjectBody(req, requestId);
   const timeoutMs = clampTimeoutMs(body.timeoutMs);
 
@@ -873,7 +1017,7 @@ async function handleTestConnection(
  * (auditStore, action dédiée MCP_REMOTE_RATE_LIMITED). Fail-closed : le refus
  * est émis AVANT tout accès réseau.
  */
-function enforceMcpQuota(
+export function enforceMcpQuota(
   op: RemoteMcpOperation,
   connectorId: string,
   context: RequestContext,
@@ -928,14 +1072,26 @@ async function handleListRemoteTools(
   context: RequestContext,
   requestId: string
 ): Promise<void> {
-  try {
-    assertPermission(context.role, 'TENANT_MANAGE', requestId);
-  } catch (error) {
-    recordRefusal(AUDIT_ACTION_DISCOVERY_REFUSED, connectorId, context, requestId, 'PERMISSION_DENIED');
-    throw error;
-  }
   const store = getConnectorStore();
   const record = store.getConnector(context.tenantId, connectorId);
+  try {
+    if (record === null) {
+      // Historique : permission d'abord (403 avant 404).
+      assertPermission(context.role, 'TENANT_MANAGE', requestId);
+    } else {
+      // LOT UI-MCP — tenant → TENANT_MANAGE ; non-tenant → propriétaire JWT.
+      assertConnectorManagementAccess(record, context, requestId, 'TENANT_MANAGE');
+    }
+  } catch (error) {
+    recordRefusal(
+      AUDIT_ACTION_DISCOVERY_REFUSED,
+      connectorId,
+      context,
+      requestId,
+      error instanceof NotFoundError ? 'CONNECTOR_NOT_FOUND' : 'PERMISSION_DENIED'
+    );
+    throw error;
+  }
   if (record === null) {
     recordRefusal(AUDIT_ACTION_DISCOVERY_REFUSED, connectorId, context, requestId, 'CONNECTOR_NOT_FOUND');
     throw new NotFoundError('Connecteur MCP distant', requestId);
@@ -1038,11 +1194,28 @@ async function handleApproveTool(
   context: RequestContext,
   requestId: string
 ): Promise<void> {
+  const store = getConnectorStore();
+  const record = store.getConnector(context.tenantId, connectorId);
   try {
-    assertPermission(context.role, 'TENANT_MANAGE', requestId);
+    if (record === null) {
+      assertPermission(context.role, 'TENANT_MANAGE', requestId);
+    } else {
+      // LOT UI-MCP — tenant → TENANT_MANAGE ; non-tenant → propriétaire JWT.
+      assertConnectorManagementAccess(record, context, requestId, 'TENANT_MANAGE');
+    }
   } catch (error) {
-    recordRefusal(AUDIT_ACTION_APPROVE_REFUSED, connectorId, context, requestId, 'PERMISSION_DENIED');
+    recordRefusal(
+      AUDIT_ACTION_APPROVE_REFUSED,
+      connectorId,
+      context,
+      requestId,
+      error instanceof NotFoundError ? 'CONNECTOR_NOT_FOUND' : 'PERMISSION_DENIED'
+    );
     throw error;
+  }
+  if (record === null) {
+    recordRefusal(AUDIT_ACTION_APPROVE_REFUSED, connectorId, context, requestId, 'CONNECTOR_NOT_FOUND');
+    throw new NotFoundError('Connecteur MCP distant', requestId);
   }
   if (!TOOL_NAME_PATTERN.test(toolName)) {
     recordRefusal(AUDIT_ACTION_APPROVE_REFUSED, connectorId, context, requestId, 'INPUT_INVALID', {
@@ -1053,12 +1226,6 @@ async function handleApproveTool(
   const body = await parseJsonObjectBody(req, requestId);
   const timeoutMs = clampTimeoutMs(body.timeoutMs);
 
-  const store = getConnectorStore();
-  const record = store.getConnector(context.tenantId, connectorId);
-  if (record === null) {
-    recordRefusal(AUDIT_ACTION_APPROVE_REFUSED, connectorId, context, requestId, 'CONNECTOR_NOT_FOUND');
-    throw new NotFoundError('Connecteur MCP distant', requestId);
-  }
   const bearer = store.revealConnectorSecret(context.tenantId, connectorId);
   const client = buildClient(
     record,
@@ -1158,10 +1325,26 @@ async function handleRevokeTool(
   context: RequestContext,
   requestId: string
 ): Promise<void> {
-  try {
+  const store = getConnectorStore();
+  // Indiscernabilité inter-tenant : 404 unique si connecteur absent.
+  const record = store.getConnector(context.tenantId, connectorId);
+  if (record === null) {
+    // Historique : permission d'abord (403 avant 404) sur connecteur absent.
     assertPermission(context.role, 'TENANT_MANAGE', requestId);
+    recordRefusal(AUDIT_ACTION_REVOKE_REFUSED, connectorId, context, requestId, 'CONNECTOR_NOT_FOUND');
+    throw new NotFoundError('Connecteur MCP distant', requestId);
+  }
+  try {
+    // LOT UI-MCP — tenant → TENANT_MANAGE ; non-tenant → propriétaire JWT.
+    assertConnectorManagementAccess(record, context, requestId, 'TENANT_MANAGE');
   } catch (error) {
-    recordRefusal(AUDIT_ACTION_REVOKE_REFUSED, connectorId, context, requestId, 'PERMISSION_DENIED');
+    recordRefusal(
+      AUDIT_ACTION_REVOKE_REFUSED,
+      connectorId,
+      context,
+      requestId,
+      error instanceof NotFoundError ? 'CONNECTOR_NOT_FOUND' : 'PERMISSION_DENIED'
+    );
     throw error;
   }
   if (!TOOL_NAME_PATTERN.test(toolName)) {
@@ -1169,13 +1352,6 @@ async function handleRevokeTool(
       toolName: toolName.slice(0, 48)
     });
     throw new ValidationError("Nom d'outil invalide");
-  }
-  const store = getConnectorStore();
-  // Indiscernabilité inter-tenant : 404 unique si connecteur absent.
-  const record = store.getConnector(context.tenantId, connectorId);
-  if (record === null) {
-    recordRefusal(AUDIT_ACTION_REVOKE_REFUSED, connectorId, context, requestId, 'CONNECTOR_NOT_FOUND');
-    throw new NotFoundError('Connecteur MCP distant', requestId);
   }
   const revoked = store.revokeTool(context.tenantId, connectorId, toolName);
   if (!revoked) {
@@ -1321,6 +1497,14 @@ async function handlePrepareTool(
   if (record === null) {
     recordRefusal(AUDIT_ACTION_PREPARE_REFUSED, connectorId, context, requestId, 'CONNECTOR_NOT_FOUND');
     throw new NotFoundError('Connecteur MCP distant', requestId);
+  }
+  try {
+    // LOT UI-MCP — préparation : propriétaire des lignes non-tenant UNIQUEMENT
+    // (lignes tenant : tout détenteur de MCP_REMOTE_INVOKE, historique).
+    assertConnectorOwnership(record, context, requestId);
+  } catch (error) {
+    recordRefusal(AUDIT_ACTION_PREPARE_REFUSED, connectorId, context, requestId, 'CONNECTOR_NOT_FOUND');
+    throw error;
   }
   if (!record.enabled) {
     recordRefusal(AUDIT_ACTION_PREPARE_REFUSED, connectorId, context, requestId, 'CONNECTOR_DISABLED');
@@ -1497,6 +1681,14 @@ async function handleCallTool(
   if (record === null) {
     recordRefusal(AUDIT_ACTION_CALL_REFUSED, connectorId, context, requestId, 'CONNECTOR_NOT_FOUND');
     throw new NotFoundError('Connecteur MCP distant', requestId);
+  }
+  try {
+    // LOT UI-MCP — exécution : propriétaire des lignes non-tenant UNIQUEMENT
+    // (lignes tenant : tout détenteur de MCP_REMOTE_INVOKE, historique).
+    assertConnectorOwnership(record, context, requestId);
+  } catch (error) {
+    recordRefusal(AUDIT_ACTION_CALL_REFUSED, connectorId, context, requestId, 'CONNECTOR_NOT_FOUND');
+    throw error;
   }
   if (!record.enabled) {
     recordRefusal(AUDIT_ACTION_CALL_REFUSED, connectorId, context, requestId, 'CONNECTOR_DISABLED');
@@ -1681,9 +1873,19 @@ async function handleJournal(
     throw new ValidationError('connectorId invalide');
   }
   const events = auditStore.query(context.tenantId, { resourceType: AUDIT_RESOURCE_TYPE });
+  // LOT UI-MCP — propriété : les événements portant sur une ligne PERSONNELLE
+  // ou une instance de CATALOGUE ne sont visibles que par leur propriétaire.
+  // Appelant sans identité JWT (clé API / repli dev) : fail-closed, il ne voit
+  // jamais ces événements. Les événements des lignes tenant restent inchangés.
+  const ownerIndex = getConnectorStore().listNonTenantOwnerIndex(context.tenantId);
+  const owned = events.filter((event) => {
+    const owner = ownerIndex.get(event.resourceId);
+    if (owner === undefined) return true;
+    return context.userId !== undefined && context.userId !== '' && owner === context.userId;
+  });
   const filtered = connectorId !== null && connectorId !== ''
-    ? events.filter((event) => event.resourceId === connectorId)
-    : events;
+    ? owned.filter((event) => event.resourceId === connectorId)
+    : owned;
   const windowed = filtered.slice(-limit).reverse();
   reply(res, 200, {
     events: windowed.map((event) => ({
@@ -1998,7 +2200,7 @@ export async function handleMcpRemoteRoutes(
       enforceMcpQuota('connectors', idMatch?.[1] ?? 'new', context, requestId);
     }
     if (pathname === `${PREFIX}/connectors` && req.method === 'GET') {
-      await handleListConnectors(res, context, requestId);
+      await handleListConnectors(req, res, context, requestId);
       return true;
     }
     if (pathname === `${PREFIX}/connectors` && req.method === 'POST') {

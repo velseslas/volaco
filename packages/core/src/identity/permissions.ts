@@ -23,11 +23,20 @@ export type Permission =
    * OWNER + ADMIN par défaut (aligné sur MCP_REMOTE_INVOKE).
    */
   | 'MCP_BUILTIN_INVOKE'
+  /**
+   * Lot UI-MCP — Gestion administrative du CATALOGUE MCP GLOBAL (entrée de
+   * catalogue : création/édition/transitions/suppression/test santé/audit).
+   * OWNER + ADMIN uniquement (aligné sur MCP_REMOTE_INVOKE) ; ENGINEER/VIEWER
+   * exclus par défaut. La lecture du catalogue (user) est PROJECT_READ, et
+   * l'activation/désactivation pour son propre compte passe par les routes
+   * d'activation (ownership vérifié, aucune permission admin requise).
+   */
+  | 'MCP_CATALOG_MANAGE'
   | 'PROJECT_MUTATE';
 
 const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
-  OWNER: ['PROJECT_CREATE', 'PROJECT_READ', 'PROJECT_UPDATE', 'PROJECT_DELETE', 'TENANT_MANAGE', 'MCP_REMOTE_INVOKE', 'MCP_BUILTIN_INVOKE', 'PROJECT_MUTATE'],
-  ADMIN: ['PROJECT_CREATE', 'PROJECT_READ', 'PROJECT_UPDATE', 'PROJECT_DELETE', 'MCP_REMOTE_INVOKE', 'MCP_BUILTIN_INVOKE', 'PROJECT_MUTATE'],
+  OWNER: ['PROJECT_CREATE', 'PROJECT_READ', 'PROJECT_UPDATE', 'PROJECT_DELETE', 'TENANT_MANAGE', 'MCP_REMOTE_INVOKE', 'MCP_BUILTIN_INVOKE', 'MCP_CATALOG_MANAGE', 'PROJECT_MUTATE'],
+  ADMIN: ['PROJECT_CREATE', 'PROJECT_READ', 'PROJECT_UPDATE', 'PROJECT_DELETE', 'MCP_REMOTE_INVOKE', 'MCP_BUILTIN_INVOKE', 'MCP_CATALOG_MANAGE', 'PROJECT_MUTATE'],
   ENGINEER: ['PROJECT_CREATE', 'PROJECT_READ', 'PROJECT_UPDATE', 'PROJECT_MUTATE'],
   VIEWER: ['PROJECT_READ']
 };

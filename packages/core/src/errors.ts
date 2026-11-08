@@ -18,7 +18,12 @@
   /* Lot A — gouvernance MCP intégrée : état de confirmation invalide
      (inconnue / expirée / rejouée / empreinte divergente) — 409 stable,
      raison fermée portée par l'audit, jamais par le message HTTP. */
-  | 'MCP_BUILTIN_DRIFT';
+  | 'MCP_BUILTIN_DRIFT'
+  /* LOT UI-MCP — catalogue global MCP (additif) : transition hors matrice et
+     dépendance d'activation → 409 ; backend SQLite indisponible → 503. */
+  | 'MCP_CATALOG_INVALID_TRANSITION'
+  | 'MCP_CATALOG_DEPENDENCY'
+  | 'STORAGE_UNAVAILABLE';
 
 export interface ErrorDetails {
   code: ErrorCode;
