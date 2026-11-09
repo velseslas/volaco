@@ -311,6 +311,108 @@ describe('CDC V8 §11 — UiAgent : prompt + artifacts guidés par le Design DNA
     assert.ok(changePayload.reason?.includes('design-aware'));
   });
 
+  it('6bis. designRationale (M-1) : explication structurée dérivée du contexte réel, déterministe', async () => {
+    const adapter = new FakeAdapter();
+    const registry = new AIProviderRegistry();
+    registry.register(adapter);
+    const agent = new UiAgent(registry);
+    const context: TaskContextPayload = {
+      relevantFiles: {},
+      relevantSymbols: [],
+      decisions: [],
+      constraints: [],
+      recentHistory: [],
+      designContext: buildProjectDesignContext(makeReport())
+    };
+
+    const result = await agent.executeTask({
+      task: makeUiTask(),
+      context,
+      tenantId: TENANT,
+      projectId: PROJECT
+    });
+
+    const spec = result.artifacts.find((a) => a.kind === 'UI_SPEC');
+    assert.ok(spec);
+    const payload = spec.payload as {
+      designRationale?: {
+        reportId?: string;
+        overallScore?: number;
+        directionSource?: string;
+        direction?: Record<string, string>;
+        rulesApplied?: { count?: number; catalogVersion?: string };
+        decisionsRespected?: number;
+        correctionsExpected?: number;
+        components?: { catalogVersion?: string; available?: number };
+        reasons?: readonly string[];
+      };
+    };
+    const rationale = payload.designRationale;
+    assert.ok(rationale, 'designRationale présent quand un contexte design existe');
+    assert.equal(rationale.reportId, 'dhr-ui-agent-0001');
+    assert.equal(rationale.overallScore, 71);
+    assert.equal(rationale.directionSource, 'derived');
+    assert.equal(rationale.direction?.style, 'Balanced Modern');
+    assert.ok((rationale.rulesApplied?.count ?? 0) >= 6);
+    assert.equal(rationale.rulesApplied?.catalogVersion, '1.0.0');
+    assert.ok((rationale.reasons ?? []).length >= 4);
+    // Les chaînes citent les preuves réelles du rapport (rayon, palette, règles).
+    assert.ok(rationale.reasons?.some((sentence) => sentence.includes('rayon dominant 10px')));
+    assert.ok(rationale.reasons?.some((sentence) => sentence.includes('#b45309')));
+    assert.ok(rationale.reasons?.some((sentence) => sentence.includes('catalogue 1.0.0')));
+    // Aucune correction MEDIUM+ dans ce rapport fictif.
+    assert.equal(rationale.correctionsExpected, 0);
+
+    // DÉTERMINISME (§16) : ré-exécution avec le même rapport → chaînes identiques.
+    const contextAgain: TaskContextPayload = {
+      relevantFiles: {},
+      relevantSymbols: [],
+      decisions: [],
+      constraints: [],
+      recentHistory: [],
+      designContext: buildProjectDesignContext(makeReport())
+    };
+    const resultAgain = await agent.executeTask({
+      task: makeUiTask(),
+      context: contextAgain,
+      tenantId: TENANT,
+      projectId: PROJECT
+    });
+    const specAgain = resultAgain.artifacts.find((a) => a.kind === 'UI_SPEC');
+    assert.ok(specAgain);
+    assert.deepEqual(
+      (specAgain.payload as { designRationale?: { reasons?: unknown } }).designRationale?.reasons,
+      rationale.reasons
+    );
+  });
+
+  it('6ter. sans designContext : AUCUN designRationale (payload historique intact)', async () => {
+    const adapter = new FakeAdapter();
+    const registry = new AIProviderRegistry();
+    registry.register(adapter);
+    const agent = new UiAgent(registry);
+    const context: TaskContextPayload = {
+      relevantFiles: {},
+      relevantSymbols: [],
+      decisions: [],
+      constraints: [],
+      recentHistory: []
+    };
+
+    const result = await agent.executeTask({
+      task: makeUiTask(),
+      context,
+      tenantId: TENANT,
+      projectId: PROJECT
+    });
+
+    const spec = result.artifacts.find((a) => a.kind === 'UI_SPEC');
+    assert.ok(spec, 'artefact UI_SPEC présent');
+    const payload = spec.payload as Record<string, unknown>;
+    assert.equal('designRationale' in payload, false);
+    assert.equal('designAware' in payload, false);
+  });
+
   it('7. SANS designContext : prompt et artifacts STRICTEMENT historiques (non-régression)', async () => {
     const adapter = new FakeAdapter();
     const registry = new AIProviderRegistry();
