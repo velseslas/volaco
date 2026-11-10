@@ -34,9 +34,10 @@ const RATIONALE_MAX_SENTENCE = 180;
 
 function rationaleSentence(parts: readonly (string | number | undefined | null)[]): string | undefined {
   const sentence = parts
-    .map((part) => (part === undefined || part === null ? '' : String(part).trim()))
+    .map((part) => (part === undefined || part === null ? '' : String(part)))
     .join('')
-    .replace(/\s+/g, ' ');
+    .replace(/\s+/g, ' ')
+    .trim();
   if (sentence.length === 0) return undefined;
   return sentence.length <= RATIONALE_MAX_SENTENCE
     ? sentence

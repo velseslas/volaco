@@ -360,8 +360,8 @@ describe('CDC V8 §11 — UiAgent : prompt + artifacts guidés par le Design DNA
     assert.ok(rationale.reasons?.some((sentence) => sentence.includes('rayon dominant 10px')));
     assert.ok(rationale.reasons?.some((sentence) => sentence.includes('#b45309')));
     assert.ok(rationale.reasons?.some((sentence) => sentence.includes('catalogue 1.0.0')));
-    // Aucune correction MEDIUM+ dans ce rapport fictif.
-    assert.equal(rationale.correctionsExpected, 0);
+    // Le rapport fictif contient exactement 1 finding HIGH (≥ MEDIUM).
+    assert.equal(rationale.correctionsExpected, 1);
 
     // DÉTERMINISME (§16) : ré-exécution avec le même rapport → chaînes identiques.
     const contextAgain: TaskContextPayload = {
