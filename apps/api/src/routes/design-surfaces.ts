@@ -16,6 +16,7 @@
  *  - POST   .../design/opportunities/ignore  ignore persistante (§30) — décision §24
  *  - DELETE .../design/opportunities/:id/ignore  restaure l'opportunité
  *  - GET    .../design/improvements        historique réel des améliorations appliquées
+ *  - GET    .../design/governance          ledger unifié §26 (Who/What/Why/When/Previous/New/impact/Approval)
  *  - POST   .../design/audit               FULL DESIGN AUDIT §31 (multi-pages + breakpoints)
  *  - GET    .../design/components          catalogue §9/§10 + overrides projet
  *  - PUT    .../design/components/:id      dépréciation/désactivation persistée (§9/§10)
@@ -67,6 +68,7 @@ import {
   type DesignMemoryDecision
 } from '../../../../packages/core/src/ai-native/design-harmony/design-memory.js';
 import { designMemoryStore } from '../../../../packages/core/src/ai-native/design-harmony/design-memory-store.js';
+import { buildDesignGovernanceLedger } from '../../../../packages/core/src/ai-native/design-harmony/design-governance.js';
 import type {
   Decision,
   DecisionAlternative
@@ -242,6 +244,7 @@ export async function handleDesignSurfacesRoutes(
     sub === 'opportunities/ignore' ||
     /^opportunities\/[^/]+\/ignore$/.test(sub) ||
     sub === 'improvements' ||
+    sub === 'governance' ||
     sub === 'audit' ||
     sub === 'components' ||
     sub === 'components/audit' ||
@@ -822,6 +825,20 @@ export async function handleDesignSurfacesRoutes(
         provenance: revision.provenance.source
       }));
     sendJson(res, 200, { improvements, count: improvements.length, requestId });
+    return true;
+  }
+
+  // -------------------------------------------------------------------------
+  // §26 — DESIGN GOVERNANCE : ledger unifié (agrégateur PUR, sources réelles)
+  // -------------------------------------------------------------------------
+  if (sub === 'governance' && req.method === 'GET') {
+    assertPermission(context.role, 'PROJECT_READ', requestId);
+    const ledger = buildDesignGovernanceLedger({
+      tenantId: context.tenantId,
+      projectId,
+      generatedAt: new Date().toISOString()
+    });
+    sendJson(res, 200, { ledger, requestId });
     return true;
   }
 

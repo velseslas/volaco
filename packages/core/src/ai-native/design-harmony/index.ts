@@ -40,6 +40,7 @@ export * from './design-rules-audit.js';
 export * from './design-rules-config-store.js';
 export * from './design-memory.js';
 export * from './design-memory-store.js';
+export * from './design-governance.js';
 export * from './full-design-audit.js';
 export * from './design-system-store.js';
 export * from './quality-budget.js';
