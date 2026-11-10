@@ -6281,6 +6281,30 @@ ${sections}
           (targets ? '<div class="text-[9px] text-slate-500 font-mono truncate">' + canonicalEscape(targets) + '</div>' : '') +
         '</div>';
       }).join('');
+      // CDC V8 §11 (M-1) — explication structurée « Pourquoi ce design »
+      // (designRationale, dérivée du Design DNA réel, aucun texte LLM).
+      const rationaleRows = artifacts.filter(function (artifact) {
+        const payload = artifact && artifact.payload;
+        return artifact && artifact.kind === 'UI_SPEC' && payload && typeof payload === 'object' && payload.designRationale;
+      }).map(function (artifact) {
+        const rationale = artifact.payload.designRationale;
+        const direction = rationale.direction || {};
+        const directionLine = Object.keys(direction).map(function (key) {
+          return canonicalEscape(key) + '=' + canonicalEscape(String(direction[key]));
+        }).join(' · ');
+        const reasons = Array.isArray(rationale.reasons) ? rationale.reasons : [];
+        return '<div class="rounded border border-sky-500/20 bg-sky-950/20 px-2 py-1.5 space-y-0.5">' +
+          '<div class="text-[10px] font-bold text-sky-300 uppercase tracking-wide">Pourquoi ce design (§11)</div>' +
+          '<div class="text-[10px] text-slate-400">Rapport ' + canonicalEscape(String(rationale.reportId || '—')) +
+            ' · source ' + canonicalEscape(String(rationale.directionSource || '—')) +
+            (directionLine ? ' · ' + directionLine : '') + '</div>' +
+          (reasons.length > 0
+            ? '<ul class="space-y-0.5">' + reasons.map(function (reason) {
+                return '<li class="text-[10px] text-slate-300 pl-2">• ' + canonicalEscape(String(reason)) + '</li>';
+              }).join('') + '</ul>'
+            : '<div class="text-[10px] text-slate-500 italic">Aucune raison dérivée (contexte insuffisant).</div>') +
+        '</div>';
+      }).join('');
       const conflictRows = conflicts.slice(0, 6).map(function (conflict) {
         return '<div class="text-[10px] text-amber-200/90">' +
           '<span class="font-bold">' + canonicalEscape(String(conflict.severity || 'CONFLIT')) + '</span> · ' +
@@ -6314,6 +6338,9 @@ ${sections}
         (artifactRows
           ? '<div class="pt-1 space-y-1"><div class="text-[9px] uppercase tracking-wide text-slate-500">Artefacts réels</div>' + artifactRows + '</div>'
           : '<div class="text-[10px] text-slate-500 italic">Aucun artefact produit par les agents.</div>') +
+        (rationaleRows
+          ? '<div class="pt-1 space-y-1">' + rationaleRows + '</div>'
+          : '') +
         (conflictRows ? '<div class="pt-1 space-y-0.5"><div class="text-[9px] uppercase tracking-wide text-slate-500">Conflits</div>' + conflictRows + '</div>' : '') +
         (traceRows
           ? '<details class="pt-1"><summary class="text-[9px] uppercase tracking-wide text-slate-500 cursor-pointer">Traces (' + traces.length + ')</summary><div class="pt-1 max-h-40 overflow-y-auto">' + traceRows + '</div></details>'
@@ -10561,7 +10588,22 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
     // recalculé côté Studio). Chaque écriture est explicite, approuvée et
     // suivie d'une nouvelle mesure ; aucune modification silencieuse.
     // =========================================================================
-    let designIntelCache = { presets: [], lastLoadedAt: null };
+    let designIntelCache = { presets: [], lastLoadedAt: null, directionOverride: {} };
+
+    // M-3 (§29) — éditeur d'affinage par groupe de tokens : les 8 dimensions
+    // du CDC §6, groupées par famille de tokens qu'elles gouvernent. Valeurs
+    // strictes du catalogue (design-direction-catalog 1.0.0) ; l'autorité de
+    // validation reste le backend (normalizeDesignDirectionOverride).
+    const designIntelDimGroups = [
+      { key: 'style', label: 'Style (forme)', values: ['Soft & Rounded', 'Balanced Modern', 'Sharp & Technical'] },
+      { key: 'visualComplexity', label: 'Complexité (palette)', values: ['Low', 'Medium', 'High'] },
+      { key: 'density', label: 'Densité (espacement)', values: ['Dense', 'Balanced', 'Spacious'] },
+      { key: 'informationDensity', label: 'Densité info (contenu)', values: ['High', 'Medium', 'Low'] },
+      { key: 'personality', label: 'Personnalité (typo)', values: ['Professional / Technical', 'Friendly / Editorial'] },
+      { key: 'professionalism', label: 'Professionnalisme (ton)', values: ['Premium', 'Professional', 'Friendly'] },
+      { key: 'motion', label: 'Mouvement (transitions)', values: ['Subtle', 'Expressive', 'None'] },
+      { key: 'visualEnergy', label: 'Énergie (accents)', values: ['Expressive', 'Calm'] }
+    ];
 
     function designIntelPid() {
       const proj = userProjects.find(p => p.id === activeProjectId);
@@ -10621,9 +10663,10 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
         designIntelCall('/design/rules/audit'),
         designIntelCall('/design/opportunities'),
         designIntelCall('/design/memory'),
-        designIntelCall('/design/improvements')
+        designIntelCall('/design/improvements'),
+        designIntelCall('/design/governance')
       ]);
-      const directions = results[0], aesthetic = results[1], rules = results[2], opportunities = results[3], memory = results[4], improvements = results[5];
+      const directions = results[0], aesthetic = results[1], rules = results[2], opportunities = results[3], memory = results[4], improvements = results[5], governance = results[6];
       if (directions.error) {
         bodyEl.innerHTML = '<div class="text-rose-300 text-xs">Direction indisponible : ' + designPanelEscape(directions.error) + '</div>';
         return;
@@ -10661,6 +10704,29 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
         '<button onclick="applyDesignPreset()" class="px-2.5 py-1 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/30 text-sky-200 text-[11px] font-semibold transition">Appliquer le preset</button>' +
         '<button onclick="resetDesignDirection()" class="px-2.5 py-1 rounded-lg bg-[#12172a] hover:bg-[#1a223e] border border-[#1e2642] text-slate-300 text-[11px] font-semibold transition">Réinitialiser</button>' +
         '</div>';
+      // M-3 (§29) — affinage dimension par dimension AU-DESSUS de la dérivation,
+      // regroupé par famille de tokens (schéma d'override §6 existant).
+      const storedOverride = (d.override && d.override.override) || {};
+      designIntelCache.directionOverride = storedOverride;
+      directionHtml += '<div class="pt-2 space-y-1">' +
+        '<div class="text-[10px] uppercase tracking-wide text-slate-500">Affinage par groupe de tokens (§6)</div>' +
+        '<div class="grid grid-cols-2 gap-x-3 gap-y-1">' +
+        designIntelDimGroups.map(function (group) {
+          const current = storedOverride[group.key] || '';
+          return '<label class="flex items-center gap-1.5 text-[10px] text-slate-400">' +
+            '<span class="w-[104px] flex-shrink-0 truncate" title="' + designPanelEscape(group.label) + '">' + designPanelEscape(group.label) + '</span>' +
+            '<select id="designDim-' + group.key + '" class="flex-1 min-w-0 bg-[#12172a] border border-[#1e2642] rounded px-1.5 py-0.5 text-[11px] text-slate-200">' +
+            '<option value=""' + (current ? '' : ' selected') + '>— dériver —</option>' +
+            group.values.map(function (value) {
+              return '<option value="' + designPanelEscape(value) + '"' + (current === value ? ' selected' : '') + '>' + designPanelEscape(value) + '</option>';
+            }).join('') +
+            '</select></label>';
+        }).join('') +
+        '</div>' +
+        '<div class="flex items-center gap-2 flex-wrap">' +
+        '<button onclick="applyDesignAffinement()" class="px-2.5 py-1 rounded-lg bg-violet-500/15 hover:bg-violet-500/25 border border-violet-500/30 text-violet-200 text-[11px] font-semibold transition">Appliquer l’affinage</button>' +
+        '<span class="text-[10px] text-slate-600">Seules les dimensions fixées sont persistées (override §6) ; « — dériver — » restaure la dérivation déterministe.</span>' +
+        '</div></div>';
       html += designIntelSection('Direction design (§6)', 'catalogue ' + designPanelEscape(d.catalogVersion) + ' · source : ' + designPanelEscape(applied ? applied.source : 'indisponible'), directionHtml);
 
       // ---- §14 : AQS détaillé ---------------------------------------
@@ -10779,6 +10845,55 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
       }
       html += designIntelSection('Historique des améliorations (§29)', improvements.data ? (improvements.data.count + ' révision(s) réelle(s)') : '', improvementsHtml);
 
+      // ---- §26 : gouvernance unifiée (M-2) ------------------------------
+      let govHtml = '';
+      if (governance.error) {
+        govHtml = '<div class="text-rose-300 text-xs">Gouvernance indisponible : ' + designPanelEscape(governance.error) + '</div>';
+      } else {
+        const ledger = governance.data.ledger || {};
+        const govEvents = ledger.events || [];
+        const govCounts = ledger.counts || {};
+        govHtml += '<div class="text-xs text-slate-300">' + (govCounts.total || 0) + ' événement(s) · direction ' + (govCounts.directionOverride || 0) +
+          ' · mémoire ' + (govCounts.memoryActive || 0) + ' active(s)/' + (govCounts.memorySuperseded || 0) + ' supersédée(s)' +
+          ' · améliorations ' + (govCounts.improvement || 0) + ' · composants ' + (govCounts.component || 0) + '</div>';
+        if (govEvents.length === 0) {
+          govHtml += '<div class="text-xs text-slate-500 italic">Aucune décision de design enregistrée : rien à gouverner (aucun événement inventé).</div>';
+        } else {
+          govHtml += govEvents.slice(0, 20).map(function (event) {
+            const badge = event.source === 'design-direction' ? 'direction §6'
+              : event.source === 'design-memory' ? 'mémoire §24'
+              : event.source === 'design-improvement' ? 'amélioration §29'
+              : 'composant §9/§10';
+            const statusColor = event.status === 'SUPERSEDED' ? 'text-amber-300'
+              : event.status === 'APPLIED' ? 'text-emerald-300'
+              : 'text-sky-300';
+            let line = '<div class="rounded border border-[#1e2642] bg-[#0c1020] p-1.5 space-y-0.5">' +
+              '<div class="flex items-center justify-between gap-2 text-[10px]">' +
+                '<span class="' + statusColor + ' font-bold">' + designPanelEscape(badge) + ' · ' + designPanelEscape(event.status || '') + '</span>' +
+                '<span class="text-slate-500">' + designPanelEscape(event.who || '') + ' · ' + designPanelEscape(event.at || '') + '</span>' +
+              '</div>' +
+              '<div class="text-[11px] text-slate-200">' + designPanelEscape(event.what || '') + '</div>';
+            if (event.why) {
+              line += '<div class="text-[10px] text-slate-500">Pourquoi : ' + designPanelEscape(event.why) + '</div>';
+            }
+            const transitions = [];
+            if (event.previous != null && event.new) {
+              transitions.push(designPanelEscape(event.previous) + ' → ' + designPanelEscape(event.new));
+            }
+            if (event.impact) transitions.push(designPanelEscape(event.impact));
+            if (event.approval) transitions.push('approuvé par ' + designPanelEscape(event.approval));
+            if (transitions.length > 0) {
+              line += '<div class="text-[10px] text-slate-400">' + transitions.join(' · ') + '</div>';
+            }
+            return line + '</div>';
+          }).join('');
+          if (govEvents.length > 20) {
+            govHtml += '<div class="text-[10px] text-slate-600">… ' + (govEvents.length - 20) + ' événement(s) supplémentaire(s) non affiché(s).</div>';
+          }
+        }
+      }
+      html += designIntelSection('Gouvernance design (§26)', 'Who / What / Why / When / Previous / New / Impact / Approval', govHtml);
+
       html += '<div id="designIntelStatus" class="text-xs text-slate-500">Dernière mesure : ' + designPanelEscape(designIntelCache.lastLoadedAt) + '</div>';
       bodyEl.innerHTML = html;
     }
@@ -10810,6 +10925,40 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
       }
       await loadDesignIntelligence();
       designIntelStatus('<span class="text-emerald-300">Direction réinitialisée : retour à la dérivation déterministe.</span>', false);
+    }
+
+    // M-3 (§29) — applique l'affinage dimension par dimension : le PUT §6
+    // remplace l'override ENTIER, on merge donc depuis l'override stocké
+    // (aucune dimension fixée n'est perdue silencieusement). Une désélection
+    // « dériver » retire la dimension ; si plus aucune ne reste → reset
+    // explicite (jamais d'override vide persisté).
+    async function applyDesignAffinement() {
+      const merged = Object.assign({}, designIntelCache.directionOverride || {});
+      let touched = false;
+      designIntelDimGroups.forEach(function (group) {
+        const select = document.getElementById('designDim-' + group.key);
+        if (!select) return;
+        touched = true;
+        if (select.value) {
+          merged[group.key] = select.value;
+        } else {
+          delete merged[group.key];
+        }
+      });
+      if (!touched) return;
+      if (Object.keys(merged).length === 0) {
+        await resetDesignDirection();
+        designIntelStatus('<span class="text-emerald-300">Plus aucune dimension fixée : dérivation déterministe restaurée.</span>', false);
+        return;
+      }
+      designIntelStatus('<i class="fa-solid fa-circle-notch fa-spin"></i> Application de l’affinage (§6)…', false);
+      const result = await designIntelCall('/design/direction', { method: 'PUT', body: JSON.stringify({ override: merged, approvedBy: 'studio-user' }) });
+      if (result.error) {
+        designIntelStatus('Affinage impossible : ' + designPanelEscape(result.error), true);
+        return;
+      }
+      await loadDesignIntelligence();
+      designIntelStatus('<span class="text-emerald-300">Affinage appliqué : ' + Object.keys(merged).length + ' dimension(s) fixée(s) (override persistant §6).</span>', false);
     }
 
     async function previewDesignOpportunity(id) {
