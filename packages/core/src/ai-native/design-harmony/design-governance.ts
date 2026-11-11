@@ -18,8 +18,11 @@
  *     révision canonique (« Design Improve — AQS x → y (stop) ») — un
  *     message non parsable donne null ;
  *   - mémoire : la raison est obligatoire (§24) ; la supersession trace
- *     supersededBy/supersededAt ;
- *   - composants : raison obligatoire pour DEPRECATED/DISABLED (§9/§10).
+ *     supersededBy/supersededAt + conserve le why et la création (M-2) ;
+ *   - composants : raison obligatoire pour DEPRECATED/DISABLED (§9/§10) ;
+ *   - suppressions d'override : tracées depuis l'audit opérationnel SEULEMENT
+ *     pour les actions RESET (M-2 AUD-M2-02) — l'état actuel couvre les
+ *     PUT/UPDATED et les supersessions, aucune duplication possible.
  *
  * INJECTION : les stores sont injectables (tests) — défaut = singletons
  * réels, exactement comme design-context.ts.
@@ -32,6 +35,7 @@ import type { DesignMemoryDecision } from './design-memory.js';
 import { designMemoryStore } from './design-memory-store.js';
 import { designDirectionStore, type StoredDesignDirectionOverride } from './design-direction-store.js';
 import { componentContractStore, type StoredComponentOverride } from './component-contract-store.js';
+import { auditStore as defaultAuditStore } from '../../observability/audit.js';
 
 export type DesignGovernanceSource =
   | 'design-direction'
@@ -79,6 +83,8 @@ export interface DesignGovernanceLedger {
     readonly memory: boolean;
     readonly revisions: boolean;
     readonly components: boolean;
+    /** M-2 : audit opérationnel consulté pour les suppressions d'override. */
+    readonly audit: boolean;
   };
   readonly events: readonly DesignGovernanceEvent[];
 }
@@ -103,6 +109,30 @@ export interface GovernanceComponentStoreLike {
   list(tenantId: string, projectId: string): readonly StoredComponentOverride[];
 }
 
+/**
+ * M-2 (AUD-M2-02) — événement d'audit opérationnel minimal (lecture seule).
+ * Seules les actions RESET de direction/composant sont ingérées : l'état
+ * actuel couvre déjà les mises à jour et les supersessions (aucune
+ * duplication avec les autres sources du ledger).
+ */
+export interface GovernanceAuditEventLike {
+  readonly id: string;
+  readonly action: string;
+  readonly resourceType: string;
+  readonly resourceId: string;
+  readonly userId: string;
+  readonly metadata?: Record<string, unknown> | undefined;
+  readonly timestamp: Date | string;
+}
+
+/** Source minimale d'audit (store réel injectable ou test). */
+export interface GovernanceAuditStoreLike {
+  query(
+    tenantId: string,
+    filter?: { action?: string; resourceType?: string }
+  ): readonly GovernanceAuditEventLike[];
+}
+
 const DIRECTION_DIMENSION_ORDER = [
   'style',
   'density',
@@ -119,6 +149,29 @@ const IMPROVEMENT_MESSAGE_PATTERN = /^Design Improve — AQS (\d+(?:\.\d+)?) →
 
 function isoOrRaw(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : String(value);
+}
+
+/** Who (§26) d'une suppression : acteur réel tracé dans l'audit, sinon l'auteur de l'événement. */
+function resetActor(metaValue: unknown, fallback: string): string {
+  return typeof metaValue === 'string' && metaValue.trim().length > 0 ? metaValue.trim() : fallback;
+}
+
+/**
+ * Previous (§26) d'une suppression de direction : l'override RÉELLEMENT
+ * effacé (métadonnée additive des écritures futures). Absent (événement
+ * antérieur au correctif) → null honnête : aucune migration de données.
+ */
+function previousDirectionText(value: unknown): string | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  return directionOverrideText(value as StoredDesignDirectionOverride['override']);
+}
+
+/** Previous (§26) d'une suppression de composant : statut réel (+ raison si tracée). */
+function previousComponentText(meta: Record<string, unknown>): string | null {
+  const status = meta.previousStatus;
+  if (typeof status !== 'string' || status.length === 0) return null;
+  const reason = meta.previousReason;
+  return typeof reason === 'string' && reason.length > 0 ? `${status} — raison : ${reason}` : status;
 }
 
 /** Texte compact et déterministe des dimensions réellement fixées (ordre du CDC §6). */
@@ -141,6 +194,8 @@ export function buildDesignGovernanceLedger(params: {
   readonly memoryStore?: GovernanceMemoryStoreLike | undefined;
   readonly revisionStore?: GovernanceRevisionStoreLike | undefined;
   readonly componentStore?: GovernanceComponentStoreLike | undefined;
+  /** M-2 : audit opérationnel (suppressions d'override) — défaut = singleton réel. */
+  readonly auditStore?: GovernanceAuditStoreLike | undefined;
   /** Horodatage du ledger (injectable pour les tests déterministes). */
   readonly generatedAt?: string | undefined;
 }): DesignGovernanceLedger {
@@ -149,6 +204,7 @@ export function buildDesignGovernanceLedger(params: {
   const memorySource = params.memoryStore ?? designMemoryStore;
   const revisionSource = params.revisionStore ?? revisionStore;
   const componentSource = params.componentStore ?? componentContractStore;
+  const auditSource = params.auditStore ?? defaultAuditStore;
 
   const events: DesignGovernanceEvent[] = [];
 
@@ -206,8 +262,11 @@ export function buildDesignGovernanceLedger(params: {
           status: 'SUPERSEDED',
           at: isoOrRaw(decision.supersededAt ?? decision.recordedAt),
           who: decision.supersededBy ?? 'non tracé',
-          what: `Supersession de la décision « ${decision.decision} »`,
-          why: null,
+          // M-2 (AUD-M2-02) : le why de la décision et les informations de
+          // création sont PRÉSERVÉS sur l'événement de supersession (le store
+          // conserve l'enregistrement complet — aucune donnée perdue).
+          what: `Supersession de la décision « ${decision.decision} » (créée le ${isoOrRaw(decision.recordedAt)} par ${decision.source})`,
+          why: decision.reason,
           previous: 'ACTIVE',
           new: 'SUPERSEDED',
           impact: null,
@@ -277,6 +336,62 @@ export function buildDesignGovernanceLedger(params: {
     componentsAvailable = false;
   }
 
+  // --- §26 (M-2 AUD-M2-02) : suppressions d'override via l'audit ---------
+  // ANTI-DUPLICATION stricte : seules les actions RESET sont ingérées —
+  // l'état actuel du ledger couvre déjà les PUT/UPDATED (override actif) et
+  // les supersessions de décisions (état SUPERSEDED). Un audit défaillant
+  // ne peut jamais faire échouer le ledger (sources.audit=false).
+  let auditAvailable = false;
+  try {
+    const resetCandidates = [
+      ...auditSource.query(tenantId, { resourceType: 'design_direction' }),
+      ...auditSource.query(tenantId, { resourceType: 'design_component' })
+    ];
+    auditAvailable = true;
+    const seenResetIds = new Set<string>();
+    for (const entry of resetCandidates) {
+      // Idempotence : un store qui renverrait le même événement sur les deux
+      // requêtes ne peut jamais créer de doublon dans le ledger.
+      if (seenResetIds.has(entry.id)) continue;
+      seenResetIds.add(entry.id);
+      const meta = entry.metadata ?? {};
+      if (entry.action === 'DESIGN_DIRECTION_RESET') {
+        // Isolation projet (défense en profondeur au filtre tenant du store).
+        if (entry.resourceType !== 'design_direction' || entry.resourceId !== projectId) continue;
+        events.push({
+          id: `gov:direction:reset:${entry.id}`,
+          source: 'design-direction',
+          status: 'SUPERSEDED',
+          at: isoOrRaw(entry.timestamp),
+          who: resetActor(meta.resetBy, entry.userId),
+          what: 'Suppression de l’override de Design Direction (réinitialisation §6)',
+          why: null,
+          previous: previousDirectionText(meta.previousOverride),
+          new: 'aucun override persistant',
+          impact: null,
+          approval: null
+        });
+      } else if (entry.action === 'DESIGN_COMPONENT_OVERRIDE_RESET') {
+        if (entry.resourceType !== 'design_component' || meta.projectId !== projectId) continue;
+        events.push({
+          id: `gov:component:reset:${entry.id}`,
+          source: 'design-component',
+          status: 'SUPERSEDED',
+          at: isoOrRaw(entry.timestamp),
+          who: resetActor(meta.by, entry.userId),
+          what: `Suppression de l’override du composant ${entry.resourceId} (réinitialisation §9/§10)`,
+          why: null,
+          previous: previousComponentText(meta),
+          new: 'aucun override persistant',
+          impact: null,
+          approval: null
+        });
+      }
+    }
+  } catch {
+    auditAvailable = false;
+  }
+
   // Tri déterministe : at DESC, puis id ASC (jamais de Math.random).
   events.sort((a, b) => b.at.localeCompare(a.at) || a.id.localeCompare(b.id));
 
@@ -297,7 +412,8 @@ export function buildDesignGovernanceLedger(params: {
       direction: directionAvailable,
       memory: memoryAvailable,
       revisions: revisionsAvailable,
-      components: componentsAvailable
+      components: componentsAvailable,
+      audit: auditAvailable
     },
     events
   });

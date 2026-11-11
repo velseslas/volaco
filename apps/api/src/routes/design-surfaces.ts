@@ -314,6 +314,10 @@ export async function handleDesignSurfacesRoutes(
   if (sub === 'direction' && req.method === 'DELETE') {
     assertPermission(context.role, 'PROJECT_UPDATE', requestId);
     const url = new URL(req.url || '/', 'http://localhost');
+    // M-2 (AUD-M2-02) : l'état AVANT effacement devient la preuve Previous
+    // du ledger §26. Métadonnée ADDITIVE : seules les écritures futures
+    // l'emportent — les événements d'audit antérieurs restent inchangés.
+    const previous = designDirectionStore.get(context.tenantId, projectId);
     const removed = designDirectionStore.clearFor(context.tenantId, projectId);
     if (removed) {
       auditEvent({
@@ -322,7 +326,10 @@ export async function handleDesignSurfacesRoutes(
         resourceType: 'design_direction',
         resourceId: projectId,
         requestId,
-        metadata: { resetBy: url.searchParams.get('by') || 'studio-user' }
+        metadata: {
+          resetBy: url.searchParams.get('by') || 'studio-user',
+          ...(previous ? { previousOverride: previous.override } : {})
+        }
       });
     }
     const artifact = designSystemStore.get(context.tenantId, projectId);
@@ -468,6 +475,9 @@ export async function handleDesignSurfacesRoutes(
     assertPermission(context.role, 'PROJECT_UPDATE', requestId);
     const url = new URL(req.url || '/', 'http://localhost');
     const by = url.searchParams.get('by') || 'studio-user';
+    // M-2 (AUD-M2-02) : statut/raison RÉELLEMENT effacés → Previous du
+    // ledger §26. Métadonnée ADDITIVE (écritures futures uniquement).
+    const previous = componentContractStore.get(context.tenantId, projectId, componentId);
     const removed = componentContractStore.clearFor(context.tenantId, projectId, componentId);
     if (removed) {
       auditEvent({
@@ -476,7 +486,16 @@ export async function handleDesignSurfacesRoutes(
         resourceType: 'design_component',
         resourceId: componentId,
         requestId,
-        metadata: { projectId, by }
+        metadata: {
+          projectId,
+          by,
+          ...(previous
+            ? {
+                previousStatus: previous.override.status,
+                previousReason: previous.override.reason ?? null
+              }
+            : {})
+        }
       });
     }
     const applied = resolveComponentContracts(componentContractStore.list(context.tenantId, projectId)).find(

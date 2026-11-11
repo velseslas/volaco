@@ -98,6 +98,15 @@ export interface ProjectDesignContext {
   readonly direction: DesignDirection;
   /** Provenance de la direction : artefact persisté frais, re-dérivée des tokens, ou override projet. */
   readonly directionSource: 'persisted' | 'derived' | 'override';
+  /**
+   * M-1 (AUD-M1-02) — clés §6 RÉELLEMENT fixées par l'override projet,
+   * triées (déterminisme §16). Présent UNIQUEMENT en mode 'override' : le
+   * CDC §11 peut alors attribuer chaque dimension à sa vraie provenance
+   * (jamais de causalité fausse entre un token mesuré et un choix fixé).
+   * Absent (contexte ancien/incomplet) → le lecteur traite toutes les
+   * dimensions comme fixées : prudence honnête, aucune dérivation revendiquée.
+   */
+  readonly directionOverrideKeys?: readonly string[] | undefined;
   readonly rules: readonly AppliedDesignRule[];
   /** Version du catalogue de règles appliqué (traçabilité). */
   readonly rulesCatalogVersion: string;
@@ -295,6 +304,10 @@ export function buildProjectDesignContext(
     tokens: tokensSummary,
     direction,
     directionSource,
+    // M-1 (AUD-M1-02) : provenance par clé — UNIQUEMENT si un override est
+    // réellement appliqué (jamais de clé sans override, jamais de clé omise
+    // en mode override produit par ce module).
+    ...(directionOverride ? { directionOverrideKeys: Object.keys(directionOverride).sort() } : {}),
     rules,
     rulesCatalogVersion: DESIGN_RULES_CATALOG_VERSION,
     designDecisions: decisions,

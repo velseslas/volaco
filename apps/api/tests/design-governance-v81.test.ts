@@ -129,8 +129,10 @@ describe('V8.1 §26 — Design Governance : ledger unifié des décisions de des
     };
     const ledger = body.ledger;
 
-    // Sources réelles toutes couvertes.
-    assert.deepEqual(ledger.sources, { direction: true, memory: true, revisions: true, components: true });
+    // Sources réelles toutes couvertes (M-2 : audit = suppressions d'override).
+    assert.deepEqual(ledger.sources, {
+      direction: true, memory: true, revisions: true, components: true, audit: true
+    });
 
     // Direction : who/approval = approbateur réel, what = dimensions fixées,
     // previous/why/impact = null (upsert sans historique — jamais inventé).
@@ -271,6 +273,8 @@ describe('V8.1 §26 — Design Governance : ledger unifié des décisions de des
     });
     assert.equal(ledger.events.length, 0);
     assert.equal(ledger.counts.total, 0);
-    assert.deepEqual(ledger.sources, { direction: true, memory: true, revisions: true, components: true });
+    assert.deepEqual(ledger.sources, {
+      direction: true, memory: true, revisions: true, components: true, audit: true
+    });
   });
 });
