@@ -53,6 +53,9 @@ import {
   type ImageTheme
 } from '../../../../packages/core/src/image/theme.js';
 import { addImageFallbacks, sanitizeImageSources } from './conversation.js';
+// É50 — garde-fou d'exfiltration : contrôle déterministe du HTML final
+// candidat AVANT toute écriture (frontière de persistance /design/improve).
+import { runExfiltrationGuard, describeExfiltrationBlocker } from './exfiltration-guard.js';
 import type { RequestContext } from '../middleware/auth.js';
 import { readBody } from '../middleware/body.js';
 
@@ -283,11 +286,29 @@ export async function handleImproveRoutes(
   );
 
   const last = outcome.iterations[outcome.iterations.length - 1];
+  // É50 — refus du garde-fou d'exfiltration (voir bloc d'application ci-dessous).
+  let securityRefusal: string | undefined;
   let revisionId: string | undefined;
   let rollbackRevisionId: string | undefined;
   let modified = false;
 
   if (apply && outcome.applied) {
+    // É50 — garde-fou d'exfiltration : le HTML final candidat est un contenu
+    // généré par IA. Contrôle déterministe AVANT le checkpoint, la sauvegarde
+    // et la révision. Refus = aucune écriture, message honnête au client.
+    const improveExfilScan = runExfiltrationGuard(outcome.finalHtml, 'index.html');
+    if (!improveExfilScan.passed) {
+      logger.warn('Garde-fou exfiltration refusé : aucune écriture tentée (/design/improve)', {
+        component: 'improve-route',
+        tenantId: context.tenantId,
+        projectId,
+        blockers: improveExfilScan.blockers
+      });
+      securityRefusal = describeExfiltrationBlocker(improveExfilScan);
+    }
+  }
+
+  if (apply && outcome.applied && !securityRefusal) {
     // Checkpoint AVANT : garantit un Rollback réel (§21) même quand aucune
     // révision antérieure n'existe pour ce projet.
     const checkpoint = revisionStore.createRevision(context.tenantId, projectId, {
@@ -398,6 +419,8 @@ export async function handleImproveRoutes(
     },
     ...(revisionId !== undefined ? { revisionId } : {}),
     ...(rollbackRevisionId !== undefined ? { rollbackRevisionId } : {}),
+    // É50 — trace honnête du refus éventuel du garde-fou sécurité.
+    ...(securityRefusal !== undefined ? { securityRefusal } : {}),
     requestId
   });
   return true;

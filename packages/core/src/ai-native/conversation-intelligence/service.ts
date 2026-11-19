@@ -734,7 +734,26 @@ export class ConversationIntelligenceService {
       sessionId: string;
     },
     userRole: Role = 'OWNER',
-    requestId?: string | undefined
+    requestId?: string | undefined,
+    /**
+     * É46 — options de supervision. `supervisionRepair` active la correction
+     * ciblée BORNÉE (OPT-IN : absente = correction refusée). La supervision
+     * elle-même (exigences du plan, interdits É44, cohérence multi-agents) est
+     * toujours active sur le chemin batch multi-agents.
+     */
+    options?: {
+      readonly supervisionRepair?: {
+        readonly enabled: boolean;
+        readonly maxAttempts?: number | undefined;
+      };
+    } | undefined,
+    /**
+     * É53 LOT E4.1 — CORRECTION B : signal de cancellation du tour
+     * (optionnel, rétrocompatible — la route /execute fournit un contrôleur
+     * de REQUÊTE armé sur déconnexion client). Transmis à executePlan →
+     * scheduler É37 / agent routé.
+     */
+    signal?: AbortSignal | undefined
   ): Promise<{ session: ConversationSession; executionResult: ExecutionResult }> {
     assertPermission(userRole, 'PROJECT_READ', requestId);
 
@@ -751,7 +770,9 @@ export class ConversationIntelligenceService {
       session.activePlan,
       session,
       userRole,
-      requestId
+      requestId,
+      options,
+      signal
     );
 
     const nextState = executionResult.success ? 'VALIDATING' : 'FAILED';
@@ -760,10 +781,29 @@ export class ConversationIntelligenceService {
       status: executionResult.success ? ('EXECUTED' as const) : ('FAILED' as const)
     });
 
+    // É47 — continuité post-exécution : le RÉSULTAT RÉEL de l'exécution (la
+    // réponse conversationnelle composée depuis les faits vérifiés du
+    // superviseur É46) entre dans la mémoire conversationnelle comme message
+    // AGENT, pour que le tour suivant sache exactement ce qui vient d'être
+    // fait (défaut démontré par la sonde É47 : S12–S15). AUCUN tour factice :
+    // `turns` reste inchangé, seul le dernier message et la fenêtre
+    // d'historique de turnMemory sont mis à jour (contrats gelés intacts).
+    let updatedTurnMemory = session.turnMemory;
+    if (executionResult.userReply !== undefined && executionResult.userReply.length > 0) {
+      const execReply: HumanAiMessage = Object.freeze({
+        id: `msg-exec-${session.sessionId}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        sender: 'AGENT',
+        content: executionResult.userReply,
+        timestamp: new Date().toISOString()
+      });
+      updatedTurnMemory = this.memoryManager.recordExecutionReply(session.turnMemory, execReply);
+    }
+
     const updatedSession: ConversationSession = deepFreeze({
       ...session,
       currentState: nextState,
-      activePlan: updatedPlan
+      activePlan: updatedPlan,
+      turnMemory: updatedTurnMemory
     });
 
     const cacheKey = ConversationSessionLruCache.buildKey(params.tenantId.trim(), params.projectId.trim(), params.sessionId.trim());

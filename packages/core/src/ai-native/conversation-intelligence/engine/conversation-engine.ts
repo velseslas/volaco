@@ -11,13 +11,18 @@ import { ConversationCompass } from './conversation-compass.js';
 import { ConversationContextBuilder } from './context-builder.js';
 import { ExecutionBridge } from './execution-bridge.js';
 import { ImpactBridge } from './impact-bridge.js';
-import { ConversationIntentEngine } from './intent-engine.js';
+import { ConversationIntentEngine, NEGATION_IMPERATIVE_PATTERN } from './intent-engine.js';
 import { MemoryManager, extractUserPreference } from './memory-manager.js';
 import { PlanGenerator } from './plan-generator.js';
+import { buildReferenceAssumption, detectConversationReference, resolveConversationReferents } from './reference-resolver.js';
+import { extractSourceFiles } from './intent-router.js';
+import { validatePlanStructure } from './plan-validation.js';
 import { UnderstandingBridge } from './understanding-bridge.js';
+import { logger } from '../../../logger.js';
 import type { Role } from '../../../identity/permissions.js';
 import type {
   ClarificationItem,
+  ConversationAssumption,
   ConversationSession,
   ConversationTrace,
   ConversationTurn,
@@ -29,6 +34,34 @@ import type {
   PreparedTurn,
   ReasoningProvider
 } from '../types.js';
+
+/**
+ * É43 — tronque un texte pour l'insertion dans un libellé de dialogue.
+ */
+function truncateForDialogue(text: string, max: number): string {
+  const clean = text.trim();
+  return clean.length > max ? clean.slice(0, max) + '…' : clean;
+}
+
+/**
+ * É43 — hypothèse de REPRISE après clarification (axe 2) : la réponse de
+ * l'utilisateur à une clarification bloquante est intégrée à l'objectif en
+ * cours. La réponse n'est JAMAIS transformée en ordre d'exécution ni en
+ * décision : l'intégration reste une hypothèse TRACÉE, réversible et non
+ * confirmée (même contrat que l'hypothèse de référence É41).
+ */
+function buildClarificationResumeAssumption(answer: string, previousGoal: string): ConversationAssumption {
+  return deepFreeze({
+    id: 'assump_clarification_resume',
+    statement: `La réponse « ${truncateForDialogue(answer, 80)} » précise l'objectif « ${truncateForDialogue(previousGoal, 80)} » — hypothèse de reprise après clarification, réversible et non confirmée.`,
+    confidence: 0.6,
+    evidence: "La session était en CLARIFYING et le message ne contient aucune instruction d'action : traité comme la réponse à la clarification posée au tour précédent.",
+    risk: 'LOW' as const,
+    reversible: true,
+    requiresConfirmation: false,
+    status: 'PROPOSED' as const
+  });
+}
 
 export class ConversationEngine {
   // ÉTAPE 30 — source unique du contexte conversationnel transmis au provider.
@@ -85,28 +118,131 @@ export class ConversationEngine {
     const latestSnapshot = this.understandingBridge.computeSnapshot(latestModel);
     const isStale = this.understandingBridge.isContextStale(session.applicationSnapshot, latestSnapshot);
 
-    const intent: IntentResult = params.intent
+    // É42 — signaux de REMPLACEMENT de demande : réutilisés par la purge du
+    // plan actif plus bas et par l'exclusion de la reprise après clarification.
+    const DEMAND_REPLACEMENT_PATTERN = /\b(?:en fait|plut[ôo]t|au lieu|annule|oublie|abandonne)\b/i;
+
+    let intent: IntentResult = params.intent
       ?? await this.intentEngine.classifyIntent(cleanUserText, latestModel, session.tenantId, session.projectId);
 
+    // É43 — REPRISE après clarification (axe 2). Quand une clarification
+    // bloquante a été POSÉE (état CLARIFYING) et que le message suivant est
+    // une RÉPONSE — aucun verbe d'action (classification EXPLORATION à
+    // confiance de repli), pas une question, pas une interdiction (É42),
+    // pas un remplacement de demande (É42), pas une contrainte explicite,
+    // pas un désaccord ni une décision de continuité (« garde … ») — la
+    // réponse est INTÉGRÉE : l'objectif du tour précédent est repris,
+    // enrichi de la réponse, et re-classifié. La réponse n'est JAMAIS
+    // transformée en ordre d'exécution ni en décision : une hypothèse de
+    // reprise est tracée (réversible, non confirmée).
+    let clarificationResume: { answer: string; previousGoal: string } | undefined;
+    if (
+      session.currentState === 'CLARIFYING' &&
+      session.turns.length > 0 &&
+      intent.category === 'EXPLORATION' &&
+      intent.confidence <= 0.5 &&
+      !/\?\s*$/.test(cleanUserText) &&
+      !NEGATION_IMPERATIVE_PATTERN.test(cleanUserText) &&
+      !DEMAND_REPLACEMENT_PATTERN.test(cleanUserText) &&
+      !/uniquement|obligatoire|strictement/i.test(cleanUserText) &&
+      !/^(?:non|si)\b/i.test(cleanUserText) &&
+      !/garde|garder|conserve|conserv/i.test(cleanUserText)
+    ) {
+      const previousGoal = session.turns[session.turns.length - 1]!.userMessage.content;
+      const combined = `${previousGoal} ${cleanUserText}`.trim();
+      const resumed = await this.intentEngine.classifyIntent(combined, latestModel, session.tenantId, session.projectId);
+      // Les contraintes du message RÉEL restent extraites (contrat É42) —
+      // union sans doublon avec celles du message combiné.
+      const mergedConstraints = [...resumed.constraints];
+      for (const constraint of intent.constraints) {
+        if (!mergedConstraints.includes(constraint)) mergedConstraints.push(constraint);
+      }
+      intent = deepFreeze({ ...resumed, constraints: mergedConstraints });
+      clarificationResume = { answer: cleanUserText, previousGoal };
+    }
+
+    // É41 — résolution des références conversationnelles (« modifie-le »,
+    // « ajoute aussi une carte dans cette page », « le même fichier »).
+    // Uniquement sur le chemin conversationnel RÉEL : l'appelant ne fournit
+    // NI intention pré-classifiée NI cibles explicites (le flux Studio
+    // épinglé est intouché), le message ne nomme AUCUN fichier, un motif de
+    // référence est détecté ET la session contient des référents concrets.
+    // Sinon : incomplétude honnête inchangée — aucun référent n'est inventé.
+    let workingIntent: IntentResult = intent;
+    let referenceAssumption: ConversationAssumption | undefined;
+    if (!params.intent && !params.targetFiles && extractSourceFiles(cleanUserText).length === 0) {
+      if (detectConversationReference(cleanUserText)) {
+        const referents = resolveConversationReferents(cleanUserText, session);
+        if (referents.length > 0) {
+          workingIntent = deepFreeze({ ...intent, entities: [...intent.entities, ...referents] });
+          referenceAssumption = buildReferenceAssumption(cleanUserText, referents);
+        }
+      }
+    }
+
     const contradictions = this.contradictionDetector.detectContradictions({
-      newIntent: intent,
+      newIntent: workingIntent,
       projectMemory: session.projectMemory,
       activeDecisions: session.activeDecisions
     });
 
-    const assumptions = this.assumptionEngine.synthesizeAssumptions({
-      intent,
+    const derivedAssumptions = this.assumptionEngine.synthesizeAssumptions({
+      intent: workingIntent,
       projectMemory: session.projectMemory,
       semanticModel: latestModel
     });
+    // É41 — l'hypothèse de référence (anaphore résolue) est TRACÉE en tête
+    // de liste : la résolution est une hypothèse documentée, jamais invisible.
+    // É43 — l'hypothèse de REPRISE (réponse à clarification intégrée) est
+    // TRACÉE en tête de liste : la réponse est entendue, jamais transformée
+    // en décision silencieuse.
+    const resumeAssumption = clarificationResume
+      ? buildClarificationResumeAssumption(clarificationResume.answer, clarificationResume.previousGoal)
+      : undefined;
+    const assumptionHeads = [referenceAssumption, resumeAssumption].filter(
+      (a): a is ConversationAssumption => Boolean(a)
+    );
+    const assumptions: readonly ConversationAssumption[] =
+      assumptionHeads.length > 0 ? [...assumptionHeads, ...derivedAssumptions] : derivedAssumptions;
 
-    const clarifications = this.clarificationEngine.assessClarifications({
+    let clarifications = this.clarificationEngine.assessClarifications({
       intent,
       assumptions,
       contradictions
     });
 
-    let plan: EngineeringPlan | undefined = session.activePlan;
+    // É43 — si la reprise reste vague (aucune cible extractable), la
+    // clarification est REFORMULÉE : la réponse déjà donnée est reconnue et
+    // la question porte désormais sur la cible concrète (fichier ou page) —
+    // jamais la même question reposée comme si la réponse n'avait pas été
+    // entendue (axe 2 : tenir compte des réponses déjà données).
+    if (clarificationResume) {
+      const stillVague = clarifications.find((c) => c.id === 'clarif_missing_entity');
+      if (stillVague) {
+        const reformulatedQuestion = `Je note ta réponse (${truncateForDialogue(clarificationResume.answer, 90)}). Pour créer cela, où veux-tu l'intégrer — dans quel fichier ou quelle page ?`;
+        clarifications = clarifications.map((c) =>
+          c.id === 'clarif_missing_entity'
+            ? {
+                ...c,
+                question: reformulatedQuestion,
+                reason: 'Réponse à la clarification enregistrée ; la cible concrète (fichier ou page) manque encore.'
+              }
+            : c
+        );
+      }
+    }
+
+    // É42 — prévention de la réutilisation accidentelle d'un ancien plan.
+    // Un message qui remplace/abandonne la demande en cours (« en fait »,
+    // « plutôt », « au lieu », « annule », « oublie », « abandonne ») rend le
+    // plan actif OBSOLÈTE : il n'est plus porté par ce tour, ni réutilisé,
+    // ni confirmable (activePlan est purgé à l'écriture du tour). Les tours
+    // d'information neutres (question, clarification, contrainte, « garde la
+    // première version ») CONSERVENT le plan actif — la continuité est
+    // préservée, seule la demande remplacée invalide le plan.
+    const demandReplaced =
+      DEMAND_REPLACEMENT_PATTERN.test(cleanUserText) && extractSourceFiles(cleanUserText).length === 0;
+    let plan: EngineeringPlan | undefined = demandReplaced ? undefined : session.activePlan;
     let planAssessment: PlanAssessment | undefined;
 
     const needsNewPlan =
@@ -117,9 +253,9 @@ export class ConversationEngine {
       intent.category === 'REFACTOR' ||
       intent.category === 'DEBUG';
 
-    if (needsNewPlan && intent.category !== 'QUESTION' && intent.category !== 'EXPLAIN' && intent.category !== 'EXPLORATION') {
+    if (needsNewPlan && workingIntent.category !== 'QUESTION' && workingIntent.category !== 'EXPLAIN' && workingIntent.category !== 'EXPLORATION') {
       plan = this.planGenerator.generatePlan({
-        intent,
+        intent: workingIntent,
         assumptions,
         semanticModel: latestModel,
         defaultTargetFiles: params.targetFiles
@@ -152,7 +288,7 @@ export class ConversationEngine {
 
     const nextState = this.compass.determineNextState({
       currentState: session.currentState,
-      intent,
+      intent: workingIntent,
       ambiguities: clarifications,
       assumptions,
       hasPlan: Boolean(plan),
@@ -178,7 +314,7 @@ export class ConversationEngine {
       latestModel,
       latestSnapshot,
       isStale,
-      intent,
+      intent: workingIntent,
       contradictions,
       assumptions,
       clarifications,
@@ -288,11 +424,50 @@ export class ConversationEngine {
           nextState = this.compass.determineNextStateFromAction(session.currentState, providerRes.nextAction);
         }
 
-        // PHASE 6 - Utiliser le plan genere par le LLM a la place du plan rule-based
+        // É43 — la DÉCISION de clarification prime sur l'action d'exécution
+        // du provider. Quand le compass a calculé une clarification BLOCKING
+        // ou NEEDS_CONFIRMATION, un provider qui répond PRESENT_PLAN ou
+        // EXECUTE_PLAN ne doit PAS écraser l'état de clarification ni
+        // remplacer la question par une annonce de plan (jamais présenter un
+        // plan quand une précision est requise, jamais inventer l'information
+        // manquante). Le provider reste libre pour ASK_QUESTION,
+        // REQUEST_UNDERSTANDING, REQUEST_CONFIRMATION et RESPOND_DIRECTLY
+        // (une réponse honnête du provider est bienvenue).
+        const blockingClarifications = clarifications.filter(
+          (c) => c.level === 'BLOCKING' || c.level === 'NEEDS_CONFIRMATION'
+        );
+        if (
+          blockingClarifications.length > 0 &&
+          (llmNextAction === 'PRESENT_PLAN' || llmNextAction === 'EXECUTE_PLAN')
+        ) {
+          nextState = prepared.nextState;
+          replyText = `Pour progresser en toute sécurité, une clarification est requise : ${blockingClarifications[0]!.question}`;
+        }
+
+        // PHASE 6 - Utiliser le plan genere par le LLM a la place du plan rule-based.
+        // É40 — UNIQUEMENT s'il passe la validation structurelle partagée
+        // (mêmes codes que l'adaptateur multi-agents É39) : un plan LLM incomplet
+        // (mutation sans cible), ambigu (multi-fichiers) ou portant une
+        // dépendance invalide est REFUSÉ explicitement — le plan rule-based est
+        // conservé et les codes de refus sont tracés dans les metadata.
         if (providerRes.plan && providerRes.plan.steps && providerRes.plan.steps.length > 0) {
-          plan = providerRes.plan;
-          planAssessment = undefined;
-          providerMetadata = { ...providerMetadata, planSource: 'llm', planSteps: providerRes.plan.steps.length };
+          const planStructure = validatePlanStructure(providerRes.plan.steps);
+          if (planStructure.valid) {
+            plan = providerRes.plan;
+            planAssessment = undefined;
+            providerMetadata = { ...providerMetadata, planSource: 'llm', planSteps: providerRes.plan.steps.length };
+          } else {
+            const rejectedCodes = planStructure.issues.map((issue) => issue.code);
+            providerMetadata = {
+              ...providerMetadata,
+              planSource: 'rule-based',
+              llmPlanRejected: rejectedCodes
+            };
+            logger.warn('ConversationEngine - plan du provider refusé (structure invalide), plan rule-based conservé', {
+              component: 'conversation-engine',
+              issues: planStructure.issues.map((issue) => `${issue.code}: ${issue.message}`)
+            });
+          }
         }
       } catch (err: unknown) {
         const rawErrMsg = err instanceof Error ? err.message : String(err);

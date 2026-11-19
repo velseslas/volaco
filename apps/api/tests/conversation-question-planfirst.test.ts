@@ -111,7 +111,12 @@ describe('CONV Régression : question vs construction + planFirst confirmable', 
   });
 
   it('2. Construction polie ("peux-tu ajouter...") → chemin génération préservé', async () => {
-    sseBody = 'data: {"choices":[{"delta":{"content":"<SECTION name=\\"hero\\" mode=\\"create\\"><h1>Salut</h1></SECTION>"}}]}\n\n' + 'data: [DONE]\n\n';
+    // É53 LOT B — mock viable : l'ancien fragment « <h1>Salut</h1> » (~60
+    // caractères) est sous le seuil de document viable (>100) — avec
+    // l'autorité de vérité, ce flux n'écrit RIEN (updated:false honnête). Le
+    // but de ce test (une construction polie suit le chemin génération) est
+    // préservé avec une section qui se persiste réellement.
+    sseBody = 'data: {"choices":[{"delta":{"content":"<SECTION name=\\"hero\\" mode=\\"create\\"><h1>Salut</h1><p>Un titre de bienvenue clair, posé en haut de la page pour accueillir vos visiteurs.</p></SECTION>"}}]}\n\n' + 'data: [DONE]\n\n';
     const { projectId, sessionId } = await setupProject();
     const out = await collectStream(projectId, sessionId, { message: 'Peux-tu ajouter un titre de bienvenue ?' });
     assert.equal(out.status, 200);
@@ -163,7 +168,12 @@ describe('CONV Régression : question vs construction + planFirst confirmable', 
   });
 
   it('4. P2-SIGNAUX : intention + étapes progressives, premier signal < 1 s', async () => {
-    sseBody = 'data: {"choices":[{"delta":{"content":"<SECTION name=\\"hero\\" mode=\\"create\\"><h1>Salut</h1></SECTION>"}}]}\n\n' + 'data: [DONE]\n\n';
+    // É53 LOT B — mock viable : l'ancien fragment « <h1>Salut</h1> » (~60
+    // caractères) est sous le seuil de document viable (>100) — avec
+    // l'autorité de vérité, ce flux n'écrit RIEN (updated:false honnête). Le
+    // but de ce test (une construction polie suit le chemin génération) est
+    // préservé avec une section qui se persiste réellement.
+    sseBody = 'data: {"choices":[{"delta":{"content":"<SECTION name=\\"hero\\" mode=\\"create\\"><h1>Salut</h1><p>Un titre de bienvenue clair, posé en haut de la page pour accueillir vos visiteurs.</p></SECTION>"}}]}\n\n' + 'data: [DONE]\n\n';
     const { projectId, sessionId } = await setupProject();
     const t0 = Date.now();
     const res = await realFetch(
@@ -236,7 +246,12 @@ describe('CONV Régression : question vs construction + planFirst confirmable', 
   });
 
   it('6. P4-FINITION : done porte closingMessage + 3 suggestions cliquables', async () => {
-    sseBody = 'data: {"choices":[{"delta":{"content":"<SECTION name=\\"hero\\" mode=\\"create\\"><h1>Salut</h1></SECTION>"}}]}\n\n' + 'data: [DONE]\n\n';
+    // É53 LOT B — mock viable : l'ancien fragment « <h1>Salut</h1> » (~60
+    // caractères) est sous le seuil de document viable (>100) — avec
+    // l'autorité de vérité, ce flux n'écrit RIEN (updated:false honnête). Le
+    // but de ce test (une construction polie suit le chemin génération) est
+    // préservé avec une section qui se persiste réellement.
+    sseBody = 'data: {"choices":[{"delta":{"content":"<SECTION name=\\"hero\\" mode=\\"create\\"><h1>Salut</h1><p>Un titre de bienvenue clair, posé en haut de la page pour accueillir vos visiteurs.</p></SECTION>"}}]}\n\n' + 'data: [DONE]\n\n';
     const { projectId, sessionId } = await setupProject();
     const out = await collectStream(projectId, sessionId, { message: 'Crée une landing page' });
     assert.equal(out.status, 200);

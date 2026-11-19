@@ -101,7 +101,12 @@ export interface AgentExecutionRollback {
 /** ÉTAPE 35 — cancellation réelle (point du cycle où elle a été observée). */
 export interface AgentExecutionCancellation {
   readonly requested: boolean;
-  readonly at?: 'BEFORE_AGENT' | 'BEFORE_MUTATION' | 'AFTER_MUTATION' | undefined;
+  // É53 LOT E4.1 — CORRECTION B : deux points ajoutés pour la propagation du
+  // signal dans executeTask (abandon observé PENDANT l'appel agent, ou sur
+  // son résultat tardif). La source d'armement reste E1/E2/E3 — aucun nouvel
+  // AbortController, aucun arbitrage concurrent : ce ne sont que des rapports
+  // d'observation du MÊME signal.
+  readonly at?: 'BEFORE_AGENT' | 'AGENT' | 'AFTER_AGENT' | 'BEFORE_MUTATION' | 'AFTER_MUTATION' | undefined;
 }
 
 export interface AgentExecutionPhaseEntry {
@@ -387,11 +392,29 @@ export class AgentExecutionService {
         context: request.context,
         tenantId: request.tenantId,
         projectId: request.projectId,
-        requestId: request.requestId
+        requestId: request.requestId,
+        // É53 LOT E4.1 — CORRECTION B : le signal du tour atteint L'APPEL LLM
+        // de l'agent (base-agent → adapter.generate → transport). Aucune
+        // nouvelle autorité : c'est le MÊME signal, observé en plus de point.
+        ...(request.signal !== undefined ? { signal: request.signal } : {})
       });
     } catch (err: unknown) {
       recordPhase('AGENT_EXCEPTION');
       const msg = err instanceof Error ? err.message : String(err);
+      // É53 LOT E4.1 — CORRECTION B : un abandon demandé par l'appelant
+      // (signal du tour armé par E1/E2/E3) n'est JAMAIS transformé en échec
+      // ordinaire d'agent : l'issue reste CANCELLED, portée par le signal.
+      if (isAborted()) {
+        return finish(
+          'CANCELLED',
+          stubResult(agent.definition.id, 'CANCELLED_AGENT_ABORTED: appel agent interrompu par annulation — aucune mutation'),
+          { requested: FILE_MUTATION_OPERATIONS.has(request.task.operation ?? ''), executed: false, appliedCount: 0 },
+          noVerification,
+          noRollback,
+          { requested: true, at: 'AGENT' },
+          msg
+        );
+      }
       return finish(
         'FAILURE',
         stubResult(agent.definition.id, msg),
@@ -403,6 +426,29 @@ export class AgentExecutionService {
       );
     }
     recordPhase('AGENT_FINISHED', result.status);
+
+    // É53 LOT E4.1 — CORRECTION B : résultat TARDIF neutralisé. Si
+    // l'annulation a gagné pendant l'appel agent, le résultat (même SUCCESS)
+    // n'est JAMAIS utilisé — ni intégré au plan, ni appliqué au projet
+    // (aucun chemin de mutation ne peut suivre ce retour).
+    // Portée HONNÊTE : ce point ne concerne que les tâches SANS mutation de
+    // fichier (ANALYZE/VERIFY). Pour une tâche de MUTATION, l'arbitrage É36
+    // GELÉ garde la main — l'abort observé entre l'artifact et la mutation
+    // reste classé BEFORE_MUTATION (contrat agent-execution-e37 J : point
+    // É36, mutation.executed=false, aucun rollback nécessaire). Même
+    // garantie (aucune application), taxonomie de points préservée.
+    if (isAborted() && !FILE_MUTATION_OPERATIONS.has(request.task.operation ?? '')) {
+      recordPhase('CANCELLED_AFTER_AGENT');
+      return finish(
+        'CANCELLED',
+        stubResult(agent.definition.id, 'CANCELLED_AFTER_AGENT: résultat tardif neutralisé — aucune application'),
+        { requested: false, executed: false, appliedCount: 0 },
+        noVerification,
+        noRollback,
+        { requested: true, at: 'AFTER_AGENT' },
+        'CANCELLED_AFTER_AGENT: l annulation a gagné pendant l appel agent — résultat non appliqué'
+      );
+    }
 
     // 4. L'agent lui-même a échoué → FAILURE réel.
     if (result.status !== 'SUCCESS') {

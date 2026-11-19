@@ -249,7 +249,13 @@ function bootstrapConversationEngine(): void {
   // (UNSUPPORTED_INTENT) au lieu du chemin Agent Runtime.
   conversationServiceInstance.attachAgentExecutor({
     execute: (request) => orchestratorInstance.executeAgent(request),
-    getRegistry: () => orchestratorInstance.getExecutionAgentRegistry()
+    getRegistry: () => orchestratorInstance.getExecutionAgentRegistry(),
+    // É39 — le MÊME orchestrateur (donc le MÊME registry et le MÊME
+    // AgentExecutionService) expose le MultiAgentScheduler (É37) : les plans
+    // conversationnels à ≥2 étapes de mutation passent par le DAG validé
+    // (MultiAgentSchedulerRequest/Outcome) au lieu d'être réduits à une
+    // seule tâche mono-agent.
+    executeBatch: (request) => orchestratorInstance.executeBatch(request)
   });
 
   // LOT 3 — la DNA réelle devient consultable (GET /dna) au lieu du

@@ -45,6 +45,12 @@ export const MAX_EXECUTIONS_PER_PROJECT = 20;
 const EXECUTION_PERSIST_DEBOUNCE_MS = readPositiveIntEnv('VOLACO_EXECUTION_PERSIST_DEBOUNCE_MS', 250);
 const MAX_EXECUTIONS_GLOBAL = readPositiveIntEnv('VOLACO_EXECUTION_STORE_MAX_RECORDS', 200);
 
+/**
+ * É53 LOT E1 — statuts TERMINAUX : une fois posé, un terminal n'est jamais
+ * remplacé (une seule issue gagnante par tour : succès, échec ou annulation).
+ */
+const TERMINAL_EXECUTION_STATUSES: readonly ExecutionStatus[] = ['COMPLETED', 'FAILED', 'CANCELLED'];
+
 function readPositiveIntEnv(name: string, fallback: number): number {
   const raw = process.env[name];
   if (!raw) return fallback;
@@ -232,9 +238,23 @@ export class ExecutionEventStore {
     this.persistSoon();
   }
 
-  public completeExecution(executionId: string, summary?: ExecutionSummary): void {
+  /**
+   * É53 LOT E1 — JAMAIS d'écrasement d'un terminal :
+   *   - sur CANCELLED/FAILED : clôture refusée (retour false) — une
+   *     annulation gagnante ne peut pas être transformée en succès ;
+   *   - sur COMPLETED déjà posé : le bilan final ENRICHIT le summary du même
+   *     terminal (aucune nouvelle transition, aucun doublon d'événement).
+   */
+  public completeExecution(executionId: string, summary?: ExecutionSummary): boolean {
     const record = this.executions.get(executionId);
-    if (!record) return;
+    if (!record) return false;
+    if (record.status === 'COMPLETED') {
+      if (summary) record.summary = { ...record.summary, ...summary };
+      record.updatedAt = Date.now();
+      this.persist();
+      return true;
+    }
+    if (TERMINAL_EXECUTION_STATUSES.includes(record.status)) return false;
     record.status = 'COMPLETED';
     record.phase = 'COMPLETE';
     record.completedAt = Date.now();
@@ -248,11 +268,24 @@ export class ExecutionEventStore {
       detail: { summary: record.summary }
     });
     this.persist();
+    return true;
   }
 
-  public failExecution(executionId: string, error: string): void {
+  /**
+   * É53 LOT E1 — JAMAIS d'écrasement d'un terminal (miroir de
+   * `completeExecution`) : sur CANCELLED/COMPLETED la clôture est refusée ;
+   * sur FAILED déjà posé, le motif est enrichi sans nouvelle transition.
+   */
+  public failExecution(executionId: string, error: string): boolean {
     const record = this.executions.get(executionId);
-    if (!record) return;
+    if (!record) return false;
+    if (record.status === 'FAILED') {
+      if (error) record.summary = { ...record.summary, error: (error || '').slice(0, 300) };
+      record.updatedAt = Date.now();
+      this.persist();
+      return true;
+    }
+    if (TERMINAL_EXECUTION_STATUSES.includes(record.status)) return false;
     record.status = 'FAILED';
     record.completedAt = Date.now();
     record.updatedAt = record.completedAt;
@@ -265,12 +298,57 @@ export class ExecutionEventStore {
       detail: { error: (error || '').slice(0, 300) }
     });
     this.persist();
+    return true;
   }
 
-  /** Annulation : ⏹ et non ❌ (CDC §20) — le motif est conservé. */
-  public cancelExecution(executionId: string, reason: string): void {
+  /**
+   * É53 LOT E1 — ARBITRAGE ATOMIQUE annulation / persistance.
+   *
+   * Point de linéarisation unique : toutes les transitions terminales et la
+   * claim de persistance sont des opérations SYNCHRONES de ce store (une seule
+   * tâche de l'event loop ⇒ aucune intercalation possible). La route appelle
+   * `claimPersistenceWin` dans le MÊME tick synchrone que l'écriture effective
+   * (check annulation → écriture → claim, sans aucun await entre eux) ;
+   * l'annulation, posée par le POST /executions/:id/cancel, est consommée par
+   * la route via `cancelExecution`. Le premier fait atteint le store gagne la
+   * course, l'autre est refusé honnêtement :
+   *
+   *   CAS A — l'annulation gagne avant la validation de persistance :
+   *     `cancelExecution` → true, `claimPersistenceWin` → false. La route
+   *     n'écrit pas, ne crée pas de révision, termine en CANCELLED — et une
+   *     terminaison tardive ne peut pas remplacer ce statut (guards
+   *     complete/fail ci-dessous).
+   *   CAS B — la persistance a déjà gagné (octets effectivement sur disque) :
+   *     `claimPersistenceWin` → true, `cancelExecution` → false. Aucun
+   *     « rien n'a été enregistré » : le statut restera celui de la vérité
+   *     réelle de l'écriture (COMPLETED ou FAILED honnête).
+   */
+  public claimPersistenceWin(executionId: string): boolean {
     const record = this.executions.get(executionId);
-    if (!record || ['COMPLETED', 'FAILED', 'CANCELLED'].includes(record.status)) return;
+    if (!record) return false;
+    if (TERMINAL_EXECUTION_STATUSES.includes(record.status)) return false;
+    if (record.persistenceWon) return true;
+    record.persistenceWon = true;
+    record.updatedAt = Date.now();
+    this.persistSoon();
+    return true;
+  }
+
+  /** É53 LOT E1 — la persistance a-t-elle déjà gagné l'arbitrage ? */
+  public hasPersistenceWon(executionId: string): boolean {
+    return this.executions.get(executionId)?.persistenceWon === true;
+  }
+
+  /**
+   * Annulation : ⏹ et non ❌ (CDC §20) — le motif est conservé.
+   * É53 LOT E1 — arbitrage atomique : retourne true si la claim d'annulation
+   * a gagné la course (CAS A) ; false si l'exécution est déjà terminale ou si
+   * la persistance a déjà gagné (CAS B — annulation trop tard, refusée).
+   */
+  public cancelExecution(executionId: string, reason: string): boolean {
+    const record = this.executions.get(executionId);
+    if (!record || TERMINAL_EXECUTION_STATUSES.includes(record.status)) return false;
+    if (record.persistenceWon) return false;
     record.status = 'CANCELLED';
     record.completedAt = Date.now();
     record.updatedAt = record.completedAt;
@@ -283,6 +361,7 @@ export class ExecutionEventStore {
       detail: { reason: record.cancelReason }
     });
     this.persist();
+    return true;
   }
 
   public getExecution(executionId: string): ExecutionRecord | null {

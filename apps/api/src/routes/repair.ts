@@ -38,6 +38,9 @@ import {
 import { addImageFallbacks, sanitizeImageSources } from './conversation.js';
 import type { RequestContext } from '../middleware/auth.js';
 import { readBody } from '../middleware/body.js';
+// É50 — garde-fou d'exfiltration : contrôle déterministe du patch candidat
+// avant toute écriture (frontière de persistance du flux de réparation).
+import { runExfiltrationGuard } from './exfiltration-guard.js';
 
 /**
  * Prompts purs de la réparation (contrat de thème global + brief images en
@@ -278,6 +281,23 @@ export async function handleRepairRoutes(
         component: 'repair-route',
         projectId,
         requestId
+      });
+      iterations[iterations.length - 1]!.action = 'patch-failed';
+      break;
+    }
+
+    // É50 — garde-fou d'exfiltration : le patch LLM est un contenu généré par
+    // IA, contrôlé à la frontière de persistance AVANT la re-critique (et donc
+    // AVANT toute écriture). Refus par défaut : toute destination réseau non
+    // autorisée refuse le patch (action 'patch-failed' existante) — le HTML
+    // n'est jamais sauvegardé, même transitoirement.
+    const repairExfilScan = runExfiltrationGuard(treated, 'index.html');
+    if (!repairExfilScan.passed) {
+      logger.warn('Self-Repair : garde-fou exfiltration refusé — patch refusé (HTML non sauvegardé)', {
+        component: 'repair-route',
+        projectId,
+        requestId,
+        blockers: repairExfilScan.blockers
       });
       iterations[iterations.length - 1]!.action = 'patch-failed';
       break;

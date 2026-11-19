@@ -1191,6 +1191,19 @@
                 <span class="active-nav-badge hidden text-[9px] bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded font-bold font-mono">Actif</span>
               </button>
 
+              <button onclick="switchSystemView('neurallab'); toggleProjectDropdown();" id="menuNav-neurallab" class="w-full text-left px-2.5 py-1.5 rounded-xl text-xs text-slate-300 hover:bg-[#151c33] hover:text-white flex items-center justify-between transition group hidden">
+                <div class="flex items-center space-x-2.5">
+                  <div class="w-6 h-6 rounded-lg bg-cyan-500/15 text-cyan-300 flex items-center justify-center text-xs">
+                    <i class="fa-solid fa-brain"></i>
+                  </div>
+                  <div>
+                    <div class="font-bold text-white text-xs">Neural Lab</div>
+                    <div class="text-[9px] text-slate-400">Centre de contrôle Volaco</div>
+                  </div>
+                </div>
+                <span class="active-nav-badge hidden text-[9px] bg-cyan-500/20 text-cyan-300 px-1.5 py-0.5 rounded font-bold font-mono">Actif</span>
+              </button>
+
               <button onclick="switchSystemView('connecteurs'); toggleProjectDropdown();" id="menuNav-connecteurs" class="w-full text-left px-2.5 py-1.5 rounded-xl text-xs text-slate-300 hover:bg-[#151c33] hover:text-white flex items-center justify-between transition group">
                 <div class="flex items-center space-x-2.5">
                   <div class="w-6 h-6 rounded-lg bg-cyan-500/15 text-cyan-400 flex items-center justify-center text-xs">
@@ -3377,6 +3390,71 @@
     <div class="px-6 py-5 max-w-6xl mx-auto w-full">
       <!-- Greffon du module mcp-admin.js (MCP_CATALOG_MANAGE verifie COTE SERVEUR). -->
       <div id="mcpAdminMount"></div>
+    </div>
+  </div>
+
+  <!-- ==================== VOLACO NEURAL LAB — ADMIN ==================== -->
+  <div id="view-neurallab" class="flex-1 flex-col overflow-y-auto hidden bg-[#050812] text-slate-100">
+    <style>
+      #view-neurallab { --nl-cyan:#5ee7ff; --nl-violet:#9b8cff; --nl-muted:#8290a8; }
+      #view-neurallab .nl-panel { background:linear-gradient(145deg,rgba(15,24,43,.88),rgba(7,12,25,.94)); border:1px solid rgba(107,132,177,.17); border-radius:18px; box-shadow:0 18px 55px rgba(0,0,0,.18); }
+      #view-neurallab .nl-kicker { color:#8493ad; font-size:9px; letter-spacing:.18em; text-transform:uppercase; font-weight:800; }
+      #view-neurallab .nl-value { font:600 25px/1.1 'JetBrains Mono',monospace; letter-spacing:-.06em; }
+      #view-neurallab .nl-orb { position:relative; width:min(100%,430px); aspect-ratio:1; margin:auto; filter:drop-shadow(0 0 35px rgba(75,209,255,.13)); }
+      #view-neurallab .nl-orb:before,#view-neurallab .nl-orb:after { content:"";position:absolute;inset:13%;border:1px solid rgba(91,221,255,.23);border-radius:50%;animation:nlOrbit 18s linear infinite; }
+      #view-neurallab .nl-orb:after { inset:4%;border-color:rgba(158,135,255,.2);transform:rotateX(68deg);animation-duration:25s; }
+      #view-neurallab .nl-core { position:absolute;inset:29%;border-radius:50%;background:radial-gradient(circle at 38% 34%,#e4fbff 0,#67dfff 8%,#3677b9 27%,#242a66 57%,#0b1025 75%);box-shadow:0 0 28px #43d8ff66,0 0 85px #6556ff33,inset -12px -15px 35px #070b1b;animation:nlBreathe 4s ease-in-out infinite; }
+      #view-neurallab .nl-core:after {content:"";position:absolute;inset:-20%;border-radius:50%;border:1px solid #70e8ff55;box-shadow:0 0 25px #56dfff22; }
+      #view-neurallab .nl-node { position:absolute;width:7px;height:7px;border-radius:50%;background:#a7f4ff;box-shadow:0 0 13px 3px #5bdfff99; }
+      #view-neurallab .nl-ring { position:absolute;inset:20%;border:1px dashed rgba(114,197,255,.35);border-radius:50%;transform:rotateX(67deg) rotateZ(-18deg);animation:nlOrbit 32s linear infinite reverse; }
+      #view-neurallab .nl-pulse { height:3px;border-radius:8px;background:linear-gradient(90deg,transparent,#65e8ff,#a28bff,transparent);animation:nlPulse 2.8s ease-in-out infinite; }
+      #view-neurallab .nl-bar { height:5px;border-radius:9px;background:linear-gradient(90deg,#41c8e8,#9b8cff);box-shadow:0 0 12px #55d8ff33; }
+      #view-neurallab .nl-dot { width:6px;height:6px;border-radius:50%;background:#6be7ff;box-shadow:0 0 10px #6be7ff;display:inline-block; }
+      @keyframes nlOrbit { to { transform:rotate(360deg); } }
+      @keyframes nlBreathe { 0%,100%{transform:scale(.97);filter:brightness(.9)}50%{transform:scale(1.04);filter:brightness(1.18)} }
+      @keyframes nlPulse { 0%,100%{opacity:.25;transform:scaleX(.72)}50%{opacity:1;transform:scaleX(1)} }
+      @media(max-width:900px){#view-neurallab .nl-grid{grid-template-columns:1fr!important}#view-neurallab .nl-orb{max-width:320px}}
+      @media(prefers-reduced-motion:reduce){#view-neurallab *,#view-neurallab *:before,#view-neurallab *:after{animation:none!important;transition:none!important}}
+    </style>
+    <div class="sticky top-0 z-30 border-b border-[#18243b] bg-[#050812]/90 backdrop-blur-xl px-5 md:px-8 py-4 flex items-center justify-between gap-4">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl border border-cyan-300/20 bg-cyan-300/10 text-cyan-200 flex items-center justify-center"><i class="fa-solid fa-brain text-lg"></i></div>
+        <div><div class="text-sm font-bold tracking-wide">VOLACO <span class="text-cyan-300">/ NEURAL LAB</span></div><div class="text-[9px] text-slate-500 tracking-[.2em] uppercase">Laboratoire central · supervision système</div></div>
+      </div>
+      <div class="flex items-center gap-3">
+        <span class="hidden sm:flex items-center gap-2 text-[10px] text-slate-400"><span class="nl-dot"></span> SESSION ADMINISTRATEUR</span>
+        <button id="nlRefresh" class="px-3 py-2 rounded-lg border border-cyan-300/20 bg-cyan-300/10 text-cyan-100 text-xs hover:bg-cyan-300/20 transition"><i class="fa-solid fa-rotate mr-2"></i>Actualiser</button>
+        <button onclick="switchSystemView('workspace')" class="px-3 py-2 rounded-lg border border-white/10 text-slate-300 text-xs hover:bg-white/5">Retour au Studio</button>
+      </div>
+    </div>
+    <div class="max-w-[1600px] mx-auto w-full p-5 md:p-8 space-y-6">
+      <div class="flex flex-wrap items-end justify-between gap-4">
+        <div><div class="nl-kicker mb-2">Système cognitif · vue d'ensemble</div><h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Le laboratoire est <span class="text-cyan-200">en observation.</span></h1><p class="text-xs text-slate-500 mt-2">Un poste de pilotage vivant pour les ressources, l'activité et la santé de Volaco.</p></div>
+        <div class="text-right"><div class="nl-kicker">Dernière synchronisation</div><div id="nlLastSync" class="font-mono text-xs text-slate-300 mt-1">En attente…</div></div>
+      </div>
+      <div class="grid grid-cols-2 xl:grid-cols-4 gap-3">
+        <div class="nl-panel p-4"><div class="nl-kicker">Tokens consommés</div><div id="nlTokens" class="nl-value mt-3 text-cyan-100">—</div><div class="text-[10px] text-slate-500 mt-2">Usage IA du tenant</div></div>
+        <div class="nl-panel p-4"><div class="nl-kicker">Coût estimé</div><div id="nlCost" class="nl-value mt-3 text-violet-200">—</div><div class="text-[10px] text-slate-500 mt-2">USD · estimation fournisseur</div></div>
+        <div class="nl-panel p-4"><div class="nl-kicker">Requêtes facturées</div><div id="nlRequests" class="nl-value mt-3 text-emerald-200">—</div><div class="text-[10px] text-slate-500 mt-2">Événements de succès</div></div>
+        <div class="nl-panel p-4"><div class="nl-kicker">Erreurs IA</div><div id="nlErrors" class="nl-value mt-3 text-rose-200">—</div><div class="text-[10px] text-slate-500 mt-2">Événements en erreur</div></div>
+      </div>
+      <div class="nl-grid grid grid-cols-1 xl:grid-cols-[1.05fr_.95fr] gap-4">
+        <section class="nl-panel p-5 md:p-7 overflow-hidden">
+          <div class="flex items-center justify-between"><div><div class="nl-kicker">01 / Noyau neuronal</div><div class="text-sm font-semibold mt-1">Architecture cognitive</div></div><span class="text-[9px] text-cyan-200 border border-cyan-300/20 bg-cyan-300/5 rounded-full px-2.5 py-1">VISUALISATION</span></div>
+          <div class="nl-orb my-3"><div class="nl-ring"></div><div class="nl-core"></div><span class="nl-node" style="left:22%;top:30%"></span><span class="nl-node" style="right:18%;top:39%;animation-delay:.7s"></span><span class="nl-node" style="left:34%;bottom:18%;animation-delay:1.2s"></span><span class="nl-node" style="right:28%;bottom:20%;animation-delay:1.8s"></span><div class="absolute inset-0 flex items-center justify-center pointer-events-none"><div class="text-center mt-1"><div class="text-[9px] tracking-[.25em] text-cyan-100/70">VOLACO CORE</div><div class="text-[10px] text-white/80 mt-1">Intelligence orchestrée</div></div></div></div>
+          <div class="flex items-center gap-3 text-[10px] text-slate-500"><span class="nl-pulse flex-1"></span><span>Flux visuel animé · non instrumenté en temps réel</span></div>
+        </section>
+        <section class="nl-panel p-5 md:p-7 space-y-5">
+          <div><div class="nl-kicker">02 / Flux synaptiques</div><div class="text-sm font-semibold mt-1">Répartition de l'activité IA</div><p class="text-[10px] text-slate-500 mt-1">Mesures réelles retournées par le service FinOps.</p></div>
+          <div id="nlProviders" class="space-y-4"><div class="text-xs text-slate-500">Chargement des fournisseurs…</div></div>
+          <div class="border-t border-white/5 pt-4"><div class="flex items-center justify-between text-[10px]"><span class="text-slate-400">Tokens de prompt</span><strong id="nlPrompt" class="font-mono text-slate-200">—</strong></div><div class="h-1.5 bg-white/5 rounded-full mt-2 overflow-hidden"><div id="nlPromptBar" class="nl-bar w-0"></div></div><div class="flex items-center justify-between text-[10px] mt-4"><span class="text-slate-400">Tokens de complétion</span><strong id="nlCompletion" class="font-mono text-slate-200">—</strong></div><div class="h-1.5 bg-white/5 rounded-full mt-2 overflow-hidden"><div id="nlCompletionBar" class="nl-bar w-0"></div></div></div>
+        </section>
+      </div>
+      <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        <section class="nl-panel p-5"><div class="nl-kicker">03 / Journal système</div><div class="text-sm font-semibold mt-1 mb-4">Activité récente auditée</div><div id="nlEvents" class="space-y-2"><div class="text-xs text-slate-500">Chargement du journal…</div></div></section>
+        <section class="nl-panel p-5"><div class="nl-kicker">04 / Observatoire</div><div class="text-sm font-semibold mt-1 mb-4">État des connexions de données</div><div id="nlHealth" class="space-y-3"><div class="text-xs text-slate-500">Vérification des services…</div></div></section>
+      </div>
+      <div class="text-[9px] text-slate-600 flex flex-wrap justify-between gap-2 border-t border-white/5 pt-4"><span>VOLACO NEURAL LAB · ACCÈS OWNER / ADMIN</span><span>Les animations sont décoratives ; les chiffres affichés proviennent des API autorisées.</span></div>
     </div>
   </div>
 
@@ -5614,10 +5692,17 @@ ${sections}
                   if (msgEl) msgEl.appendChild(decisionRow);
                   return;
                 }
-                if (event.html && event.html.length > 100) {
+                // É53 LOT B — VÉRITÉ : seul `updated === true` (écriture
+                // réellement persistée + vérifiée par le serveur) ouvre le
+                // chemin de succès. Tout le reste — updated false/absent, ou
+                // updated true sans contenu exploitable — ne doit JAMAIS
+                // afficher « Application générée » ni « Modifications
+                // appliquées avec succès ».
+                const streamTruthOk = event.updated === true;
+                if (streamTruthOk && event.html && event.html.length > 100) {
                   assembledHtml = event.html;
                 }
-                if (assembledHtml.length > 100) {
+                if (streamTruthOk && assembledHtml.length > 100) {
                   // Le serveur renvoie soit des fragments (création), soit un
                   // DOCUMENT COMPLET (modification). Ré-emballer un document
                   // complet dans buildHtmlDoc produisait un document imbriqué
@@ -5720,11 +5805,27 @@ ${sections}
                       } catch (_) { /* relance manuelle possible */ }
                     }, 2000);
                   }
-                  if (titleEl) titleEl.innerHTML = '<i class="fa-solid fa-circle-check text-sm" style="color:#4ade80;"></i><span style="color:#4ade80;">Application générée</span>';
+                  // É53 LOT B — le titre et le statut reflètent le verdict réel :
+                  // un résultat PARTIEL n'est pas un succès complet (jamais de
+                  // coquille verte mensongère), mais l'écriture réelle est dite.
+                  if (titleEl) titleEl.innerHTML = event.partial
+                    ? '<i class="fa-solid fa-circle-half-stroke text-sm" style="color:#fbbf24;"></i><span style="color:#fbbf24;">Application générée — partiel</span>'
+                    : '<i class="fa-solid fa-circle-check text-sm" style="color:#4ade80;"></i><span style="color:#4ade80;">Application générée</span>';
                   if (statusEl) {
                     const dur = ((Date.now() - startTime) / 1000).toFixed(1);
-                    // LOT C — plus de tokens dans la surface principale (spec §47)
-                    statusEl.innerHTML = '<span style="color:#4ade80;">✓ ' + (activityFeed ? '' : tokenCount + ' tokens · ') + dur + 's</span>';
+                    if (event.partial) {
+                      const reasons = Array.isArray(event.partialReasons) ? event.partialReasons.filter(function (r) { return typeof r === 'string' && r.trim(); }).slice(0, 4) : [];
+                      statusEl.innerHTML = '<span style="color:#fbbf24;">⚠ ' + canonicalEscape(reasons.length ? 'Partiel : ' + reasons.join(' · ') : 'Modifications partielles') + '</span>';
+                      // É53 LOT B — l'avis est un canal DÉDIÉ (la ligne de statut
+                      // historique est volatile) : le partiel y est affirmé
+                      // avec ses motifs exacts renvoyés par le serveur.
+                      if (activityFeed && typeof activityFeed.advise === 'function') {
+                        activityFeed.advise('partial', 'Application partielle', reasons.length ? reasons.join(' · ') : 'Modifications partiellement appliquées', 'warn');
+                      }
+                    } else {
+                      // LOT C — plus de tokens dans la surface principale (spec §47)
+                      statusEl.innerHTML = '<span style="color:#4ade80;">✓ ' + (activityFeed ? '' : tokenCount + ' tokens · ') + dur + 's</span>';
+                    }
                   }
                   const durThought = ((Date.now() - thoughtStart) / 1000).toFixed(0);
                   flushNarration(textEl);
@@ -5737,16 +5838,30 @@ ${sections}
                     const th = thoughtCard.querySelector('span');
                     th.textContent = (activityFeed ? '✓ Analyse · ' : 'Thought · ') + durThought + 's';
                   }
-                  // LOT 3 — diff-guard : des sections ont disparu sans demande
-                  // de suppression -> rollback au HTML d'avant modification.
+                  // LOT 3 + É53 LOT B — diff-guard : des sections ont disparu
+                  // sans demande de suppression. AUCUN rollback local inventé :
+                  // la vérité est le fichier RÉELLEMENT persisté côté serveur.
+                  // On recharge cet état exact ; si le rechargement échoue,
+                  // état de conflit EXPLICITE (les révisions/Timeline restent
+                  // la seule source de retour arrière réelle). L'état local
+                  // n'est jamais laissé divergent du serveur en silence.
                   const postSectionCount = new Set([...currentAppHtml.matchAll(/data-section="([^"]+)"/g)].map((m) => m[1].toLowerCase())).size;
                   if (isModification && preSectionCount > 0 && postSectionCount < preSectionCount - serverDeletes && window._preGenerationHtml) {
-                    currentAppHtml = window._preGenerationHtml;
-                    renderNow(currentAppHtml);
-                    updateEditorContent(currentAppHtml);
-                    const ap2 = userProjects.find(p => p.id === activeProjectId);
-                    if (ap2) { ap2.code = currentAppHtml; saveUserProjects(); }
-                    if (statusEl) statusEl.innerHTML = '<span style="color:#fbbf24;">⚠ Modification rejetée : des sections ont disparu sans demande.</span>';
+                    try {
+                      const guardRes = await fetch('/api/v1/projects/' + serverProjectId + '/files/content?path=index.html', { headers: studioApiHeaders() });
+                      if (!guardRes.ok) throw new Error('HTTP ' + guardRes.status);
+                      const guardData = await guardRes.json();
+                      const serverTruthHtml = guardData && guardData.file && guardData.file.content;
+                      if (typeof serverTruthHtml !== 'string' || !serverTruthHtml.length) throw new Error('contenu serveur indisponible');
+                      currentAppHtml = serverTruthHtml;
+                      renderNow(currentAppHtml);
+                      updateEditorContent(currentAppHtml);
+                      const ap2 = userProjects.find(p => p.id === activeProjectId);
+                      if (ap2) { ap2.code = currentAppHtml; saveUserProjects(); }
+                      if (statusEl) statusEl.innerHTML = '<span style="color:#fbbf24;">⚠ Des sections ont disparu sans demande — état serveur réel rechargé (retour arrière : révisions).</span>';
+                    } catch (guardErr) {
+                      if (statusEl) statusEl.innerHTML = '<span style="color:#fbbf24;">⚠ Conflit : des sections ont disparu sans demande — rechargement serveur impossible (' + canonicalEscape(String((guardErr && guardErr.message) || guardErr)) + '). Consultez les révisions.</span>';
+                    }
                   }
                   // Carte Write — UNIQUEMENT en mode legacy ; en mode Activity
                   // Stream, le diff vit dans les items du flux (une seule fois)
@@ -5802,10 +5917,13 @@ ${sections}
                         box.appendChild(line);
                       }
                     }
-                    // P4-FINITION — l'accordéon se replie : succès + détails.
+                    // P4-FINITION — l'accordéon se replie : le libellé reflète
+                    // le verdict RÉEL (succès complet ≠ partiel — É53 LOT B).
                     if (buildAccordionSummary) {
                       buildAccordionSummary.open = false;
-                      buildAccordionSummary.textContent = '✓ Modifications appliquées avec succès — Voir les détails techniques ▾';
+                      buildAccordionSummary.textContent = event.partial
+                        ? '⚠ Modifications partiellement appliquées — Voir les détails techniques ▾'
+                        : '✓ Modifications appliquées avec succès — Voir les détails techniques ▾';
                     }
                     // P4-FINITION — clôture conversationnelle + chips d'actions
                     // rapides (le clic injecte le texte et envoie aussitôt).
@@ -5859,20 +5977,35 @@ ${sections}
                       host.appendChild(row);
                     })();
                   }
-                } else if (event.updated === false) {
-                  // P4-FINITION — sans contenu technique, pas de coquille vide :
-                  // l'accordéon du flux question est retiré (CONSTRUCTION garée).
+                } else if (!streamTruthOk || assembledHtml.length <= 100) {
+                  // É53 LOT B — ÉCHEC HONNÊTE : rien n'a été persisté
+                  // (raison explicite du serveur), ou contenu exploitable
+                  // insuffisant. Aucune carte de succès, aucun fichier adopté,
+                  // aucune écriture locale. La « réponse seule » (question,
+                  // clarification — updated:false SANS raison) garde son
+                  // badge discret historique.
                   if (buildAccordion) {
                     const accBody = buildAccordion.querySelector('div');
                     if (!accBody || accBody.textContent.trim().length === 0) buildAccordion.remove();
                     buildAccordion = null;
                     buildAccordionSummary = null;
                   }
-                  // P3-QUESTION — réponse seule : aucune carte de diff, aucune
-                  // mention de mise à jour de fichier, aucun rechargement
-                  // d'iframe (aucun renderNow sur ce chemin) ; badge discret.
-                  if (statusEl) statusEl.innerHTML = '<span>💬 Réponse seule — aucun fichier modifié</span>';
-                  if (titleEl) titleEl.innerHTML = '<span>Réponse</span>';
+                  if (!streamTruthOk && !event.reason) {
+                    // P3-QUESTION — réponse seule : aucune carte de diff, aucune
+                    // mention de mise à jour de fichier, aucun rechargement
+                    // d'iframe (aucun renderNow sur ce chemin) ; badge discret.
+                    if (statusEl) statusEl.innerHTML = '<span>💬 Réponse seule — aucun fichier modifié</span>';
+                    if (titleEl) titleEl.innerHTML = '<span>Réponse</span>';
+                  } else {
+                    const failReason = event.reason
+                      ? 'Rien n\'a été persisté — ' + String(event.reason)
+                      : 'Rien n\'a été persisté — aucun contenu exploitable reçu';
+                    if (statusEl) statusEl.innerHTML = '<span style="color:#fbbf24;">⚠ ' + canonicalEscape(failReason) + '</span>';
+                    if (titleEl) titleEl.innerHTML = '<i class="fa-solid fa-triangle-exclamation text-sm" style="color:#fbbf24;"></i><span style="color:#fbbf24;">Échec de la génération</span>';
+                    if (activityFeed && typeof activityFeed.advise === 'function') {
+                      activityFeed.advise('truth', 'Aucune écriture', failReason, 'warn');
+                    }
+                  }
                 }
               } else if (event.type === 'on_intent_classified' && event.category) {
                 // P2-SIGNAUX — In-Place Update : on réécrit LE badge d'état
@@ -6089,6 +6222,22 @@ ${sections}
                 // STITCH v2 — le preview revient à l'état d'avant génération
                 stitchRestoreSane();
                 // Overlays : voile + laser doivent partir, sinon preview « cassé »
+                              } else if (event.type === 'mutation_refused') {
+                // É53 LOT B — REFUS MÉTIER/SÉCURITÉ du Mutation Orchestrator :
+                // aucune écriture ne suivra. La raison du serveur est affichée
+                // TELLE QUELLE (canal advisory dédié) — la frame `error` qui
+                // suit confirme la fin (finishFromStream → fail).
+                if (activityFeed && typeof activityFeed.advise === 'function') {
+                  activityFeed.advise('mutation_refused', 'Écriture refusée', String(event.reason || 'refus de l\u2019orchestrateur'), 'danger');
+                }
+                timelineFailCurrent();
+                              } else if (event.type === 'mutation_fallback') {
+                // É53 LOT B — indisponibilité TECHNIQUE du moteur : écriture
+                // directe tracée (persistance vérifiée par le serveur avant le
+                // done). Simple visibilité : le done reste la seule vérité.
+                if (activityFeed && typeof activityFeed.advise === 'function') {
+                  activityFeed.advise('mutation_fallback', 'Écriture directe', String(event.reason || 'orchestrateur indisponible'), 'warn');
+                }
                               } else if (event.type === 'error') {
                 if (statusEl) statusEl.innerHTML = '<span style="color:#f87171;">Erreur: ' + canonicalEscape(String(event.error || '')) + '</span>';
                 timelineFailCurrent();
@@ -8532,7 +8681,7 @@ npx serve .
     // ===== Routage hash pour MCP / Connecteurs / Skills (Étape B) =====
     // URL ↔ interface : #mcp, #connecteurs, #skills survivent au F5,
     // alimentent précédent/suivant, sans dupliquer switchSystemView.
-    const HASH_VIEWS = ['mcp', 'connecteurs', 'skills', 'apikeys', 'mcphub', 'mcpadmin'];
+    const HASH_VIEWS = ['mcp', 'connecteurs', 'skills', 'apikeys', 'mcphub', 'mcpadmin', 'neurallab'];
     let currentSystemView = 'workspace';
 
     function syncHashForView(viewName) {
@@ -8572,7 +8721,7 @@ npx serve .
       }
       currentSystemView = viewName;
 
-      ['home', 'dashboard', 'workspace', 'settings', 'mcp', 'connecteurs', 'skills', 'apikeys', 'mcphub', 'mcpadmin'].forEach(v => {
+      ['home', 'dashboard', 'workspace', 'settings', 'mcp', 'connecteurs', 'skills', 'apikeys', 'mcphub', 'mcpadmin', 'neurallab'].forEach(v => {
         const p = document.getElementById('view-' + v);
         const b = document.getElementById('sysBtn-' + v);
         const mb = document.getElementById('menuNav-' + v);
@@ -8629,6 +8778,8 @@ npx serve .
       // visible ; on re-applique immediatement la visibilite role (fail-closed
       // : le menu admin reste masque sauf OWNER/ADMIN).
       if (typeof window.syncMcpAdminMenu === 'function') window.syncMcpAdminMenu();
+      if (typeof window.syncNeuralLabMenu === 'function') window.syncNeuralLabMenu();
+      if (viewName === 'neurallab' && window.__neuralLabUi) window.__neuralLabUi.onShow();
       syncHashForView(viewName);
     }
 
@@ -16017,7 +16168,17 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
       function finishFromStream(type, ev) {
         if (finished) return;
         if (type === 'done') {
-          if (ev && ev.updated === false && !secs_.size && score === null) { finished = true; clearInterval(timer); el.style.display = 'none'; advisory.style.display = 'none'; return; }
+          // É53 LOT B — vérité : un done avec `updated === false` n'est JAMAIS
+          // un « Terminé » vert. Avec une raison explicite (échec réel : rien
+          // persisté) le panneau affiche l'échec ; sans raison (réponse seule
+          // intentionnelle) et sans contenu, il se replie comme avant.
+          if (ev && ev.updated === false) {
+            finished = true; clearInterval(timer);
+            if (ev && ev.reason) { finish('fail', { error: 'Rien n\'a été persisté — ' + String(ev.reason) }); return; }
+            if (!secs_.size && score === null) { el.style.display = 'none'; advisory.style.display = 'none'; return; }
+            finish('fail', { error: 'Rien n\'a été persisté (réponse sans écriture)' });
+            return;
+          }
           if (!t0) t0 = Date.now();
           finish('complete', {});
         } else if (type === 'error') {
@@ -19913,6 +20074,7 @@ Projet web autonome et responsive éditable en direct via **VibeCode Studio v2.5
 <script src="mcp-hub.js" defer></script>
 <script src="mcp-user-hub.js" defer></script>
 <script src="mcp-admin.js" defer></script>
+<script src="neural-lab.js" defer></script>
 <script>
 // ==================== PAGE CLÉS API — saisie par fournisseur (navigateur) ====================
 // Choix scellés avec l'opérateur : catalogue IA complet (10 fournisseurs),

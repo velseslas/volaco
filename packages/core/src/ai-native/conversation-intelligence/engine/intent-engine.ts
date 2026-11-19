@@ -74,7 +74,13 @@ const CATEGORY_RULES: readonly CategoryRule[] = [
   },
   {
     category: 'TEST',
-    patterns: [/test/i, /spec/i, /couverture/i, /e2e/i, /unitaire/i],
+    // É48 — /spec/ borné à un DÉBUT DE MOT : /spec/i matchait la sous-chaîne
+    // « spec » à l'intérieur de « respecter » (« doit respecter
+    // l'accessibilité »), « perspective », « inspecter » — une PRÉCISION
+    // conversationnelle devenait TEST (0.85), la reprise É43 était bloquée et
+    // la précision perdue. « spec.ts », « specs », « spec du module » restent
+    // classés TEST ; « respecter » ne l'est plus.
+    patterns: [/test/i, /\bspec/i, /couverture/i, /e2e/i, /unitaire/i],
     weight: 0.85
   },
   {
@@ -99,6 +105,23 @@ const VALID_CATEGORIES: readonly IntentCategory[] = [
   'ANALYZE', 'EXPLAIN', 'REVIEW', 'OPTIMIZE', 'TEST', 'DEPLOYMENT', 'NAVIGATION', 'UNKNOWN'
 ];
 
+/**
+ * É42 — une INTERDICTION n'est pas une commande. « Finalement, ne modifie pas
+ * la partie facturation » exprime une CONTRAINTE, pas une mutation : le verbe
+ * d'action vit À L'INTÉRIEUR d'une forme négative (« ne … pas », « ne …
+ * jamais », « n' … pas »). Sans cette règle, « ne modifie pas » classait
+ * MODIFY (0.89) et un plan de mutation était présenté — une mutation lancée
+ * sur une simple probabilité d'intention, et la contrainte perdue.
+ */
+/** Forme négative impérative (« ne … pas », « ne … jamais », « n' … pas »). */
+export const NEGATION_IMPERATIVE_PATTERN = /\b(?:ne\s+(?:[\w'’éèêàâîôû-]+\s+)?(?:pas|jamais)|n'[\w'’éèêàâîôû-]+\s+(?:pas|jamais))\b/i;
+
+/** Clause négative COMPLÈTE, avec le verbe qui la porte (avant ou après). */
+const NEGATION_CLAUSE_PATTERN = /\b(?:ne|n')[\s'’]*(?:[\w'’éèêàâîôû-]+\s+){0,2}?(?:pas|jamais)(?:\s+(?:d[e']\s*)?[\w'’éèêàâîôû-]+)?/gi;
+
+/** Verbes de MUTATION : leur présence HORS clause négative garde une action. */
+const MUTATION_ACTION_PATTERN = /(?:modifi|chang|supprim|remplac|ajout|cr[ée]|effac|lanc|ex[ée]cut|d[ée]ploi|impl[ée]ment|touch|alter|corrige)/i;
+
 interface HeuristicClassification {
   category: IntentCategory;
   confidence: number;
@@ -106,6 +129,25 @@ interface HeuristicClassification {
   domain: string | undefined;
   constraints: string[];
   urgency: 'LOW' | 'NORMAL' | 'HIGH';
+}
+
+/**
+ * É41 — une question de MÉTHODE n'est pas une commande. « Comment ajouter un
+ * footer à la page d accueil ? » demande la MÉTHODE, pas la mutation : sans
+ * cette règle, le verbe « ajoute[r] » (CREATE, 0.88) l'emportait sur le « ? »
+ * (QUESTION, 0.80) et un plan de mutation était présenté pour confirmation —
+ * une mutation lancée sur une simple probabilité d'intention.
+ * Détection déterministe : commence par « comment » ET se termine par « ? ».
+ * Exception politesse + action : « Peux-tu créer une page contact ? » reste
+ * une demande d'ACTION (le message ne commence pas par « comment »).
+ */
+function isMethodQuestion(text: string): boolean {
+  if (!/^comment\b/i.test(text)) return false;
+  if (!/\?\s*$/.test(text)) return false;
+  // Forme interrogative de politesse portant une demande d'action : la
+  // classification d'action existante est conservée.
+  if (/\b(?:peux|pourrais|pouvez|pourriez)(?:-tu|-vous)?\b/i.test(text)) return false;
+  return true;
 }
 
 /**
@@ -135,6 +177,26 @@ function classifyIntentHeuristic(text: string): HeuristicClassification {
     highestWeight = 0.50;
   }
 
+  // É42 — interdiction ≠ commande : si une forme négative porte l'unique
+  // verbe d'action, le message est une CONTRAINTE (aucun plan, aucune
+  // mutation) ; la contrainte reste extraite plus bas et conservée en
+  // mémoire projet. Un verbe de mutation HORS clause négative (« … mais
+  // crée une page ») conserve la classification d'action existante.
+  if (NEGATION_IMPERATIVE_PATTERN.test(text)) {
+    const remainder = text.replace(new RegExp(NEGATION_CLAUSE_PATTERN.source, NEGATION_CLAUSE_PATTERN.flags), ' ');
+    if (!MUTATION_ACTION_PATTERN.test(remainder)) {
+      bestCategory = 'EXPLORATION';
+      highestWeight = 0.50;
+    }
+  }
+
+  // É41 — la question de méthode prime sur les verbes d'action qu'elle
+  // contient (catégorie seule : entités/domaine/contraintes inchangés).
+  if (isMethodQuestion(text)) {
+    bestCategory = 'EXPLAIN';
+    highestWeight = 0.90;
+  }
+
   const entities: string[] = [];
   const entityMatches = text.match(/(?:fournisseur|fournisseurs|auth|utilisateur|utilisateurs|paiement|checkout|panier|dashboard|profil|bouton|table|page|route|service|fichier|commande)s?/gi);
   if (entityMatches) {
@@ -152,8 +214,44 @@ function classifyIntentHeuristic(text: string): HeuristicClassification {
   else if (/dash|stat|kpi|rapport/i.test(text)) domain = 'dom_analytics';
 
   const constraints: string[] = [];
-  if (/sans|ne pas|jamais|uniquement|obligatoire|strictement/i.test(text)) {
+  // É42 — la forme négative impérative (« ne modifie pas », « n'utilise pas »)
+  // est aussi une contrainte explicite (les formes « ne pas »/« jamais »
+  // adjacentes étaient déjà couvertes).
+  // É49 — couverture des interdictions naturelles restées hors déclencheurs :
+  // « surtout pas de X », « pas de X », « jamais de X », « aucun X »,
+  // « interdit/interdiction de X », « évite X ». Preuve É49 (sonde E5, UI S5) :
+  // « n'ajoute surtout pas de bouton de paiement » ne déclenchait AUCUNE
+  // contrainte → rien à stocker (conversation-engine n'appelle
+  // MemoryManager.addConstraint QUE sur intent.constraints) → les gardes É44
+  // (supervision, chemins protégés) et É47 (réponse) tournaient à vide.
+  // Asymétrie assumée : un faux positif coûte une ligne de mémoire inerte
+  // (les gardes ne s'activent que sur mot interdictif + chemin nommé) ;
+  // un faux négatif coûte une interdiction violée silencieusement.
+  if (
+    /sans|ne pas|jamais|uniquement|obligatoire|strictement/i.test(text) ||
+    NEGATION_IMPERATIVE_PATTERN.test(text) ||
+    /\b(?:surtout\s+pas|pas\s+de|jamais\s+de|aucun\w*|interdi[ts]|interdiction|évit\w*)\b/i.test(text)
+  ) {
     constraints.push(`Extracted constraint: ${text.slice(0, 80)}`);
+    // É49 — capture RÉFINIE de l'interdiction : la fenêtre fixe (80 premiers
+    // caractères) tronquait l'OBJET de l'interdiction — « …mais n'ajoute
+    // surtout pas de bouton de paiement » stockait « …surtout pas de bouton »
+    // SANS « paiement » (sonde É49/E5 APRÈS extraction) : la contrainte était
+    // stockée et transmise mais INERTE (mot interdictif sans objet, aucun
+    // chemin nommé pour É44). Chaque occurrence interdictive reçoit sa
+    // fenêtre propre (déclencheur −30/+110 car.), dédupliquée, plafonnée à 3
+    // — la chaîne primaire É42 reste STRICTEMENT identique (non-régression
+    // des formats gelés).
+    const INTERDICTIVE_GLOBAL = /\b(?:surtout\s+pas|pas\s+de|jamais\s+de|aucun\w*|interdi[ts]|interdiction|évit\w*|sans|ne\s+pas|ne\s+[\w'’éèêàâîôû-]+\s+(?:pas|jamais)|n'[\w'’éèêàâîôû-]+\s+(?:pas|jamais)|uniquement|obligatoire|strictement)\b/gi;
+    let interdictiveMatch: RegExpExecArray | null;
+    let refinedCount = 0;
+    while ((interdictiveMatch = INTERDICTIVE_GLOBAL.exec(text)) !== null && refinedCount < 3) {
+      const refined = `Extracted constraint: ${text.slice(Math.max(0, interdictiveMatch.index - 30), interdictiveMatch.index + 110)}`;
+      if (!constraints.includes(refined)) {
+        constraints.push(refined);
+        refinedCount++;
+      }
+    }
   }
 
   const isUrgent = /urgent|imm[ée]diat|vite|asap|critique/i.test(text);
@@ -183,7 +281,14 @@ interface AiClassification {
 async function classifyIntentViaAI(
   text: string,
   tenantId: string,
-  projectId: string
+  projectId: string,
+  /**
+   * É53 LOT E4.1 — CORRECTION B : signal de cancellation du tour /stream
+   * (armé par E1/E2/E3 uniquement). Un abandon n'est JAMAIS avalé par le
+   * repli mots-clés : l'erreur est rejetée telle quelle et l'issue du tour
+   * reste l'arbitrage E1/E2 (catches E3 de la route).
+   */
+  signal?: AbortSignal | undefined
 ): Promise<AiClassification | null> {
   // LOT MULTI-MODÈLES — fournisseur actif du tableau de bord ; héritage sinon.
   const preferredProviderId = preferredAiProvider() ?? (process.env.MISTRAL_API_KEY ? 'mistral' : process.env.GEMINI_API_KEY ? 'gemini' : undefined);
@@ -201,7 +306,7 @@ async function classifyIntentViaAI(
   try {
     const credentials = aiProviderRegistry.getTenantCredentials(tenantId, adapter.descriptor.providerId);
     const response = await adapter.generate(
-      { tenantId, projectId, prompt: text, systemPrompt, temperature: 0, maxTokens: 200 },
+      { tenantId, projectId, prompt: text, systemPrompt, temperature: 0, maxTokens: 200, ...(signal !== undefined ? { signal } : {}) },
       credentials
     );
 
@@ -220,6 +325,14 @@ async function classifyIntentViaAI(
       confidence: typeof parsed.confidence === 'number' ? Math.max(0, Math.min(1, parsed.confidence)) : 0.75
     };
   } catch (error) {
+    // É53 LOT E4.1 — CORRECTION B : un abandon demandé par l'appelant
+    // (signal du tour) n'est jamais un échec de classification ordinaire :
+    // l'erreur est REJETÉE (le tour ne continue pas après annulation, aucun
+    // repli mots-clés). Sans abandon (timeout, réseau, JSON) → repli
+    // historique strictement inchangé.
+    if (signal?.aborted === true) {
+      throw error instanceof Error ? error : new Error(String(error));
+    }
     const message = error instanceof Error ? error.message : String(error);
     logger.warn("Échec de la classification d'intention par IA — repli sur les mots-clés.", {
       component: 'intent-engine',
@@ -234,7 +347,12 @@ export async function classifyIntent(
   userText: string,
   semanticModel?: ApplicationSemanticModel | undefined,
   tenantId = 'system',
-  projectId = 'system'
+  projectId = 'system',
+  /**
+   * É53 LOT E4.1 — CORRECTION B : signal de cancellation du tour (optionnel,
+   * rétrocompatible — absent = comportement strictement inchangé).
+   */
+  signal?: AbortSignal | undefined
 ): Promise<IntentResult> {
   const text = userText.trim();
 
@@ -242,7 +360,7 @@ export async function classifyIntent(
   // (logique spécifique à VibeCode qu'une IA générique ne connaît pas),
   // même quand l'IA fournit une meilleure catégorie.
   const heuristic = classifyIntentHeuristic(text);
-  const aiResult = await classifyIntentViaAI(text, tenantId, projectId);
+  const aiResult = await classifyIntentViaAI(text, tenantId, projectId, signal);
 
   const category = aiResult ? aiResult.category : heuristic.category;
   const confidence = aiResult ? aiResult.confidence : heuristic.confidence;

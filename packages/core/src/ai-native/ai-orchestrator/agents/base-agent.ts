@@ -33,8 +33,16 @@ export abstract class BaseSpecializedAgent {
     tenantId: string;
     projectId: string;
     requestId?: string | undefined;
+    /**
+     * É53 LOT E4.1 — CORRECTION B : signal de cancellation du tour (armé par
+     * E1/E2/E3 uniquement : annulation utilisateur acceptée ou déconnexion
+     * client). Observé avant chaque tentative de failover et transmis à
+     * l'adapter jusqu'au transport. Un abandon n'est JAMAIS un échec de
+     * provider à relayer : le failover s'arrête et l'erreur est rejetée.
+     */
+    signal?: AbortSignal | undefined;
   }): Promise<AgentResult> {
-    const { task, context, tenantId, projectId, requestId } = params;
+    const { task, context, tenantId, projectId, requestId, signal } = params;
     const startTime = Date.now();
 
     // 1. Resolve Provider via Capabilities
@@ -46,6 +54,17 @@ export abstract class BaseSpecializedAgent {
     });
 
     const credentials = this.registry.getTenantCredentials(tenantId, adapter?.descriptor.providerId || '');
+
+    // É53 LOT E4.1 — observation du signal via FONCTION (évite le narrowing
+    // TS sur la propriété aborted entre les points de contrôle asynchrones —
+    // même protocole qu'ÉTAPE 35 dans agent-execution).
+    const isAborted = (): boolean => signal?.aborted === true;
+
+    // É53 LOT E4.1 — CORRECTION B : annulation déjà armée → AUCUN appel LLM
+    // ne démarre (travaux en attente : jamais démarrés après annulation).
+    if (isAborted()) {
+      throw new Error('AGENT_ABORTED: annulation demandée avant l appel LLM de l agent.');
+    }
 
     // PAGE CLÉS API — bascule par agent : slots configurés (primary → fallback)
     // par la page, puis chaîne legacy ci-dessus en DERNIER recours. Aucun slot
@@ -105,12 +124,27 @@ export abstract class BaseSpecializedAgent {
       ? `\n${context.designContext.promptBlock}\n${context.designContext.componentsPromptBlock ? `${context.designContext.componentsPromptBlock}\n` : ''}`
       : '';
 
+    // É44 — FIDÉLITÉ DE LA DEMANDE : les contraintes et décisions portées par
+    // le TaskContextPayload sont injectées dans le prompt — un payload rempli
+    // mais ignoré ne transmettrait rien au LLM. Champs absents → prompt
+    // IDENTIQUE octet pour octet au comportement historique.
+    const constraintBlock =
+      context.constraints.length > 0
+        ? `\nContraintes à respecter (OBLIGATOIRES) :\n${context.constraints.map((c) => `- ${c}`).join('\n')}\n`
+        : '';
+    const decisionBlock =
+      context.decisions.length > 0
+        ? `\nDécisions actives à appliquer :\n${context.decisions.map((d) => `- ${d}`).join('\n')}\n`
+        : '';
+
     const prompt =
       `Tâche : ${task.title}\n` +
       `Description : ${task.description}\n` +
       `Domaine : ${task.domain}\n\n` +
       (fileEntries ? `Fichiers concernés (Lecture Seule) :\n${fileEntries}\n\n` : '') +
       designBlock +
+      constraintBlock +
+      decisionBlock +
       `Produis les modifications nécessaires ou conclusions d'ingénierie sous forme structurée.`;
 
     // P2 — HONNÊTETÉ : sans IA (ou en cas d'échec), la tâche est marquée
@@ -133,6 +167,10 @@ export abstract class BaseSpecializedAgent {
 
     for (const attempt of attempts) {
       if (!attempt.adapter) continue;
+      // É53 LOT E4.1 — annulation armée entre deux tentatives : le failover
+      // S'ARRÊTE (l'abandon n'est pas un échec de slot à relayer ; aucun
+      // nouvel appel LLM post-annulation).
+      if (isAborted()) break;
       try {
         const response = await attempt.adapter.generate(
           {
@@ -142,7 +180,8 @@ export abstract class BaseSpecializedAgent {
             systemPrompt,
             requestId,
             maxTokens: agentLlmMaxTokens(),
-            timeoutMs: agentLlmTimeoutMs()
+            timeoutMs: agentLlmTimeoutMs(),
+            ...(signal !== undefined ? { signal } : {})
           },
           attempt.credentials
         );
@@ -153,9 +192,22 @@ export abstract class BaseSpecializedAgent {
         usedProviderId = attempt.adapter.descriptor.providerId;
         break;
       } catch (err: unknown) {
+        // É53 LOT E4.1 — un abandon causé par le signal du tour n'est pas un
+        // échec de provider : le failover s'arrête et l'erreur d'abandon est
+        // REJETÉE telle quelle (jamais convertie en erreur ordinaire
+        // d'agent, jamais suivie d'un nouvel appel).
+        if (isAborted()) {
+          throw err instanceof Error ? err : new Error(String(err));
+        }
         const errMsg = err instanceof Error ? err.message.slice(0, 120) : String(err).slice(0, 120);
         failoverNotes.push(`${attempt.slot}(${attempt.adapter.descriptor.providerId}) : échec — ${errMsg}`);
       }
+    }
+
+    // É53 LOT E4.1 — annulation arrivée pendant le dernier appel : rejet
+    // honnête (jamais un résultat DEGRADED post-annulation).
+    if (isAborted()) {
+      throw new Error('AGENT_ABORTED: annulation demandée pendant l appel LLM de l agent.');
     }
 
     if (llmDegraded) {

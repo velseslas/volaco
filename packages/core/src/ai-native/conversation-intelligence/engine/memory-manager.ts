@@ -65,6 +65,35 @@ export class MemoryManager {
   }
 
   /**
+   * É47 — continuité post-exécution : le RÉSULTAT RÉEL de l'exécution du plan
+   * (la réponse conversationnelle composée depuis les faits vérifiés du
+   * superviseur É46) entre dans la mémoire conversationnelle comme message
+   * AGENT. Sans cela, le tour suivant ignore ce qui vient d'être fait
+   * (risque de fausse déclaration ou d'invention) — défaut démontré par la
+   * sonde É47 (scénarios S12–S15).
+   *
+   * Contrairement à `updateTurnMemory` (cycle de tour complet), cette méthode
+   * n'écrit QUE le dernier message et la fenêtre d'historique : `activeIntent`,
+   * `currentPlan` et `currentAssumptions` sont préservés à l'identique (aucun
+   * tour factice, aucun effet sur les contrats gelés É39–É46).
+   */
+  public recordExecutionReply(
+    current: TurnMemory,
+    reply: ConversationMessage,
+    maxHistory: number = 10
+  ): TurnMemory {
+    const updatedMessages: ConversationMessage[] = [...current.recentMessages, reply];
+    const trimmedMessages = updatedMessages.slice(-maxHistory);
+    return deepFreeze({
+      lastMessage: reply,
+      recentMessages: trimmedMessages,
+      activeIntent: current.activeIntent,
+      currentPlan: current.currentPlan,
+      currentAssumptions: current.currentAssumptions
+    });
+  }
+
+  /**
    * Records an architectural decision in Decision Memory / Project Memory.
    */
   public recordDecision(projectMemory: ProjectMemory, decision: DecisionRecord): ProjectMemory {

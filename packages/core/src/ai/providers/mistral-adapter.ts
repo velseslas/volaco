@@ -6,6 +6,7 @@
 import { aiUsageTracker, MODEL_PRICING } from '../usage.js';
 import { logger } from '../../logger.js';
 import {
+  AIProviderAbortedError,
   AIProviderAdapter,
   AIProviderAuthError,
   AIProviderDescriptor,
@@ -129,7 +130,15 @@ export class MistralProviderAdapter implements AIProviderAdapter {
       }
 
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      // É53 LOT E3 — CORRECTION B : l'origine de l'abandon est tracée. Le
+      // contrôleur interne reste un TIMEOUT technique ; un abandon externe
+      // (signal d'appelant) est classé à part (AIProviderAbortedError).
+      let abortSource: 'timeout' | 'external' | null = null;
+      const timer = setTimeout(() => {
+        if (controller.signal.aborted) return;
+        abortSource = 'timeout';
+        controller.abort();
+      }, timeoutMs);
       // P0-masse n°3 — abandon client : coupe l'appel réseau en cours.
       if (request.signal?.aborted) {
         clearTimeout(timer);
@@ -137,7 +146,11 @@ export class MistralProviderAdapter implements AIProviderAdapter {
         aborted.name = 'AbortError';
         throw aborted;
       }
-      request.signal?.addEventListener('abort', () => controller.abort(), { once: true });
+      request.signal?.addEventListener('abort', () => {
+        if (controller.signal.aborted) return;
+        abortSource = 'external';
+        controller.abort();
+      }, { once: true });
       const startTime = Date.now();
 
       // É48 P4 (J-6) — l'attempt est visible dès le démarrage de l'appel :
@@ -262,6 +275,12 @@ export class MistralProviderAdapter implements AIProviderAdapter {
       if (err instanceof AIProviderError || err instanceof AIProviderAuthError) {
         throw err;
       }
+      // É53 LOT E3 — CORRECTION B : un abandon demandé par l'appelant n'est
+      // pas un timeout — il est classé AIProviderAbortedError, jamais
+      // « Délai dépassé ».
+      if (abortSource === 'external') {
+        throw new AIProviderAbortedError('mistral', request.requestId);
+      }
       if (err instanceof Error && (err.name === 'AbortError' || err.message.includes('abort'))) {
         throw new AIProviderTimeoutError('mistral', timeoutMs, request.requestId);
       }
@@ -345,7 +364,33 @@ export class MistralProviderAdapter implements AIProviderAdapter {
     }
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    // É53 LOT E3 — CORRECTION A/B : le contrôleur interne reste un TIMEOUT
+    // technique (120 s par défaut) ; un abandon EXTERNE (signal d'appelant :
+    // annulation utilisateur acceptée ou déconnexion client) est tracé à
+    // part et coupé le transport réel (`fetch` via `controller.signal`).
+    let abortSource: 'timeout' | 'external' | null = null;
+    const timer = setTimeout(() => {
+      if (controller.signal.aborted) return;
+      abortSource = 'timeout';
+      controller.abort();
+    }, timeoutMs);
+    // É53 LOT E3 — signal d'appelant déjà consommé avant l'appel : aucun
+    // réseau n'est déclenché, l'abandon est immédiat et classé comme tel.
+    if (request.signal?.aborted) {
+      clearTimeout(timer);
+      throw new AIProviderAbortedError('mistral', request.requestId);
+    }
+    if (request.signal) {
+      request.signal.addEventListener('abort', () => {
+        if (controller.signal.aborted) return;
+        abortSource = 'external';
+        controller.abort();
+      }, { once: true });
+    }
+    // É53 LOT E3 — lecteur hoisté pour libération systématique en finally
+    // (cancel() détruit le transport même si le consommateur sort de la
+    // boucle sans avoir épuisé le flux — jamais une simple sortie de for await).
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
     // É48 P4 (J-6) — exactement un terminal par appel de stream : SUCCESS
     // (complété, usage final non disponible → coût 0, J-6b différé), ERROR
     // (échec) ou ABORTED (interrompu avant complétion). Jamais deux.
@@ -432,7 +477,7 @@ export class MistralProviderAdapter implements AIProviderAdapter {
       }
 
       // Parse SSE stream ligne par ligne
-      const reader = response.body.getReader();
+      reader = response.body.getReader();
       const decoder = new TextDecoder('utf-8');
       let buffer = '';
 
@@ -498,6 +543,23 @@ export class MistralProviderAdapter implements AIProviderAdapter {
         recordStreamTerminalSuccess();
       }
     } catch (err: unknown) {
+      // É53 LOT E3 — CORRECTION B : un abandon DEMANDÉ par l'appelant
+      // (annulation utilisateur acceptée ou déconnexion client) n'est ni un
+      // timeout ni une erreur LLM : terminal ABORTED (coût 0), jamais ERROR,
+      // jamais SUCCESS — et l'erreur propagée reste classée `abandon`.
+      if (abortSource === 'external') {
+        streamTerminalEmitted = true;
+        aiUsageTracker.recordAttempt({
+          tenantId: request.tenantId,
+          projectId: request.projectId,
+          model,
+          provider: 'mistral',
+          requestId: request.requestId ?? 'req-unknown',
+          kind: 'ABORTED',
+          error: 'abandon demandé par l appelant (annulation acceptée ou déconnexion client)'
+        });
+        throw new AIProviderAbortedError('mistral', request.requestId);
+      }
       // É48 P4 — terminal ERROR unique pour le stream en échec
       const rawErr = err instanceof Error ? err.message : String(err);
       aiUsageTracker.recordAttempt({
@@ -521,6 +583,16 @@ export class MistralProviderAdapter implements AIProviderAdapter {
       throw new AIProviderError(`Erreur de streaming Mistral: ${sanitized}`, 'mistral', 500, request.requestId);
     } finally {
       clearTimeout(timer);
+      // É53 LOT E3 — CORRECTION A : libération du lecteur du flux. `cancel()`
+      // ferme le corps HTTP (transport détruit) même quand le consommateur a
+      // quitté la boucle avant l'épuisement — pas de socket résiduel.
+      if (reader) {
+        try {
+          await reader.cancel();
+        } catch {
+          // transport déjà coupé (abandon, erreur réseau) — rien à faire
+        }
+      }
       // É48 P4 — le stream consommé partiellement (client déconnecté) est un
       // appel réel incomplet : usage inconnu → terminal ABORTED, coût 0.
       if (!streamTerminalEmitted) {

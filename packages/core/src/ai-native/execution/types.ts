@@ -37,6 +37,12 @@ export type ExecutionEventType =
   | 'APPLICATION_MODEL_REFRESHED'
   | 'MUTATION_FALLBACK'
   | 'MUTATION_ROLLED_BACK'
+  /* LOT A (É53) — refus du contrat de préservation avant toute écriture
+     (aucun repli direct : le contenu rejeté ne doit jamais être persisté). */
+  | 'MUTATION_CONTRACT_REFUSED'
+  /* É53 LOT B — refus MÉTIER/SÉCURITÉ de l'orchestrateur (stages plan /
+     validation) : aucune écriture directe de contournement. */
+  | 'MUTATION_ORCHESTRATOR_REFUSED'
   | 'FILE_READ'
   | 'FILE_CREATED'
   | 'FILE_MODIFIED'
@@ -108,4 +114,12 @@ export interface ExecutionRecord {
   events: ExecutionEvent[];
   summary?: ExecutionSummary;
   cancelReason?: string;
+  /**
+   * É53 LOT E1 — ARBITRAGE ATOMIQUE annulation / persistance : la persistance
+   * a gagné la course (écriture effective — octets sur disque — posée par
+   * `claimPersistenceWin` dans le même tick synchrone que l'écriture). Toute
+   * annulation ultérieure est refusée honnêtement : le statut terminal est
+   * celui de la vérité réelle de l'écriture, jamais ⏹.
+   */
+  persistenceWon?: boolean;
 }

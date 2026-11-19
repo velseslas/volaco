@@ -53,9 +53,35 @@ export { ContradictionDetector } from './engine/contradiction-detector.js';
 export { MemoryManager, extractUserPreference, type ExtractedUserPreference } from './engine/memory-manager.js';
 export { UnderstandingBridge } from './engine/understanding-bridge.js';
 export { ImpactBridge, type PlanImpactResult } from './engine/impact-bridge.js';
-export { ExecutionBridge, type ConversationAgentExecutor, type ExecutionResult } from './engine/execution-bridge.js';
-export { routeIntentToAgent, FILE_MUTATION_CAPABILITY, type ConversationAgentRoute } from './engine/intent-router.js';
+export {
+  ExecutionBridge,
+  analyzePlanForBatch,
+  buildConversationTaskContext,
+  type ConversationAgentExecutor,
+  type ExecutionResult,
+  type PlanBatchAnalysis,
+  type PlanBatchAnalysisSession
+} from './engine/execution-bridge.js';
+export {
+  routeIntentToAgent,
+  FILE_MUTATION_CAPABILITY,
+  extractSourceFiles,
+  buildConversationContextBlock,
+  type ConversationAgentRoute,
+  type ConversationTaskContext
+} from './engine/intent-router.js';
+export {
+  validatePlanStructure,
+  type PlanStructureIssue,
+  type PlanStructureValidation
+} from './engine/plan-validation.js';
 export { ConversationEngine } from './engine/conversation-engine.js';
+export {
+  detectConversationReference,
+  isPluralReference,
+  resolveConversationReferents,
+  buildReferenceAssumption
+} from './engine/reference-resolver.js';
 export {
   ConversationContextBuilder,
   CONTEXT_BUDGETS,

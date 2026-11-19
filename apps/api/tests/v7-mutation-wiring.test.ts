@@ -31,6 +31,7 @@ import {
   SemanticCodeGraphService
 } from '../../../packages/core/src/index.js';
 import type {
+  MutationContract,
   MutationPlan,
   PlanValidationResult,
   SingleMutation
@@ -149,7 +150,13 @@ describe('V7-WIRE-2 — pont flux → Mutation Orchestrator', () => {
 
   it('création : plan CREATE_FILE avec précondition FILE_NOT_EXISTS, exécution consultative', () => {
     let capturedMutation: SingleMutation | undefined;
-    let capturedOptions: unknown;
+    let capturedOptions: {
+      allowHighRisk?: boolean | undefined;
+      allowBreaking?: boolean | undefined;
+      skipImpactCheck?: boolean | undefined;
+      contract?: MutationContract | undefined;
+      invariants?: readonly unknown[] | undefined;
+    } | undefined;
     const engine = makeFakeEngine();
     const wrapped: StreamMutationEngine = {
       ...engine,
@@ -181,11 +188,16 @@ describe('V7-WIRE-2 — pont flux → Mutation Orchestrator', () => {
     assert.equal(capturedMutation?.kind, 'CREATE_FILE');
     assert.equal(capturedMutation?.operation.path, STREAM_MUTATION_PATH);
     assert.equal(capturedMutation?.preconditions[0]?.kind, 'FILE_NOT_EXISTS');
-    assert.deepEqual(capturedOptions, {
-      allowHighRisk: true,
-      allowBreaking: true,
-      skipImpactCheck: true
-    });
+    // LOT A (É53) — le pont transmet désormais TOUJOURS un contrat de mutation
+    // (ici creation : protection vide, cibles = index.html) et les invariants
+    // du contrat (vides en création). Les flags consultatifs restent inchangés.
+    assert.equal(capturedOptions?.allowHighRisk, true);
+    assert.equal(capturedOptions?.allowBreaking, true);
+    assert.equal(capturedOptions?.skipImpactCheck, true);
+    assert.equal(capturedOptions?.contract?.operationScope.kind, 'creation');
+    assert.equal(capturedOptions?.contract?.targetFiles[0], STREAM_MUTATION_PATH);
+    assert.deepEqual(capturedOptions?.contract?.protectedContent, []);
+    assert.deepEqual(capturedOptions?.invariants, []);
   });
 
   it('mise à jour : plan UPDATE_FILE avec précondition FILE_EXISTS', () => {
@@ -199,7 +211,8 @@ describe('V7-WIRE-2 — pont flux → Mutation Orchestrator', () => {
           return engine.createPlan(request, role, requestId);
         }
       },
-      { ...BASE_INPUT, mode: 'update' }
+      // LOT A (É53) : en update, le pont exige l'état initial (préservation).
+      { ...BASE_INPUT, mode: 'update', existingContent: BASE_INPUT.content }
     );
 
     assert.equal(outcome.applied, true);
@@ -285,7 +298,10 @@ describe('V7-WIRE-2 — pont flux → Mutation Orchestrator', () => {
       tenantId,
       projectId,
       mode: 'update',
-      content: htmlV2
+      content: htmlV2,
+      // LOT A (É53) : état initial + demande réelle (le h1 est la cible déclarée).
+      existingContent: htmlV1,
+      userMessage: 'Change le titre en Deux'
     });
     assert.equal(updated.applied, true);
     assert.equal(store.getFile(tenantId, projectId, 'index.html')?.content, htmlV2);

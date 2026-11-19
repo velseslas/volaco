@@ -1640,7 +1640,7 @@ describe('AINT-009 — Conversation Intelligence & Human-AI Engineering Engine',
       assert.equal(exec.session.activePlan?.status, 'EXECUTED');
     });
 
-    it('O-B: intention non supportée (2 fichiers) → AUCUN agent, FAILED/UNSUPPORTED_INTENT, aucun fichier', async () => {
+    it('O-B: intention 2 fichiers → plan 2 mutations (É40) → refus explicite, AUCUN agent, aucun fichier', async () => {
       const svc = await makeRoutedService();
       const tenantId = `tenant-e33b-${runTagO}`;
       const projectId = `proj-e33b-${runTagO}`;
@@ -1648,12 +1648,21 @@ describe('AINT-009 — Conversation Intelligence & Human-AI Engineering Engine',
       const session = svc.createSession({ tenantId, projectId });
       const turn1 = await svc.processTurn({ tenantId, projectId, sessionId: session.sessionId, message: 'Crée les fichiers src/a.ts et src/b.ts' });
       assert.ok(turn1.turn.plan);
+      // É40 — le générateur produit désormais UNE étape de mutation PAR fichier
+      // explicitement demandé : le plan est un vrai DAG à 2 tâches (et non plus
+      // une seule étape entassant les 2 fichiers). L'exécuteur attaché ici
+      // n'expose pas executeBatch() → refus explicite, JAMAIS de réduction
+      // silencieuse à une seule tâche. Aucun agent exécuté, aucun fichier écrit.
+      const mutationSteps = (turn1.turn.plan ?? { steps: [] as unknown[] }).steps.filter(
+        (step) => step.operation !== 'ANALYZE' && step.operation !== 'VERIFY'
+      );
+      assert.equal(mutationSteps.length, 2, 'une étape de mutation par fichier demandé');
       await svc.confirmPlan({ tenantId, projectId, sessionId: session.sessionId, planId: turn1.turn.plan!.planId, approved: true });
 
       const exec = await svc.executeApprovedPlan({ tenantId, projectId, sessionId: session.sessionId });
 
       assert.equal(exec.executionResult.success, false);
-      assert.match(exec.executionResult.error ?? '', /UNSUPPORTED_INTENT/);
+      assert.match(exec.executionResult.error ?? '', /EXECUTOR_BATCH_UNAVAILABLE/);
       assert.equal(exec.session.currentState, 'FAILED');
       assert.equal(exec.session.activePlan?.status, 'FAILED');
       assert.equal(fileSourceO.getFile(tenantId, projectId, 'src/a.ts'), null, 'aucun fichier écrit');

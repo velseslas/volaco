@@ -7,6 +7,74 @@ import { computeTaskGraphHash, deepFreeze } from '../canonical.js';
 import type { AgentCapability, AgentDomain, AgentTask, EngineeringTaskGraph } from '../types.js';
 import type { EngineeringPlan, IntentResult, PlanStep } from '../../conversation-intelligence/types.js';
 
+// ===========================================================================
+// É45 — taxonomie de classification DÉTERMINISTE des spécialités.
+//
+// SOURCE UNIQUE partagée par le décomposeur AINT-010 (detectStepDomain) et
+// le routage conversationnel É45 (intent-router / execution-bridge) :
+// une seule liste de règles, un seul ordre de priorité, une seule sémantique
+// de correspondance (includes() sur texte normalisé sans accents).
+// L'ORDRE des règles EST la priorité : TEST > SECURITY > DATA > UI > BACKEND.
+// ===========================================================================
+
+/** Règles de mots-clés du TRAVAIL (pas du nom d'agent) → spécialité. */
+export const STEP_DOMAIN_KEYWORD_RULES: readonly {
+  readonly domain: AgentDomain;
+  readonly keywords: readonly string[];
+}[] = deepFreeze([
+  { domain: 'TEST', keywords: ['test', 'spec', 'assert'] },
+  { domain: 'SECURITY', keywords: ['auth', 'rbac', 'secret', 'security', 'securite', 'permission'] },
+  { domain: 'DATA', keywords: ['schema', 'database', 'bdd', 'donnee', 'db', 'model', 'entity', 'migration'] },
+  { domain: 'UI', keywords: ['ui', 'page', 'view', 'component', 'css', 'tailwind', 'html', 'layout'] },
+  // É45 — BACKEND n'avait AUCUN mot-clé positif (il n'était que le fallback
+  // final de l'heuristique) : ces mots du travail backend rendent la
+  // spécialité DÉCLARABLE pour la désambiguïsation É45. NEUTRE pour
+  // detectStepDomain : un texte ne matchant que ces mots retombait déjà sur
+  // BACKEND via le fallback — l'issue AINT-010 est identique pour toute
+  // entrée, seule la distinction « signal explicite / aucun signal » est
+  // nouvelle (et seule elle intéresse le routage É45).
+  { domain: 'BACKEND', keywords: ['api', 'service', 'endpoint', 'controller', 'route', 'server'] }
+]) as readonly { readonly domain: AgentDomain; readonly keywords: readonly string[] }[];
+
+/** Spécialités déclarables explicitement via PlanStep.targetDomain (gate AINT-010). */
+export const DECLARABLE_STEP_DOMAINS: readonly AgentDomain[] = deepFreeze([
+  'UI',
+  'BACKEND',
+  'DATA',
+  'SECURITY',
+  'TEST'
+]) as readonly AgentDomain[];
+
+/**
+ * Gate pure targetDomain → AgentDomain (aucun fallback, aucune invention) :
+ * les domaines MÉTIER (« dom_authentication », « core », …) ne sont JAMAIS
+ * des spécialités d'agent et ne franchissent pas cette gate.
+ */
+export function resolveDeclaredTargetDomain(
+  targetDomain: string | undefined | null
+): AgentDomain | undefined {
+  if (!targetDomain) return undefined;
+  const td = targetDomain.toUpperCase();
+  return (DECLARABLE_STEP_DOMAINS as readonly string[]).includes(td) ? (td as AgentDomain) : undefined;
+}
+
+/**
+ * Scan par mots-clés PUR (même sémantique includes() que l'heuristique
+ * AINT-010, texte normalisé sans accents, minuscule). AUCUN fallback :
+ * aucun signal → undefined (l'appelant décide ; le routage É45 ne doit
+ * jamais deviner une spécialité).
+ */
+export function detectDomainKeywords(text: string): AgentDomain | undefined {
+  const normalized = text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+  for (const rule of STEP_DOMAIN_KEYWORD_RULES) {
+    if (rule.keywords.some((keyword) => normalized.includes(keyword))) return rule.domain;
+  }
+  return undefined;
+}
+
 export class TaskDecomposer {
   public decomposePlan(
     plan: EngineeringPlan,
@@ -148,29 +216,10 @@ export class TaskDecomposer {
   }
 
   public detectStepDomain(step: PlanStep): AgentDomain {
-    if (step.targetDomain) {
-      const td = step.targetDomain.toUpperCase();
-      if (td === 'UI' || td === 'BACKEND' || td === 'DATA' || td === 'SECURITY' || td === 'TEST') {
-        return td as AgentDomain;
-      }
-    }
-    const text = `${step.description} ${step.targetFiles?.join(' ') || ''}`
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .toLowerCase();
-    if (text.includes('test') || text.includes('spec') || text.includes('assert')) {
-      return 'TEST';
-    }
-    if (text.includes('auth') || text.includes('rbac') || text.includes('secret') || text.includes('security') || text.includes('securite') || text.includes('permission')) {
-      return 'SECURITY';
-    }
-    if (text.includes('schema') || text.includes('database') || text.includes('bdd') || text.includes('donnee') || text.includes('db') || text.includes('model') || text.includes('entity') || text.includes('migration')) {
-      return 'DATA';
-    }
-    if (text.includes('ui') || text.includes('page') || text.includes('view') || text.includes('component') || text.includes('css') || text.includes('tailwind') || text.includes('html') || text.includes('layout')) {
-      return 'UI';
-    }
-    return 'BACKEND';
+    const declared = resolveDeclaredTargetDomain(step.targetDomain);
+    if (declared) return declared;
+    const text = `${step.description} ${step.targetFiles?.join(' ') || ''}`;
+    return detectDomainKeywords(text) ?? 'BACKEND';
   }
 
   public resolveRequiredCapabilities(domain: AgentDomain, step: PlanStep): readonly AgentCapability[] {

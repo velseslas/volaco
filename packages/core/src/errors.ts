@@ -23,6 +23,10 @@
      dépendance d'activation → 409 ; backend SQLite indisponible → 503. */
   | 'MCP_CATALOG_INVALID_TRANSITION'
   | 'MCP_CATALOG_DEPENDENCY'
+  /* LOT A (É53) — violation du contrat de mutation : le contenu généré est
+     recevable en syntaxe mais NON AUTORISÉ (perte de contenu protégé,
+     hors périmètre) — refus AVANT toute écriture, 422. */
+  | 'CONTRACT_VIOLATION'
   | 'STORAGE_UNAVAILABLE';
 
 export interface ErrorDetails {

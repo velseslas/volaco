@@ -76,24 +76,50 @@ export async function handleExecutionRoutes(
     if (parts[3] !== 'cancel' || !executionId) {
       return false;
     }
+    // É53 LOT E2 — CORRECTION B : le drapeau d'annulation est consulté AVANT
+    // la porte « record introuvable ». En mode VOLACO_EXECUTION_TIMELINE=off,
+    // aucun record n'existe (télémétrie désactivée) mais l'annulation reste
+    // un contrôle opérationnel : refuser par NotFoundError la priverait de
+    // tout moyen d'arrêt. L'isolation par tenant reste appliquée dès qu'un
+    // record existe ; sans record, l'executionId (requestId aléatoire) et
+    // l'autorisation du projet dans l'URL portent la sécurité.
     const record = executionStore.getExecution(executionId);
-    if (!record || record.tenantId !== context.tenantId) {
+    if (record && record.tenantId !== context.tenantId) {
+      throw new NotFoundError(`Exécution ${executionId}`, requestId);
+    }
+    if (!record && !activeCancelFlags.has(executionId)) {
       throw new NotFoundError(`Exécution ${executionId}`, requestId);
     }
     const flag = activeCancelFlags.get(executionId);
     if (flag) {
+      // É53 LOT E2 — la preuve locale du CAS B (`persistenceVerified`, posée
+      // par la route du stream quand la lecture à rebours confirme l'écriture)
+      // complète l'arbitrage du store : en télémétrie OFF il n'y a ni record
+      // ni persistenceWon, mais une mutation déjà validée reste une mutation
+      // déjà validée — le refus est honnête dans les deux modes.
+      const localPersistenceVerified = (flag as { persistenceVerified?: boolean }).persistenceVerified === true;
+      // É53 LOT E1 — ARBITRAGE HONNÊTE : si la persistance a déjà gagné la
+      // course (écriture effective sur disque, posée par la route au moment
+      // de l'écriture), l'annulation ne pourra ni l'empêcher ni remplacer le
+      // statut terminal : le serveur le dit tel quel au lieu d'accepter un
+      // refus déguisé (le drapeau n'est pas posé — le tour s'achèvera
+      // normalement selon sa vérité).
+      if (executionStore.hasPersistenceWon(executionId) || localPersistenceVerified) {
+        sendJson(res, 200, { cancelled: false, reason: 'persistence_already_validated', status: record?.status ?? null, executionId, requestId });
+        return true;
+      }
       flag.cancelled = true;
       sendJson(res, 200, { cancelled: true, executionId, requestId });
       return true;
     }
     // Exécution en attente de validation de plan : l'annulation est la
     // décision « rejeter » — marquée CANCELLED, pas FAILED.
-    if (record.status === 'WAITING_USER') {
+    if (record?.status === 'WAITING_USER') {
       executionStore.cancelExecution(executionId, 'user_cancel');
       sendJson(res, 200, { cancelled: true, executionId, requestId });
       return true;
     }
-    sendJson(res, 200, { cancelled: false, reason: 'not_active', status: record.status, executionId, requestId });
+    sendJson(res, 200, { cancelled: false, reason: 'not_active', status: record?.status ?? null, executionId, requestId });
     return true;
   }
 

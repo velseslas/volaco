@@ -19,6 +19,8 @@ import { executeSingleMutation } from './engine/mutation-engine.js';
 import { rollbackTransaction } from './engine/rollback.js';
 import { verifyPostMutationState } from './engine/verification.js';
 import { computeTransactionHash, deepFreeze } from './engine/canonical.js';
+// LOT A (É53) — contrat de mutation : application AVANT toute écriture.
+import { assertMutationContractCompliance } from './contract.js';
 import { MutationPlanLruCache } from './cache.js';
 import type {
   MutationExecutionOptions,
@@ -270,6 +272,15 @@ export class MutationOrchestratorService {
       assertPermission(userRole, 'PROJECT_READ', requestId);
     }
 
+    // 1.5 LOT A (É53) — CONTRAT DE MUTATION : contrôle de préservation AVANT
+    // tout le reste (avant l'Impact Gate, avant le snapshot, avant TOUTE
+    // écriture). Une mutation hors périmètre ou qui perd du contenu protégé
+    // non autorisé est REFUSÉE ici : le fichier existant reste intact,
+    // aucune transaction n'est enregistrée, aucun rollback n'est nécessaire.
+    if (options?.contract) {
+      assertMutationContractCompliance(this.fileSource, plan, options.contract, requestId);
+    }
+
     // 2. Validate Plan against Impact Gate
     const graph = this.semanticGraphService
       ? this.semanticGraphService.buildGraph(
@@ -364,6 +375,14 @@ export class MutationOrchestratorService {
       }
 
       // 5. Post-Mutation Verification (AINT-001 syntax check & explicit invariants)
+      // LOT A (É53) — les invariants du contrat de mutation sont fusionnés
+      // avec les invariants explicites : CONTENT_PRESERVED est réellement
+      // évalué sur le contenu persisté ; une violation déclenche le
+      // rollback automatique (le contenu initial est restauré).
+      const mergedInvariants = [
+        ...(options?.contract?.requiredInvariants ?? []),
+        ...(options?.invariants ?? [])
+      ];
       let revalidation;
       if (!dryRun) {
         revalidation = verifyPostMutationState(
@@ -373,7 +392,7 @@ export class MutationOrchestratorService {
           this.fileSource,
           this.codeIntelService,
           this.semanticGraphService,
-          { invariants: options?.invariants, requestId }
+          { invariants: mergedInvariants.length > 0 ? mergedInvariants : options?.invariants, requestId }
         );
       }
 

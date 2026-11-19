@@ -93,8 +93,12 @@ describe('V7 — préparation moteur dans le flux stream', () => {
       'la mesure du brief doit être exposée dans la préparation et dans done'
     );
     assert.ok(
-      source.includes('memory: preparedTurn?.projectMemory'),
-      'la mémoire projet préparée doit alimenter la décision'
+      source.includes('const decisionMemory = preparedTurn?.projectMemory'),
+      'la mémoire projet préparée doit alimenter la décision (primée sur le repli réel)'
+    );
+    assert.ok(
+      source.includes('memory: decisionMemory'),
+      'la décision reçoit la mémoire préparée (avec repli realProjectMemory)'
     );
     assert.ok(
       source.includes('memoryRisks: decisionSummary.memory?.matchedRisks.length'),

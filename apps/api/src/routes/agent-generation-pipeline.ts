@@ -136,6 +136,8 @@ interface ChainStepParams {
   projectId: string;
   userRole: Role;
   requestId: string;
+  /** É53 LOT E4.1 — signal du tour, transmis à orchestrator.executeAgent. */
+  signal?: AbortSignal | undefined;
 }
 
 type ChainStepOutcome = AgentChainStepReport & { text: string };
@@ -154,6 +156,11 @@ async function runChainStep(orchestrator: AIOrchestratorService, params: ChainSt
     text: ''
   };
   try {
+    // É53 LOT E4.1 — CORRECTION B : annulation armée → AUCUN appel agent ne
+    // démarre (la pas est refusé honnêtement ; la chaîne s'arrête ensuite).
+    if (params.signal?.aborted === true) {
+      return { ...base, note: 'abandon (annulation acceptée) — aucun appel lancé' };
+    }
     const executionId = `agc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const task: AgentTask = {
       id: `task-${executionId}`,
@@ -190,7 +197,11 @@ async function runChainStep(orchestrator: AIOrchestratorService, params: ChainSt
       projectId: params.projectId,
       userRole: params.userRole,
       requestId: params.requestId,
-      dryRun: true
+      dryRun: true,
+      // É53 LOT E4.1 — CORRECTION B : le MÊME signal atteint l'agent (points
+      // É35 → base-agent → transport). Résultat tardif jamais appliqué
+      // (dryRun : aucune mutation de toute façon).
+      ...(params.signal !== undefined ? { signal: params.signal } : {})
     });
     const result = outcome.result;
     const durationMs = result ? (result.durationMs || (Date.now() - startedAt)) : (Date.now() - startedAt);
@@ -238,6 +249,23 @@ export interface AgentGenerationPipelineInput {
   userPrompt: string;
   isModificationMode: boolean;
   currentHtml: string;
+  /**
+   * É49-C1 — contraintes/interdictions actives de la session (intent du tour
+   * + mémoire projet persistée, dédupliquées par la route). Optionnel
+   * (rétrocompatible) : absent → descriptions STRICTEMENT identiques à
+   * l'historique. Présent → bloc INTERDICTIONS STRICTES ajouté aux trois
+   * descriptions (UI, Backend, Sécurité).
+   */
+  constraints?: readonly string[];
+  /**
+   * É53 LOT E4.1 — CORRECTION B : signal de cancellation du tour /stream
+   * (armé par E1/E2/E3 uniquement : annulation utilisateur acceptée ou
+   * déconnexion client). Observé AVANT chaque étape et transmis à chaque
+   * executeAgent → base-agent → transport. Aucun nouvel AbortController :
+   * c'est le MÊME signal, observé ; les travaux en attente ne démarrent
+   * jamais après annulation.
+   */
+  signal?: AbortSignal | undefined;
   /** Callback par étape terminée (frames SSE 'on_agent_step'). */
   onStep?: (report: AgentChainStepReport) => void;
 }
@@ -265,14 +293,43 @@ export async function runAgentGenerationPipeline(input: AgentGenerationPipelineI
     return { ok: false, text: '', steps: [], reason: 'orchestrateur-non-configure' };
   }
 
+  // É53 LOT E4.1 — CORRECTION B : annulation déjà armée → la chaîne ne
+  // démarre pas du tout (ni l'appel direct de repli : l'issue du tour reste
+  // l'arbitrage E1/E2, frame ⏹ unique via les catches E3 de la route).
+  if (input.signal?.aborted === true) {
+    const err = new Error('Chaîne d agents interrompue : annulation acceptée avant le démarrage.');
+    err.name = 'AbortError';
+    throw err;
+  }
+
   const planRecap = input.planSteps.length > 0
     ? input.planSteps.map((step: string, index: number) => `${index + 1}. ${step}`).join('\n')
     : '(plan vide)';
+  // É49-C1 — bloc d'interdictions utilisateur, identique pour les trois
+  // agents. Vide quand aucune contrainte (descriptions inchangées —
+  // non-régression stricte).
+  const constraintBlock = (input.constraints ?? []).length > 0
+    ? `\nINTERDICTIONS STRICTES DE L'UTILISATEUR (à respecter à la lettre, aucune exception) :\n` +
+      (input.constraints ?? []).map((c) => `- ${c}`).join('\n') + `\n\n`
+    : '';
+
+  // É53 LOT E4.1 — CORRECTION B : entre deux étapes, une annulation armée
+  // ARRÊTE la chaîne immédiatement (les travaux en attente ne démarrent
+  // jamais après annulation). L'erreur d'abandon est rejetée telle quelle —
+  // les catches E3 de la route la classent (⏹ unique, arbitrage E1/E2).
+  const assertNotAborted = (): void => {
+    if (input.signal?.aborted === true) {
+      const err = new Error('Chaîne d agents interrompue : annulation acceptée.');
+      err.name = 'AbortError';
+      throw err;
+    }
+  };
 
   // ============ ÉTAPE 3 — AGENT UI (génère l'interface) ============
   const uiDescription = (input.isModificationMode
     ? `Agent UI — MODIFICATION d'une page existante.\nDemande de l'utilisateur : ${input.userMessage}\nIntention classifiée : ${input.intentCategory}.\nPlan d'architecture prévu :\n${planRecap}\n\nCONTEXTE HTML ACTUEL :\n\`\`\`html\n${input.currentHtml}\n\`\`\`\n\n`
     : `Agent UI — CRÉATION d'une page.\nDemande de l'utilisateur : ${input.userMessage}\nIntention classifiée : ${input.intentCategory}.\nPlan d'architecture prévu :\n${planRecap}\n\n`) +
+    constraintBlock +
     `Ta sortie DOIT être le flux complet du Studio, au format EXACT suivant (aucune note d'analyse) :\n` +
     `<!-- DESIGN_DNA: {"palette":{"bg":"#hex","fg":"#hex","accent":"#hex"},"font":"Polie Google Fonts","mode":"light"} -->\n` +
     `<!-- PAGE_TITLE: nom réel du site -->\n` +
@@ -285,6 +342,7 @@ export async function runAgentGenerationPipeline(input: AgentGenerationPipelineI
     `INTERDICTION ABSOLUE : aucune enveloppe de document — PAS de <!DOCTYPE html>, PAS de <html>, <head> ou <body>. Uniquement la narration + les blocs <SECTION>.\n\n` +
     `CONTEXTE PRODUIT COMPLET (demande détaillée) :\n${input.userPrompt}`;
 
+  assertNotAborted();
   input.onStep?.(stepWorking('ui', 'agent-ui-specialist'));
   const uiStep = await runChainStep(orchestrator, {
     agentId: 'agent-ui-specialist',
@@ -295,9 +353,13 @@ export async function runAgentGenerationPipeline(input: AgentGenerationPipelineI
     tenantId: input.tenantId,
     projectId: input.projectId,
     userRole: input.userRole,
-    requestId: input.requestId
+    requestId: input.requestId,
+    signal: input.signal
   });
   input.onStep?.(reportOf(uiStep));
+  // É53 LOT E4.1 — annulation armée pendant l'étape UI → ARRÊT immédiat
+  // (aucune étape Backend/Sécurité, aucun repli direct).
+  assertNotAborted();
   if (uiStep.status !== 'ok' || !hasSectionMarker(uiStep.text)) {
     const reason = uiStep.status !== 'ok'
       ? `agent-UI-${uiStep.status}${uiStep.note ? ' : ' + uiStep.note : ''}`
@@ -317,9 +379,11 @@ export async function runAgentGenerationPipeline(input: AgentGenerationPipelineI
     `Demande initiale de l'utilisateur : ${input.userMessage}\n\n` +
     `Flux HTML reçu (contractuel : DESIGN_DNA + narration + blocs <SECTION name="...">...</SECTION>) :\n\`\`\`\n${bestFlow}\n\`\`\`\n\n` +
     `Ton rôle : câbler les interactions RÉELLES demandées — formulaires validés, états (loading/erreur), filtres/onglets, appels fetch locaux simulés, données de démonstration cohérentes — SANS changer le design, la narration, les marqueurs ni l'ordre des sections.\n` +
+    constraintBlock +
     `Renvoie le flux COMPLET (toutes les sections), au MÊME format, sans aucune note d'analyse.\n` +
     `INTERDICTION ABSOLUE : aucune enveloppe — PAS de <!DOCTYPE html>, PAS de <html>, <head> ou <body>.`;
 
+  assertNotAborted();
   input.onStep?.(stepWorking('backend', 'agent-backend-specialist'));
   const backendStep = await runChainStep(orchestrator, {
     agentId: 'agent-backend-specialist',
@@ -330,9 +394,12 @@ export async function runAgentGenerationPipeline(input: AgentGenerationPipelineI
     tenantId: input.tenantId,
     projectId: input.projectId,
     userRole: input.userRole,
-    requestId: input.requestId
+    requestId: input.requestId,
+    signal: input.signal
   });
   input.onStep?.(reportOf(backendStep));
+  // É53 LOT E4.1 — annulation armée pendant l'étape Backend → ARRÊT immédiat.
+  assertNotAborted();
   if (backendStep.text.length >= MIN_FLOW_LENGTH && hasSectionMarker(backendStep.text)) {
     bestFlow = backendStep.text;
   }
@@ -343,10 +410,12 @@ export async function runAgentGenerationPipeline(input: AgentGenerationPipelineI
   const securityDescription = `Agent Sécurité — VÉRIFICATION du flux HTML final avant livraison.\n` +
     `Demande initiale de l'utilisateur : ${input.userMessage}\n\n` +
     `Flux HTML à vérifier :\n\`\`\`\n${bestFlow}\n\`\`\`\n\n` +
-    `Vérifie : XSS (innerHTML sur données externes sans escape), secrets ou jetons exposés dans le code, appels réseau vers des tiers non justifiés, évaluations dynamiques (eval/new Function), formulaires sans validation minimale, pièges d'accessibilité critiques.\n` +
+    `Vérifie : XSS (innerHTML sur données externes sans escape), secrets ou jetons exposés dans le code, appels réseau vers des tiers non justifiés, évaluations dynamiques (eval/new Function), formulaires sans validation minimale, pièges d'accessibilité critiques, ET chaque interdiction de l'utilisateur listée ci-dessous.\n` +
+    constraintBlock +
     `CORRIGE ce qui doit l'être ET RENVOIE LE FLUX COMPLET CORRIGÉ au MÊME format (aucune note d'analyse). Si tout est sain, renvoie le flux À L'IDENTIQUE.\n` +
     `INTERDICTION ABSOLUE : aucune enveloppe — PAS de <!DOCTYPE html>, PAS de <html>, <head> ou <body>.`;
 
+  assertNotAborted();
   input.onStep?.(stepWorking('securite', 'agent-security-specialist'));
   const securityStep = await runChainStep(orchestrator, {
     agentId: 'agent-security-specialist',
@@ -357,9 +426,12 @@ export async function runAgentGenerationPipeline(input: AgentGenerationPipelineI
     tenantId: input.tenantId,
     projectId: input.projectId,
     userRole: input.userRole,
-    requestId: input.requestId
+    requestId: input.requestId,
+    signal: input.signal
   });
   input.onStep?.(reportOf(securityStep));
+  // É53 LOT E4.1 — annulation armée pendant l'étape Sécurité → ARRÊT immédiat.
+  assertNotAborted();
   if (securityStep.text.length >= MIN_FLOW_LENGTH && hasSectionMarker(securityStep.text)) {
     bestFlow = securityStep.text;
   } else if (securityStep.text.trim().length > 0) {

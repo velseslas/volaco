@@ -112,19 +112,40 @@ async function handleBatch(
       };
     });
     logger.info('Batch multi-agents demandé (ÉTAPE 37)', { component: 'agent-execution-route', executionId, tenantId: context.tenantId, projectId, tasks: tasks.length, maxConcurrency: body.maxConcurrency });
-    const outcome = await orchestratorRef.executeBatch({
-      executionId,
-      tenantId: context.tenantId,
-      projectId,
-      tasks,
-      ...(body.maxConcurrency !== undefined ? { maxConcurrency: body.maxConcurrency } : {}),
-      repairPolicy: body.repair === true ? { enabled: true, maxAttempts: 1 } : undefined,
-      userRole: context.role,
-      requestId
-    });
-    logger.info('Batch multi-agents terminé (ÉTAPE 37)', { component: 'agent-execution-route', executionId, status: outcome.status, counts: outcome.counts });
-    sendJson(res, 200, { outcome, requestId });
-    return true;
+    // É53 LOT E4.2 — CORRECTION F1 (audit G1) : contrôleur de REQUÊTE
+    // (pattern E3/E4.1 A2 déjà validé). Seule source d'annulation honnête
+    // sur cette route : la DÉCONNEXION CLIENT — armé tant que la réponse
+    // n'est pas terminée (writableEnded guard : une réponse COMPLÈTE et
+    // close normale ne fait PAS abort) ; jamais partagé avec une autre
+    // requête (créé ici, portée de la requête) ; distinct des timeouts
+    // techniques des adapters. Aucune nouvelle autorité d'annulation
+    // globale : le signal descend via le contrat MultiAgentSchedulerRequest
+    // existant (scheduler É37 l.62/257, déjà testé U7-U9) jusqu'à chaque
+    // agent. Le listener est TOUJOURS retiré (finally), y compris sur
+    // exception.
+    const batchAbortController = new AbortController();
+    const onBatchGone = (): void => {
+      if (!res.writableEnded) batchAbortController.abort();
+    };
+    res.once('close', onBatchGone);
+    try {
+      const outcome = await orchestratorRef.executeBatch({
+        executionId,
+        tenantId: context.tenantId,
+        projectId,
+        tasks,
+        ...(body.maxConcurrency !== undefined ? { maxConcurrency: body.maxConcurrency } : {}),
+        repairPolicy: body.repair === true ? { enabled: true, maxAttempts: 1 } : undefined,
+        userRole: context.role,
+        requestId,
+        signal: batchAbortController.signal
+      });
+      logger.info('Batch multi-agents terminé (ÉTAPE 37)', { component: 'agent-execution-route', executionId, status: outcome.status, counts: outcome.counts });
+      sendJson(res, 200, { outcome, requestId });
+      return true;
+    } finally {
+      res.off('close', onBatchGone);
+    }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     const statusCode = message.includes('DAG_INVALID') || message.includes('AGENT_UNKNOWN') || message.includes('CAPABILITY_UNSUPPORTED') ? 400 : 500;
@@ -354,6 +375,19 @@ export async function handleAgentExecutionRoutes(
     tenantId: context.tenantId, projectId, agentId: body.agentId, executionId, operation, targetFiles
   });
 
+  // É53 LOT E4.2 — CORRECTION F1 (audit G1) : contrôleur de REQUÊTE
+  // (pattern E3/E4.1 A2 déjà validé, identique à /conversation …/execute).
+  // Seule source d'annulation honnête : la DÉCONNEXION CLIENT — armé tant
+  // que la réponse n'est pas terminée (writableEnded guard) ; jamais
+  // partagé avec une autre requête ; distinct des timeouts techniques des
+  // adapters. Le signal descend via le contrat AgentExecutionRequest
+  // existant (agent-execution.ts l.399, déjà testé E4.1) jusqu'à l'appel
+  // LLM de l'agent. Listener TOUJOURS retiré (finally).
+  const executeAbortController = new AbortController();
+  const onExecuteGone = (): void => {
+    if (!res.writableEnded) executeAbortController.abort();
+  };
+  res.once('close', onExecuteGone);
   try {
     const outcome = await orchestratorRef.executeAgent({
       executionId,
@@ -365,7 +399,8 @@ export async function handleAgentExecutionRoutes(
       userRole: context.role,
       requestId,
       dryRun: body.dryRun === true,
-      repairPolicy: body.repair === true ? { enabled: true, maxAttempts: 1 } : undefined
+      repairPolicy: body.repair === true ? { enabled: true, maxAttempts: 1 } : undefined,
+      signal: executeAbortController.signal
     });
     logger.info('Exécution d agent terminée (ÉTAPE 32)', {
       component: 'agent-execution-route',
@@ -380,5 +415,7 @@ export async function handleAgentExecutionRoutes(
     logger.warn('Echec exécution d agent', { component: 'agent-execution-route', error: message, requestId });
     sendJson(res, 500, { message: 'Erreur exécution agent: ' + message, requestId });
     return true;
+  } finally {
+    res.off('close', onExecuteGone);
   }
 }

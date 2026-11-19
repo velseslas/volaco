@@ -15,6 +15,7 @@
 
 import { aiUsageTracker, MODEL_PRICING } from '../usage.js';
 import {
+  AIProviderAbortedError,
   AIProviderAdapter,
   AIProviderAuthError,
   AIProviderDescriptor,
@@ -124,14 +125,25 @@ export class OpenAICompatibleProviderAdapter implements AIProviderAdapter {
     }
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    // É53 LOT E3 — CORRECTION B : l'origine de l'abandon est tracée (timeout
+    // technique interne ≠ abandon externe demandé par l'appelant).
+    let abortSource: 'timeout' | 'external' | null = null;
+    const timer = setTimeout(() => {
+      if (controller.signal.aborted) return;
+      abortSource = 'timeout';
+      controller.abort();
+    }, timeoutMs);
     if (request.signal?.aborted) {
       clearTimeout(timer);
       const aborted = new Error(`Appel ${providerId} interrompu : client abandonné.`);
       aborted.name = 'AbortError';
       throw aborted;
     }
-    request.signal?.addEventListener('abort', () => controller.abort(), { once: true });
+    request.signal?.addEventListener('abort', () => {
+      if (controller.signal.aborted) return;
+      abortSource = 'external';
+      controller.abort();
+    }, { once: true });
     const startTime = Date.now();
 
     aiUsageTracker.recordAttempt({
@@ -241,6 +253,10 @@ export class OpenAICompatibleProviderAdapter implements AIProviderAdapter {
       if (err instanceof AIProviderError || err instanceof AIProviderAuthError) {
         throw err;
       }
+      // É53 LOT E3 — CORRECTION B : abandon demandé par l'appelant ≠ timeout.
+      if (abortSource === 'external') {
+        throw new AIProviderAbortedError(providerId, request.requestId);
+      }
       if (err instanceof Error && (err.name === 'AbortError' || err.message.includes('abort'))) {
         throw new AIProviderTimeoutError(providerId, timeoutMs, request.requestId);
       }
@@ -298,7 +314,30 @@ export class OpenAICompatibleProviderAdapter implements AIProviderAdapter {
     messages.push({ role: 'user', content: request.prompt });
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    // É53 LOT E3 — CORRECTION A/B : le contrôleur interne reste un TIMEOUT
+    // technique ; un abandon EXTERNE (signal d'appelant) coupe le transport
+    // réel et est classé à part (jamais un timeout, jamais une erreur LLM).
+    let abortSource: 'timeout' | 'external' | null = null;
+    const timer = setTimeout(() => {
+      if (controller.signal.aborted) return;
+      abortSource = 'timeout';
+      controller.abort();
+    }, timeoutMs);
+    // É53 LOT E3 — signal d'appelant déjà consommé avant l'appel : aucun
+    // réseau n'est déclenché, l'abandon est immédiat et classé comme tel.
+    if (request.signal?.aborted) {
+      clearTimeout(timer);
+      throw new AIProviderAbortedError(providerId, request.requestId);
+    }
+    if (request.signal) {
+      request.signal.addEventListener('abort', () => {
+        if (controller.signal.aborted) return;
+        abortSource = 'external';
+        controller.abort();
+      }, { once: true });
+    }
+    // É53 LOT E3 — lecteur hoisté pour libération systématique en finally.
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
     try {
       const response = await this.fetchFn(endpoint, {
@@ -330,10 +369,11 @@ export class OpenAICompatibleProviderAdapter implements AIProviderAdapter {
         throw new AIProviderError(errMessage, providerId, response.status, request.requestId);
       }
 
-      const reader = response.body?.getReader();
-      if (!reader) {
+      const bodyReader = response.body?.getReader();
+      if (!bodyReader) {
         throw new AIProviderError(`Réponse ${providerId} sans flux lisible`, providerId, 502, request.requestId);
       }
+      reader = bodyReader;
       const decoder = new TextDecoder();
       let buffer = '';
       let finished = false;
@@ -361,6 +401,12 @@ export class OpenAICompatibleProviderAdapter implements AIProviderAdapter {
         }
       }
     } catch (err: unknown) {
+      // É53 LOT E3 — CORRECTION B : abandon demandé par l'appelant ≠ échec
+      // ni timeout ; classé AIProviderAbortedError, jamais transformé en
+      // erreur LLM ordinaire par l'appelant.
+      if (abortSource === 'external') {
+        throw new AIProviderAbortedError(providerId, request.requestId);
+      }
       if (err instanceof AIProviderError || err instanceof AIProviderAuthError) {
         throw err;
       }
@@ -372,6 +418,15 @@ export class OpenAICompatibleProviderAdapter implements AIProviderAdapter {
       throw new AIProviderError(`Erreur de streaming ${this.config.providerName} : ${sanitized}`, providerId, 500, request.requestId);
     } finally {
       clearTimeout(timer);
+      // É53 LOT E3 — CORRECTION A : libération du lecteur (transport détruit)
+      // même quand le consommateur a quitté la boucle avant l'épuisement.
+      if (reader) {
+        try {
+          await reader.cancel();
+        } catch {
+          // transport déjà coupé (abandon, erreur réseau) — rien à faire
+        }
+      }
     }
   }
 }

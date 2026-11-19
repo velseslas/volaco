@@ -160,3 +160,33 @@ export class AIProviderTimeoutError extends AppError {
     this.name = 'AIProviderTimeoutError';
   }
 }
+
+/**
+ * É53 LOT E3 — CORRECTION B : abandon DEMANDÉ par l'appelant. Le signal fourni
+ * dans `AIProviderGenerateRequest.signal` (annulation utilisateur acceptée ou
+ * déconnexion client) a coupé le transport HTTP en cours.
+ *
+ * Distinctions obligatoires :
+ * - ce n'est PAS un timeout (délai technique interne de l'adapter) ;
+ * - ce n'est PAS une erreur réseau ni une erreur fournisseur ;
+ * - l'appelant ne doit JAMAIS le transformer en erreur LLM ordinaire ni en
+ *   réponse finale : l'issue du tour appartient à l'arbitrage E1/E2.
+ *
+ * 499 = convention « client closed request » : l'appelant a fermé la
+ * connexion, le fournisseur n'est pas en faute.
+ */
+export class AIProviderAbortedError extends AppError {
+  constructor(
+    public readonly providerId: string,
+    requestId?: string | undefined
+  ) {
+    super(
+      `[AI Provider: ${providerId}] Appel interrompu par l'appelant (annulation acceptée ou déconnexion client).`,
+      'INTERNAL_ERROR',
+      499,
+      { providerId },
+      requestId
+    );
+    this.name = 'AIProviderAbortedError';
+  }
+}

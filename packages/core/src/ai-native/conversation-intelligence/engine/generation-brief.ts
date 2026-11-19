@@ -58,7 +58,16 @@ export function buildEngineeringBrief(prepared: PreparedTurn): string {
         const files = step.targetFiles && step.targetFiles.length > 0
           ? ` -> ${step.targetFiles.map(neutralize).join(', ')}`
           : '';
-        return `${step.stepIndex}. [${step.operation}] ${neutralize(step.title)}${files}`;
+        // É40 — représentation explicite des capacités requises et des
+        // dépendances déclarées (uniquement si présentes : les plans sans
+        // capability/dépendance produisent exactement le rendu historique).
+        const capabilities = step.requiredCapabilities && step.requiredCapabilities.length > 0
+          ? ` [${step.requiredCapabilities.map(neutralize).join(', ')}]`
+          : '';
+        const dependencies = step.dependsOn && step.dependsOn.length > 0
+          ? ` (dépend de: ${step.dependsOn.join(', ')})`
+          : '';
+        return `${step.stepIndex}. [${step.operation}] ${neutralize(step.title)}${files}${capabilities}${dependencies}`;
       });
     sections.push(`PLAN PRÉPARÉ\n${neutralize(prepared.plan.title)}\n${steps.join('\n')}`);
   }

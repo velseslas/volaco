@@ -5,6 +5,7 @@
 
 import { aiUsageTracker } from '../usage.js';
 import {
+  AIProviderAbortedError,
   AIProviderAdapter,
   AIProviderAuthError,
   AIProviderDescriptor,
@@ -78,7 +79,14 @@ export class GeminiProviderAdapter implements AIProviderAdapter {
     contents.push({ role: 'user', parts: [{ text: request.prompt }] });
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    // É53 LOT E3 — CORRECTION B : l'origine de l'abandon est tracée (timeout
+    // technique interne ≠ abandon externe demandé par l'appelant).
+    let abortSource: 'timeout' | 'external' | null = null;
+    const timer = setTimeout(() => {
+      if (controller.signal.aborted) return;
+      abortSource = 'timeout';
+      controller.abort();
+    }, timeoutMs);
     // P0-masse n°3 — abandon client : coupe l'appel réseau en cours.
     if (request.signal?.aborted) {
       clearTimeout(timer);
@@ -86,7 +94,11 @@ export class GeminiProviderAdapter implements AIProviderAdapter {
       aborted.name = 'AbortError';
       throw aborted;
     }
-    request.signal?.addEventListener('abort', () => controller.abort(), { once: true });
+    request.signal?.addEventListener('abort', () => {
+      if (controller.signal.aborted) return;
+      abortSource = 'external';
+      controller.abort();
+    }, { once: true });
     const startTime = Date.now();
 
     // É48 P4 (J-6) — l'attempt est visible dès le démarrage de l'appel
@@ -191,6 +203,10 @@ export class GeminiProviderAdapter implements AIProviderAdapter {
       if (err instanceof AIProviderError || err instanceof AIProviderAuthError) {
         throw err;
       }
+      // É53 LOT E3 — CORRECTION B : abandon demandé par l'appelant ≠ timeout.
+      if (abortSource === 'external') {
+        throw new AIProviderAbortedError('gemini', request.requestId);
+      }
       if (err instanceof Error && (err.name === 'AbortError' || err.message.includes('abort'))) {
         throw new AIProviderTimeoutError('gemini', timeoutMs, request.requestId);
       }
@@ -241,15 +257,30 @@ export class GeminiProviderAdapter implements AIProviderAdapter {
     }
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    // É53 LOT E3 — CORRECTION A/B : le contrôleur interne reste un TIMEOUT
+    // technique (120 s par défaut) ; un abandon EXTERNE (signal d'appelant :
+    // annulation utilisateur acceptée ou déconnexion client) coupe le
+    // transport réel et est classé à part (jamais un timeout).
+    let abortSource: 'timeout' | 'external' | null = null;
+    const timer = setTimeout(() => {
+      if (controller.signal.aborted) return;
+      abortSource = 'timeout';
+      controller.abort();
+    }, timeoutMs);
+    // É53 LOT E3 — signal d'appelant déjà consommé avant l'appel : aucun
+    // réseau n'est déclenché, l'abandon est immédiat et classé comme tel.
     if (request.signal?.aborted) {
       clearTimeout(timer);
-      const aborted = new Error('Appel Gemini interrompu : client abandonné.');
-      aborted.name = 'AbortError';
-      throw aborted;
+      throw new AIProviderAbortedError('gemini', request.requestId);
     }
-    request.signal?.addEventListener('abort', () => controller.abort(), { once: true });
+    request.signal?.addEventListener('abort', () => {
+      if (controller.signal.aborted) return;
+      abortSource = 'external';
+      controller.abort();
+    }, { once: true });
 
+    // É53 LOT E3 — lecteur hoisté pour libération systématique en finally.
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
     let streamUsage: { promptTokens: number; completionTokens: number } | null = null;
     let terminalEmitted = false;
     const recordTerminalSuccess = (): void => {
@@ -327,7 +358,7 @@ export class GeminiProviderAdapter implements AIProviderAdapter {
         };
       }
 
-      const reader = response.body.getReader();
+      reader = response.body.getReader();
       const decoder = new TextDecoder('utf-8');
       let buffer = '';
 
@@ -375,6 +406,21 @@ export class GeminiProviderAdapter implements AIProviderAdapter {
         recordTerminalSuccess();
       }
     } catch (err: unknown) {
+      // É53 LOT E3 — CORRECTION B : abandon demandé par l'appelant ≠ échec.
+      // Terminal ABORTED (coût 0), jamais ERROR, jamais SUCCESS.
+      if (abortSource === 'external') {
+        terminalEmitted = true;
+        aiUsageTracker.recordAttempt({
+          tenantId: request.tenantId,
+          projectId: request.projectId,
+          model,
+          provider: 'gemini',
+          requestId: request.requestId ?? 'req-unknown',
+          kind: 'ABORTED',
+          error: 'abandon demandé par l appelant (annulation acceptée ou déconnexion client)'
+        });
+        throw new AIProviderAbortedError('gemini', request.requestId);
+      }
       const rawErr = err instanceof Error ? err.message : String(err);
       aiUsageTracker.recordAttempt({
         tenantId: request.tenantId,
@@ -397,6 +443,15 @@ export class GeminiProviderAdapter implements AIProviderAdapter {
       throw new AIProviderError(`Erreur de streaming Gemini: ${sanitized}`, 'gemini', 500, request.requestId);
     } finally {
       clearTimeout(timer);
+      // É53 LOT E3 — CORRECTION A : libération du lecteur (transport détruit)
+      // même quand le consommateur a quitté la boucle avant l'épuisement.
+      if (reader) {
+        try {
+          await reader.cancel();
+        } catch {
+          // transport déjà coupé (abandon, erreur réseau) — rien à faire
+        }
+      }
       if (!terminalEmitted) {
         aiUsageTracker.recordAttempt({
           tenantId: request.tenantId,

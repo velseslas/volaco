@@ -19,6 +19,9 @@ import { fileStore } from '../../../../packages/core/src/file-explorer/store.js'
 import { revisionStore } from '../../../../packages/core/src/model/revision-store.js';
 import { analyzeProjectVisual, computeCriticScore, truncationFinding } from './visual.js';
 import { runValidationChain } from './validation.js';
+// É50 — garde-fou d'exfiltration (P0 S8) : contrôle déterministe à la
+// frontière de persistance du HTML généré (stream + /turns).
+import { runExfiltrationGuard, describeExfiltrationBlocker } from './exfiltration-guard.js';
 import {
   runEngineeringPreflight,
   type EngineeringPreflightReport
@@ -30,6 +33,11 @@ import {
   type StreamMutationInput,
   type StreamMutationOutcome
 } from './stream-mutation.js';
+// É53 LOT B — contrat de remplacement pour les CRÉATIONS explicites (E48) :
+// `buildMutationContract` est importé de contract.ts (Lot A gelé — import
+// seul, aucune modification) pour construire un contrat scope « creation »
+// quand le client demande explicitement un site frais sur un projet existant.
+import { buildMutationContract } from '../../../../packages/core/src/ai-native/mutation-orchestrator/contract.js';
 import { aiProviderRegistry } from '../../../../packages/core/src/ai/providers/registry.js';
 import {
   preferredAiProvider,
@@ -464,6 +472,88 @@ export function resolveStreamImpactTargets(plan?: EngineeringPlan | undefined): 
 }
 
 /**
+ * LOT A-C2 — ASSAINISSEMENT D'UNE SECTION AU POINT DE PARSE (source unique).
+ *
+ * Le LLM émet parfois le HTML d'une section enveloppé dans un bloc Markdown
+ * (« ```html … ``` ») : les balises de code survivaient alors DANS le HTML
+ * persisté (constat T2 : une balise en fin de contenu de chaque section,
+ * recopiées puis IMITÉES à chaque tour) et des fermetures orphelines
+ * s'accumulaient en jonction (« \n```</div> »). Le nettoyage est fait UNE
+ * FOIS, à la finalisation de `currentSectionHtml`, pour que TOUS les
+ * chemins (modify/add/create et leurs replis) reçoivent un HTML propre via
+ * `serverSections` — jamais en supprimant après coup dans le fichier.
+ *
+ * Déterministe, borné, sans réécriture du contenu utile :
+ *   1. lignes de balises Markdown isolées (« ``` », « ```html ») supprimées ;
+ *   2. marqueurs de balise résiduels en jonction (« ```</div> ») : le
+ *      marqueur part, le HTML de la ligne reste ;
+ *   3. UN `</div>` final en excès retiré SEULEMENT si
+ *      fermetures − ouvertures === 1 (artefact de jonction) ;
+ *   4. enveloppe `<div data-section="…">` retirée SEULEMENT si elle couvre
+ *      tout le contenu (la fermeture appariée à son ouverture est la
+ *      DERNIÈRE balise div) et que le contenu est équilibré.
+ *
+ * Idempotent : passer deux fois ne change rien. Le HTML sain transite
+ * inchangé (aucune balise Markdown légitime n'existe dans du HTML).
+ */
+export function sanitizeSectionHtml(name: string, raw: string): string {
+  let html = (raw ?? '')
+    // 1. Lignes de balises isolées : « ``` », « ```html », « ```js »…
+    .replace(/^[ \t]*`{3,}[A-Za-z0-9_-]*[ \t]*\r?$/gm, '')
+    // 2. Marqueurs résiduels en jonction (« ```</div> ») : seul le marqueur
+    //    part, le HTML de la ligne reste.
+    .replace(/`{3,}/g, '')
+    .trim();
+  if (!html) return html;
+
+  const divBalance = (value: string): number =>
+    (value.match(/<\/div\b/gi)?.length ?? 0) - (value.match(/<div\b/gi)?.length ?? 0);
+
+  // 3. Une seule fermeture en excès (artefact de jonction) : on retire UN
+  //    `</div>` final, jamais plus, jamais un contenu utile.
+  if (divBalance(html) === 1) {
+    const closes = [...html.matchAll(/<\/div\b[^>]*>/gi)];
+    const last = closes[closes.length - 1];
+    if (last && last.index !== undefined) {
+      html = (html.slice(0, last.index) + html.slice(last.index + last[0].length)).trim();
+    }
+  }
+
+  // 4. Unwrap de l'enveloppe data-section : regex d'abord (nom de la section
+  //    en priorité, comme les anciens unwraps), puis contrôle EN PILE que
+  //    la fermeture appariée à l'ouverture d'enveloppe est bien la dernière
+  //    balise div (l'ancien unwrap aveugle coupait un `</div>` utile quand
+  //    le contenu se terminait par une balise).
+  const escapeRe = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const patterns: RegExp[] = [];
+  if (name) patterns.push(new RegExp(`^<div[^>]*data-section="${escapeRe(name)}"[^>]*>([\\s\\S]*)<\\/div>$`, 'i'));
+  patterns.push(/^<div[^>]*data-section="[^"]*"[^>]*>([\s\S]*)<\/div>$/i);
+  const spansEverything = (value: string): boolean => {
+    const tokens = [...value.matchAll(/<\/?div\b/gi)];
+    if (tokens.length === 0) return false;
+    let depth = 0;
+    for (let i = 0; i < tokens.length; i += 1) {
+      const token = tokens[i]![0].toLowerCase();
+      if (token.startsWith('</')) {
+        if (depth > 0) depth -= 1;
+        if (depth === 0) return i === tokens.length - 1;
+      } else {
+        depth += 1;
+      }
+    }
+    return false;
+  };
+  for (const pattern of patterns) {
+    const wrapMatch = pattern.exec(html);
+    if (wrapMatch && spansEverything(html)) {
+      html = (wrapMatch[1] ?? '').trim();
+      break;
+    }
+  }
+  return html;
+}
+
+/**
  * AUDIT PREVIEW — déduplication des blocs data-section : les générations
  * antérieures à la garde d'unicité ont pu accumuler des doublons
  * (footer ×3, header ×2 constatés en production). À chaque sauvegarde, la
@@ -500,27 +590,176 @@ export function dedupeSectionBlocks(html: string): string {
  * à partir de mesures réelles : comptes de sections, delta de lignes,
  * score du gate s'il a tourné, durée mesurée. Aucun chiffre inventé.
  */
+/**
+ * T7 (É53 LOT B) — synthèse finale STRUCTURÉE : autorité de vérité de la
+ * clôture. Le verdict ne repose plus sur l'annonce mais sur les faits :
+ *   success — les changements attendus ont été réellement persistés ;
+ *   partial — une écriture réelle a eu lieu mais incomplète (motifs exacts) ;
+ *   failure — RIEN n'a été persisté (aucun succès fictif).
+ * Les compteurs n'annoncent que les sections RÉELLEMENT changées
+ * (bytes modifiés via sectionDiffs[].applied) — jamais l'annonce du LLM.
+ */
+export interface StreamSynthesisResult {
+  readonly text: string;
+  readonly verdict: 'success' | 'partial' | 'failure';
+}
+
 export function buildFinalSynthesis(input: {
-  sections: Array<{ name: string; mode: string }>;
-  sectionDiffs: Array<{ added: number; removed: number }>;
+  verdict: 'success' | 'partial' | 'failure';
+  partialReasons?: ReadonlyArray<string> | undefined;
+  failureReason?: string | null | undefined;
+  sections: ReadonlyArray<{ readonly name: string; readonly mode: string; readonly changed: boolean }>;
+  sectionDiffs: ReadonlyArray<{ readonly applied: boolean; readonly added: number; readonly removed: number }>;
   gateScore: number | null;
+  gateAvailable: boolean;
   durationSec: number;
-}): string {
-  const created = input.sections.filter((s) => s.mode === 'create' || s.mode === 'add').length;
-  const modified = input.sections.filter((s) => s.mode === 'modify').length;
-  const deleted = input.sections.filter((s) => s.mode === 'delete').length;
-  const added = input.sectionDiffs.reduce((acc, d) => acc + d.added, 0);
-  const removed = input.sectionDiffs.reduce((acc, d) => acc + d.removed, 0);
+}): StreamSynthesisResult {
+  const appliedDiffs = input.sectionDiffs.filter((d) => d.applied);
+  const added = appliedDiffs.reduce((acc, d) => acc + d.added, 0);
+  const removed = appliedDiffs.reduce((acc, d) => acc + d.removed, 0);
+  const changedSections = input.sections.filter((s) => s.changed);
+  const created = changedSections.filter((s) => s.mode === 'create' || s.mode === 'add').length;
+  const modified = changedSections.filter((s) => s.mode === 'modify').length;
+  const deleted = changedSections.filter((s) => s.mode === 'delete').length;
+  if (input.verdict === 'failure') {
+    const reason = input.failureReason ? ` : ${input.failureReason}` : '';
+    return {
+      text: `Aucune écriture persistée${reason} · ${Math.max(1, input.durationSec)}s`,
+      verdict: 'failure'
+    };
+  }
   const bits: string[] = [];
   const actions: string[] = [];
   if (created) actions.push(`${created} section${created > 1 ? 's' : ''} construite${created > 1 ? 's' : ''}`);
   if (modified) actions.push(`${modified} modifiée${modified > 1 ? 's' : ''}`);
   if (deleted) actions.push(`${deleted} supprimée${deleted > 1 ? 's' : ''}`);
   bits.push(actions.length ? actions.join(' · ') : 'page assemblée');
+  if (input.verdict === 'partial') {
+    const reasons = (input.partialReasons ?? []).filter(Boolean);
+    bits.push(`PARTIEL${reasons.length ? ` : ${reasons.join(' ; ')}` : ''}`);
+  }
   if (added || removed) bits.push(`+${added} −${removed} lignes`);
   if (input.gateScore !== null) bits.push(`Quality Gate ${input.gateScore}/100`);
+  else if (!input.gateAvailable) bits.push('Quality Gate non évalué');
   bits.push(`${Math.max(1, input.durationSec)}s`);
-  return bits.join(' · ');
+  return { text: bits.join(' · '), verdict: input.verdict };
+}
+
+/**
+ * É53 LOT B — AUTORITÉ DE VÉRITÉ du flux /stream (audit §3-§4).
+ *
+ * Calcul DÉTERMINISTE du résultat final à partir des faits réellement
+ * disponibles — jamais de l'annonce, jamais de la longueur du HTML :
+ *
+ *   `updated` = true  ⟺ une écriture a réellement été persistée ET confirmée
+ *   par la vérification post-écriture (lecture à rebours du fichier, ou
+ *   confirmation du moteur + invariants CONTENT_PRESERVED). Ni le dépassement
+ *   de 100 caractères du HTML, ni `viaFallback`, ni la seule présence de
+ *   sections annoncées ne constituent une preuve de persistance.
+ *
+ *   `partial` : écriture réelle mais incomplète — sections demandées non
+ *   appliquées (cible introuvable) et/ou génération tronquée (dernière
+ *   section jamais fermée, non persistée). Le Quality Gate reste un signal
+ *   DISTINCT (qualité ≠ persistance) : un gate < seuil ou indisponible
+ *   n'ajoute ni ne retire de succès de persistance.
+ *
+ *   failure : rien persisté — zéro section exploitable, modification sans
+ *   aucun changement réellement appliqué, refus (contrat/plan/validation),
+ *   rollback, erreur ou annulation. Aucun succès fictif.
+ */
+export interface StreamTruthInput {
+  readonly isModificationMode: boolean;
+  /** Le bloc de persistance a réellement été tenté (changements exploitables). */
+  readonly attemptedPersistence: boolean;
+  /** Écriture orchestrée confirmée par le moteur (invariants post-écriture passés). */
+  readonly mutationApplied: boolean;
+  /** Repli direct tracé : écriture + lecture à rebours confirmée. */
+  readonly fallbackWritten: boolean;
+  /** Lecture à rebours : le fichier persisté correspond au contenu généré. */
+  readonly persistedVerified: boolean;
+  readonly persistenceError?: string | undefined;
+  /** Identifiant de la révision RÉELLEMENT créée (fait reporté, pas preuve). */
+  readonly revisionCreated: boolean;
+  readonly truncatedGeneration: boolean;
+  readonly gateEligible: boolean;
+  readonly gateResult: { readonly score: number; readonly passed: boolean } | null;
+  /** Sections fermées avec leur vérité par section. */
+  readonly sections: ReadonlyArray<{
+    readonly name: string;
+    readonly mode: string;
+    /** Bytes réellement changés dans le fichier. */
+    readonly changed: boolean;
+    /** Cible trouvée/section réellement livrée (écho identique = livrée sans changement). */
+    readonly delivered: boolean;
+  }>;
+  /** Au moins un changement attendu a pu être tenté (sinon rien à persister). */
+  readonly hasExploitableChange: boolean;
+}
+
+export interface StreamTruth {
+  readonly updated: boolean;
+  readonly verdict: 'success' | 'partial' | 'failure';
+  readonly partial: boolean;
+  readonly partialReasons: readonly string[];
+  readonly reason: string | null;
+  /** Persistance réelle mais qualité NON évaluée (gate indisponible). */
+  readonly gateUnavailable: boolean;
+  /** Fichiers réellement commis — établis depuis le parcours /stream réel. */
+  readonly committedFiles: ReadonlyArray<{ readonly taskId: string; readonly files: readonly string[] }>;
+  /** Cibles attendues sans aucune écriture réelle. */
+  readonly unmetFiles: ReadonlyArray<{ readonly taskId: string; readonly files: readonly string[] }>;
+}
+
+export function computeStreamTruth(input: StreamTruthInput): StreamTruth {
+  const persisted = !input.persistenceError
+    && input.attemptedPersistence
+    && input.persistedVerified
+    && (input.mutationApplied || input.fallbackWritten);
+  if (!persisted) {
+    let reason: string;
+    if (input.persistenceError) {
+      reason = `persistance refusée ou en échec (${input.persistenceError})`;
+    } else if (!input.attemptedPersistence) {
+      reason = !input.hasExploitableChange
+        ? (input.isModificationMode
+          ? 'aucune modification réellement appliquée à la cible demandée'
+          : 'aucune section exploitable générée')
+        : 'contenu généré sous le seuil d\'un document viable : aucune écriture tentée';
+    } else {
+      reason = 'écriture non confirmée par la vérification post-persistance';
+    }
+    return {
+      updated: false,
+      verdict: 'failure',
+      partial: false,
+      partialReasons: [],
+      reason,
+      gateUnavailable: false,
+      committedFiles: [],
+      unmetFiles: [{ taskId: 'stream', files: ['index.html'] }]
+    };
+  }
+  const partialReasons: string[] = [];
+  for (const section of input.sections) {
+    if (!section.delivered) {
+      partialReasons.push(`section « ${section.name} » (mode ${section.mode}) demandée mais non appliquée`);
+    }
+  }
+  if (input.truncatedGeneration) {
+    partialReasons.push('génération tronquée : la dernière section n\'a jamais été fermée et n\'a pas été persistée');
+  }
+  const partial = partialReasons.length > 0;
+  const gateUnavailable = input.gateEligible && input.gateResult === null;
+  return {
+    updated: true,
+    verdict: partial ? 'partial' : 'success',
+    partial,
+    partialReasons,
+    reason: null,
+    gateUnavailable,
+    committedFiles: [{ taskId: 'stream', files: ['index.html'] }],
+    unmetFiles: []
+  };
 }
 
 /**
@@ -1114,7 +1353,14 @@ async function regenerateFileForPlan(
   plan: EngineeringPlan,
   userMessage: string,
   entryFile = 'index.html',
-  clientApiKey?: string | undefined
+  clientApiKey?: string | undefined,
+  /**
+   * É53 LOT E4.1 — CORRECTION A : signal de la REQUÊTE /execute (armé
+   * uniquement sur déconnexion client — aucun tour E1/E2 ici). Transmis
+   * jusqu'au transport HTTP ; un abandon n'est jamais un échec LLM
+   * ordinaire et n'aboutit jamais à une écriture tardive.
+   */
+  signal?: AbortSignal | undefined
 ): Promise<{ updated: boolean; content?: string; error?: string }> {
   // Corrige un bug réel trouvé en testant : sans préférence explicite, le
   // registre pouvait choisir un fournisseur qui n'a pas de clé configurée
@@ -1155,7 +1401,7 @@ async function regenerateFileForPlan(
 
   try {
     const response = await adapter.generate(
-      { tenantId, projectId, prompt: userPrompt, systemPrompt, temperature: 0.2, maxTokens: 8192 },
+      { tenantId, projectId, prompt: userPrompt, systemPrompt, temperature: 0.2, maxTokens: 8192, ...(signal !== undefined ? { signal } : {}) },
       credentials
     );
     const html = extractHtmlBlock(response.text);
@@ -1171,9 +1417,48 @@ async function regenerateFileForPlan(
     const finalHtml = /<!DOCTYPE|<html[\s>]/i.test(html)
       ? extractDesignDna(html).cleaned
       : buildStudioShell(extractDesignDna(html).cleaned);
+    // É50 — garde-fou d'exfiltration : même contrôle déterministe que le flux
+    // streaming, exécuté à la frontière de persistance de ce second chemin
+    // d'écriture (/turns via regenerateFileForPlan). Refus par défaut :
+    // aucune écriture si un canal de transmission réseau non autorisé est
+    // détecté dans le HTML final candidat.
+    const exfiltrationReport = runExfiltrationGuard(finalHtml, entryFile);
+    logger.info('Garde-fou exfiltration exécuté sur le HTML candidat (/turns)', {
+      component: 'conversation-route',
+      tenantId,
+      projectId,
+      path: entryFile,
+      verdict: exfiltrationReport.verdict,
+      blockers: exfiltrationReport.blockers.length,
+      warnings: exfiltrationReport.warnings.length,
+      contentHash: exfiltrationReport.contentHash
+    });
+    if (!exfiltrationReport.passed) {
+      const reason = describeExfiltrationBlocker(exfiltrationReport);
+      logger.warn('Garde-fou exfiltration refusé : aucune écriture tentée (/turns)', {
+        component: 'conversation-route',
+        tenantId,
+        projectId,
+        path: entryFile,
+        blockers: exfiltrationReport.blockers
+      });
+      return { updated: false, error: reason };
+    }
+    // É53 LOT E4.1 — CORRECTION A : résultat TARDIF — si l'abandon a gagné
+    // pendant l'appel, AUCUNE écriture n'est tentée (jamais de mutation
+    // post-annulation, jamais de contenu que le client ne verra jamais).
+    if (signal?.aborted === true) {
+      return { updated: false, error: 'client_gone' };
+    }
     fileStore.saveFile(tenantId, projectId, entryFile, finalHtml);
     return { updated: true, content: finalHtml };
   } catch (error) {
+    // É53 LOT E4.1 — CORRECTION A : un abandon demandé par l'appelant
+    // (déconnexion client) n'est JAMAIS un échec LLM ordinaire : issue
+    // honnête, jamais un faux message d'erreur présenté à l'utilisateur.
+    if (signal?.aborted === true) {
+      return { updated: false, error: 'client_gone' };
+    }
     const message = error instanceof Error ? error.message : String(error);
     logger.warn("Échec de la régénération réelle du fichier après exécution du plan", {
       component: 'conversation-route',
@@ -1523,61 +1808,124 @@ export async function handleConversationRoutes(
     assertPermission(context.role, 'PROJECT_READ', requestId);
     const body = await parseJsonBody<{ entryFile?: string }>(req, requestId);
 
-    const result = await conversationIntelligenceService.executeApprovedPlan(
-      { tenantId: context.tenantId, projectId, sessionId },
-      context.role,
-      requestId
-    );
+    // É53 LOT E4.1 — CORRECTION A : contrôleur de REQUÊTE (PAS un tour
+    // E1/E2 : /execute n'a ni executionId ni route cancel). Seule source
+    // d'annulation honnête : la DÉCONNEXION CLIENT — armé tant que la
+    // réponse n'est pas terminée ; jamais par un refus ; jamais partagé
+    // avec un autre tour (créé ici, portée de la requête) ; distinct des
+    // timeouts techniques des adapters (source 'timeout' vs 'external').
+    // Le listener est retiré avant la réponse (chemin normal) ET sur toute
+    // sortie exception (finally E4.2 F3 — retrait garanti, plus de no-op
+    // résiduel après exception).
+    const executeAbortController = new AbortController();
+    const onExecuteGone = (): void => {
+      if (!res.writableEnded) executeAbortController.abort();
+    };
+    res.once('close', onExecuteGone);
 
-    // Étape concrète qui manquait : régénérer et enregistrer réellement le
-    // fichier du projet, pas seulement marquer le plan comme "exécuté".
-    // Renforcé après un signalement utilisateur : fileUpdate doit TOUJOURS
-    // contenir un message précis, jamais rester vide ni tomber sur un texte
-    // générique côté client qui masquerait la vraie cause.
-    let fileUpdate: { updated: boolean; content?: string; error?: string };
+    // É53 LOT E4.2 — CORRECTION F3 (audit G4) : retrait GARANTI du listener
+    // sur TOUTE sortie de ce bloc (finally ci-dessous) — y compris une
+    // exception levée par executeApprovedPlan (avant : retrait uniquement
+    // sur le chemin normal). Le signal reste armé tant que la réponse n'est
+    // pas terminée (déconnexion pendant la régénération signalée → abort,
+    // inchangé) ; le retrait d'un listener déjà détaché est un no-op Node
+    // (aucun double nettoyage dangereux) ; aucun contrat E4.1 modifié.
     try {
-      if (!result.executionResult.success) {
-        fileUpdate = {
-          updated: false,
-          error: `L'exécution du plan par le moteur conversationnel a échoué : ${result.executionResult.message || 'raison inconnue'}`
-        };
-      } else if (!result.session.activePlan) {
-        fileUpdate = {
-          updated: false,
-          error: "Aucun plan actif trouvé sur la session au moment de la régénération (le plan a peut-être déjà été traité ou la session a expiré)."
-        };
-      } else {
-        const lastTurn = result.session.turns[result.session.turns.length - 1];
-        const userMessage = lastTurn?.userMessage.content || result.session.activePlan.summary;
-        const clientApiKeyHeader = req.headers['x-mistral-api-key'];
-        const clientApiKey = typeof clientApiKeyHeader === 'string' && clientApiKeyHeader.trim().length > 0
-          ? clientApiKeyHeader.trim()
-          : undefined;
-        fileUpdate = await regenerateFileForPlan(
-          context.tenantId,
-          projectId,
-          result.session.activePlan,
-          userMessage,
-          body.entryFile || 'index.html',
-          clientApiKey
-        );
-      }
-    } catch (error) {
-      // Filet de sécurité absolu : même une erreur totalement inattendue ici
-      // (jamais anticipée) doit produire un message exploitable plutôt que de
-      // faire planter la requête ou de laisser fileUpdate vide.
-      const message = error instanceof Error ? error.message : String(error);
-      logger.warn("Erreur inattendue lors de la régénération après exécution du plan", {
-        component: 'conversation-route',
-        tenantId: context.tenantId,
-        projectId,
-        error: message
-      });
-      fileUpdate = { updated: false, error: `Erreur inattendue côté serveur : ${message}` };
-    }
+      const result = await conversationIntelligenceService.executeApprovedPlan(
+        { tenantId: context.tenantId, projectId, sessionId },
+        context.role,
+        requestId,
+        undefined,
+        executeAbortController.signal
+      );
 
-    sendJson(res, 200, { ...result, fileUpdate, requestId });
-    return true;
+      // Étape concrète qui manquait : régénérer et enregistrer réellement le
+      // fichier du projet, pas seulement marquer le plan comme "exécuté".
+      // Renforcé après un signalement utilisateur : fileUpdate doit TOUJOURS
+      // contenir un message précis, jamais rester vide ni tomber sur un texte
+      // générique côté client qui masquerait la vraie cause.
+      let fileUpdate: { updated: boolean; content?: string; error?: string };
+      try {
+        if (!result.executionResult.success) {
+          fileUpdate = {
+            updated: false,
+            error: `L'exécution du plan par le moteur conversationnel a échoué : ${result.executionResult.message || 'raison inconnue'}`
+          };
+        } else if (!result.session.activePlan) {
+          fileUpdate = {
+            updated: false,
+            error: "Aucun plan actif trouvé sur la session au moment de la régénération (le plan a peut-être déjà été traité ou la session a expiré)."
+          };
+        } else {
+          const lastTurn = result.session.turns[result.session.turns.length - 1];
+          const userMessage = lastTurn?.userMessage.content || result.session.activePlan.summary;
+          const clientApiKeyHeader = req.headers['x-mistral-api-key'];
+          const clientApiKey = typeof clientApiKeyHeader === 'string' && clientApiKeyHeader.trim().length > 0
+            ? clientApiKeyHeader.trim()
+            : undefined;
+          fileUpdate = await regenerateFileForPlan(
+            context.tenantId,
+            projectId,
+            result.session.activePlan,
+            userMessage,
+            body.entryFile || 'index.html',
+            clientApiKey,
+            executeAbortController.signal
+          );
+        }
+      } catch (error) {
+        // Filet de sécurité absolu : même une erreur totalement inattendue ici
+        // (jamais anticipée) doit produire un message exploitable plutôt que de
+        // faire planter la requête ou de laisser fileUpdate vide.
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn("Erreur inattendue lors de la régénération après exécution du plan", {
+          component: 'conversation-route',
+          tenantId: context.tenantId,
+          projectId,
+          error: message
+        });
+        fileUpdate = { updated: false, error: `Erreur inattendue côté serveur : ${message}` };
+      }
+
+      // É50 — si la régénération n'a pas réécrit le fichier (échec LLM, HTML
+      // identique, etc.), le HTML PERSISTÉ par l'agent routé reste la version
+      // livrée au Studio. Le même garde-fou s'applique à ce contenu effectif
+      // avant de le présenter : détection + trace d'audit, message honnête.
+      // (Quand updated === true, le candidat écrit a déjà été contrôlé par le
+      // garde-fou à l'intérieur de regenerateFileForPlan.)
+      if (fileUpdate.updated === false) {
+        try {
+          const execEntryFile = body.entryFile || 'index.html';
+          const persistedFile = fileStore.getFile(context.tenantId, projectId, execEntryFile);
+          const persistedHtml = persistedFile && typeof persistedFile.content === 'string' ? persistedFile.content : '';
+          if (persistedHtml.trim().length > 100) {
+            const postExecScan = runExfiltrationGuard(persistedHtml, execEntryFile);
+            if (!postExecScan.passed) {
+              logger.warn('Garde-fou exfiltration : contenu persisté par agent refusé (/execute)', {
+                component: 'conversation-route',
+                tenantId: context.tenantId,
+                projectId,
+                path: execEntryFile,
+                blockers: postExecScan.blockers
+              });
+              const priorCause = fileUpdate.error ? ` (régénération interrompue : ${fileUpdate.error})` : '';
+              fileUpdate = { updated: false, error: `${describeExfiltrationBlocker(postExecScan)}${priorCause}` };
+            }
+          }
+        } catch (postScanErr) {
+          logger.warn('Scan post-exécution du contenu persisté impossible (non bloquant)', {
+            component: 'conversation-route',
+            projectId,
+            error: postScanErr instanceof Error ? postScanErr.message : String(postScanErr)
+          });
+        }
+      }
+
+      sendJson(res, 200, { ...result, fileUpdate, requestId });
+      return true;
+    } finally {
+      res.off('close', onExecuteGone);
+    }
   }
 
   // =====================================================================
@@ -1611,7 +1959,42 @@ export async function handleConversationRoutes(
     // la consommation du stream LLM (sinon on continue de facturer des tokens
     // jusqu'à 120 s pour un socket mort) et on cesse d'écrire sur la réponse.
     let clientGone = false;
-    req.on('close', () => { clientGone = true; });
+    // É53 LOT E3 — CORRECTION A : AbortController PAR EXÉCUTION /stream.
+    // Un signal unique est associé au cycle de vie du tour ; il est transmis
+    // jusqu'au transport HTTP réellement utilisé par l'adapter streaming
+    // (`generateStream({ ..., signal })`). Déclenchements autorisés :
+    //   - annulation UTILISATEUR ACCEPTÉE (la route POST cancel pose le
+    //     drapeau `cancelled` — après son refus CAS B : jamais l'inverse) ;
+    //   - déconnexion CLIENT tant que la réponse n'est pas terminée.
+    // Jamais déclenché par un refus (CAS B) ; jamais partagé avec un autre
+    // tour (créé ici, dans la portée de la requête) ; distinct des timeouts
+    // techniques internes des adapters (source 'timeout' vs 'external').
+    const turnAbortController = new AbortController();
+    let turnAbortReason: 'user_cancel' | 'client_disconnect' | null = null;
+    const abortTurn = (reason: 'user_cancel' | 'client_disconnect'): void => {
+      if (turnAbortController.signal.aborted) return;
+      turnAbortReason = reason;
+      turnAbortController.abort();
+    };
+    const turnAbortedAs = (reason: 'user_cancel' | 'client_disconnect'): boolean =>
+      turnAbortController.signal.aborted && turnAbortReason === reason;
+    req.on('close', () => {
+      clientGone = true;
+    });
+    // É53 LOT E3 — CORRECTION A : la DÉCONNEXION CLIENT est détectée sur la
+    // ServerResponse (`res.on('close')`). Le corps de la requête POST est
+    // consommé (`parseJsonBody`) AVANT l'attachement du listener sur `req` :
+    // l'événement 'close' du message est déjà passé et ne détecte jamais la
+    // déconnexion. Sur la réponse : en fin NORMALE, `writableEnded` est
+    // déjà true (aucun abandon) ; en cas de socket détruit par le client,
+    // l'abandon du transport LLM est armé immédiatement.
+    res.on('close', () => {
+      // É53 LOT E3 — déconnexion client : interruption RÉELLE du transport
+      // LLM (coupe le socket vers le fournisseur), pas seulement la
+      // consommation. Si la réponse s'est terminée normalement, l'abandon
+      // n'a plus d'objet (aucun travail LLM en cours) : on n'abandonne pas.
+      if (!res.writableEnded) abortTurn('client_disconnect');
+    });
 
     // Fonction helper pour envoyer un event SSE formaté
     const sendSSE = (data: Record<string, unknown>): void => {
@@ -1745,7 +2128,71 @@ export async function handleConversationRoutes(
     const streamStartedAt = Date.now();
     // T5 (CDC §20) — annulation utilisateur réelle : la route cancel retourne
     // ce drapeau ; la boucle LLM le vérifie à chaque chunk et s'arrête net.
-    const cancelFlag = { cancelled: false };
+    // É53 LOT E2 — le drapeau porte AUSSI la preuve locale du CAS B
+    // (`persistenceVerified`, posée quand la lecture à rebours confirme
+    // l'écriture) : en télémétrie OFF il n'existe aucun record, la route
+    // POST cancel consulte donc CETTE preuve pour refuser honnêtement une
+    // annulation arrivée après une mutation déjà validée — la sémantique de
+    // l'arbitrage est identique dans les deux modes.
+    //
+    // É53 LOT E3 — CORRECTION A : `cancelled` est un ACCESSEUR. Le seul
+    // écrivain est la route POST /executions/:id/cancel (executions.ts,
+    // GELÉ E2), qui pose le drapeau APRÈS avoir refusé le CAS B
+    // (`hasPersistenceWon` / `persistenceVerified`) : une annulation refusée
+    // ne pose jamais le drapeau, donc n'abandonne jamais le transport.
+    // Une annulation ACCEPTÉE arme immédiatement l'abandon du transport LLM
+    // (`abortTurn('user_cancel')`) — la génération distante est coupée en
+    // plein appel, même si la boucle LLM est suspendue sur `reader.read()`.
+    // L'issue du tour reste ensuite l'arbitrage E1 (`cancelInterrupted`,
+    // GELÉ E2) : claim atomique + frame ⏹ unique, inchangés.
+    let cancelFlagCancelled = false;
+    const cancelFlag: { cancelled: boolean; persistenceVerified?: boolean } = {
+      get cancelled(): boolean {
+        return cancelFlagCancelled;
+      },
+      set cancelled(value: boolean) {
+        cancelFlagCancelled = value;
+        // CAS B ne passe JAMAIS ici (la route refuse avant de poser le
+        // drapeau). Si le client s'est déjà déconnecté, l'abandon a déjà été
+        // armé avec la raison 'client_disconnect' : le guard d'abortTurn
+        // préserve la raison honnête la plus ancienne.
+        if (value) abortTurn('user_cancel');
+      }
+    };
+    // É53 LOT E1 — la frame ⏹ n'est jamais émise deux fois pour un tour.
+    let cancelFrameEmitted = false;
+    // É53 LOT E2 — faits locaux de persistance, déclarés TÔT pour que le
+    // contrôle centralisé ci-dessous puisse y lire la preuve d'écriture
+    // (utile en télémétrie OFF, où le store ne porte pas l'arbitrage E1).
+    let attemptedPersistence = false;
+    let mutationApplied = false;
+    let fallbackWritten = false;
+    let persistedVerified = false;
+    // É53 LOT E2 — CORRECTION A : point de contrôle CENTRALISÉ de l'annulation.
+    // UNE seule logique de décision pour toute la route /stream — elle consomme
+    // l'arbitrage E1 (`cancelExecution` = point de linéarisation atomique du
+    // ExecutionEventStore, jamais réimplémenté ni doublonné), garantit que la
+    // frame ⏹ n'est jamais dupliquée, et refuse d'interrompre une mutation
+    // déjà validée :
+    //   - annulation gagnante (CAS A) → true : la progression s'arrête NET,
+    //     aucun done/closing/error « résultat normal » ne suivra ;
+    //   - persistance déjà gagnée (CAS B — arbitrage E1, ou preuve locale
+    //     d'écriture vérifiée en télémétrie OFF) → false : le tour suit sa
+    //     vérité réelle, sans interruption artificielle.
+    const cancelInterrupted = (): boolean => {
+      if (clientGone || !cancelFlag.cancelled) return false;
+      if (executionStore.hasPersistenceWon(executionId)) return false;
+      if (!recorder && persistedVerified) return false;
+      const claimWon = recorder
+        ? executionStore.cancelExecution(executionId, 'user_cancel')
+        : true;
+      if (!claimWon) return false;
+      if (!cancelFrameEmitted) {
+        cancelFrameEmitted = true;
+        sendSSE({ type: 'cancelled' });
+      }
+      return true;
+    };
     if (executionTimelineEnabled) {
       executionStore.startExecution({
         executionId,
@@ -1755,8 +2202,19 @@ export async function handleConversationRoutes(
         prompt: body.message || ''
       });
       recorder = new ExecutionRecorder(executionStore, executionId, sendSSE);
-      activeCancelFlags.set(executionId, cancelFlag);
     }
+    // É53 LOT E2 — CORRECTION B : l'annulation est un CONTRÔLE d'exécution,
+    // pas de la télémétrie. Le drapeau est enregistré SANS condition : même
+    // quand VOLACO_EXECUTION_TIMELINE=off (aucun record, aucune timeline),
+    // le POST /executions/:id/cancel trouve le drapeau et la route honore
+    // l'arrêt. Désactiver la collecte ne désactive jamais un contrôle.
+    activeCancelFlags.set(executionId, cancelFlag);
+    // É53 LOT E2 — CORRECTION B (suite) : hors télémétrie, les frames nues ne
+    // portent pas d'executionId (l'enrichissement vient du recorder) — le
+    // client ne pourrait JAMAIS savoir quoi annuler. L'id est donc porté
+    // explicitement par la frame `start` plus bas (redondant avec
+    // l'enrichissement recorder quand il est actif, strictement nécessaire
+    // sinon).
     // BLOC 1 — flag pour éviter boucle infinie de retry gate
     let gateRetryAttempted = false;
     /** Frame SSE enrichie ; enregistre l'événement quand il est fourni. */
@@ -1780,7 +2238,9 @@ export async function handleConversationRoutes(
       emit({ type: name, ...payload }, event);
     };
 
-    emit({ type: 'start', isModification }, {
+    // É53 LOT E2 — CORRECTION B : `executionId` explicite sur la frame start
+    // (voir commentaire au-dessus de BLOC 1).
+    emit({ type: 'start', isModification, executionId }, {
       type: 'EXECUTION_STARTED',
       phase: 'UNDERSTAND',
       status: 'RUNNING',
@@ -1808,7 +2268,64 @@ export async function handleConversationRoutes(
     // P2 — INTENTION RÉELLE : le moteur conversationnel (LLM, temp 0,
     // repli regex intégré) remplace la regex 6 catégories. L'intention
     // détermine le plan affiché et les phrases du LLM.
-    let realIntent = await classifyIntent(body.message || '', undefined, context.tenantId, projectId);
+    // É53 LOT E4.1 — CORRECTION B : le signal du tour atteint la
+    // classification LLM ; un abandon (annulation acceptée / déconnexion) y
+    // est REJETÉ (jamais le repli mots-clés) et l'issue reste l'arbitrage
+    // E1/E2 via les catches E3 de la route.
+    // É53 LOT E4.1 — CORRECTION B (suite) : cet await est AVANT le try/catch
+    // E3 de fin de handler — un AbortError de classification doit sortir par
+    // le MÊME arbitrage (sinon il remonte au gestionnaire d'erreurs serveur
+    // qui tente un JSON sur une SSE déjà ouverte : ERR_HTTP_HEADERS_SENT,
+    // réponse jamais terminée, aucun terminal honnête). Miroir strict des
+    // branches du catch E3 : annulation acceptée → cancelInterrupted (claim
+    // atomique + ⏹ unique) ; déconnexion → CANCELLED client_gone ; toute
+    // autre erreur → rethrow (comportement historique, jamais masqué).
+    let realIntent: Awaited<ReturnType<typeof classifyIntent>>;
+    try {
+      realIntent = await classifyIntent(body.message || '', undefined, context.tenantId, projectId, turnAbortController.signal);
+    } catch (classifyErr) {
+      const message = classifyErr instanceof Error ? classifyErr.message : String(classifyErr);
+      if (turnAbortedAs('user_cancel')) {
+        if (cancelInterrupted()) {
+          logger.warn('Classification interrompue par une annulation acceptée — terminal ⏹ posé par l arbitrage E1', {
+            component: 'conversation-route-stream',
+            tenantId: context.tenantId,
+            projectId,
+            error: message
+          });
+          activeCancelFlags.delete(executionId);
+          res.end();
+          return true;
+        }
+        // Refus du claim (CAS B : la persistance a gagné entre-temps) —
+        // l'issue honnête appartient à la persistance : aucune fausse erreur.
+        if (executionStore.hasPersistenceWon(executionId) || persistedVerified) {
+          logger.warn('Abandon d une classification supplanté par la persistance (CAS B) — terminal de la persistance préservé', {
+            component: 'conversation-route-stream',
+            tenantId: context.tenantId,
+            projectId,
+            error: message
+          });
+          activeCancelFlags.delete(executionId);
+          res.end();
+          return true;
+        }
+      } else if (turnAbortedAs('client_disconnect')) {
+        // Miroir du catch E3 (client parti pendant la classification) :
+        // annulation honnête CANCELLED client_gone, jamais une erreur brute.
+        logger.warn('Classification interrompue par une déconnexion client', {
+          component: 'conversation-route-stream',
+          tenantId: context.tenantId,
+          projectId,
+          error: message
+        });
+        if (recorder) executionStore.cancelExecution(executionId, 'client_gone');
+        activeCancelFlags.delete(executionId);
+        res.end();
+        return true;
+      }
+      throw classifyErr;
+    }
     // LOT CLARIF-RESUME — la catégorie suit la QUESTION posée : « une page
     // galerie photo » en réponse à « modifier ou créer ? » est MODIFY (et
     // non CREATE inventé par le repli regex — le piège d'origine du bruit,
@@ -1843,9 +2360,31 @@ export async function handleConversationRoutes(
     // La réponse part en frames `chat` (affichées dans la conversation), pas
     // en `token` (qui alimente le preview) ; aucun fichier n'est touché.
     const BUILD_VERBS = /créer|crée|ajoute|ajouter|modifie|modifier|change|changer|supprime|supprimer|génère|générer|construis|construire|enlève|enlever|create|add|update|delete|generate|build|fix|corrige|corriges/i;
+    // É49-C2 — participe passé = RÉFÉRENCE à l'historique, pas une directive :
+    // « Pourquoi as-tu supprimé... ? » contient « supprimé » mais ne demande
+    // aucune construction. Formes accentuées uniquement — l'impératif
+    // (« supprime », « modifie ») reste un verbe de build.
+    // É49-C2 (correctif d'amende, preuve T2 UI) : `\b` JS est basé sur
+    // [A-Za-z0-9_] — « é » final n'est PAS un \w, donc `\bé\b` ne matche
+    // JAMAIS un participe singulier (« créé », « supprimé », même suivi d'un
+    // point), et matche à tort « modifié » À L'INTÉRIEUR de « modifiée ».
+    // Frontières lettre-aware (lookaround) : match si le participe est un
+    // mot complet au sens unicode. Validé node : singuliers PASS,
+    // pluriels PASS (non-régression), impératifs (« supprime », « modifie »)
+    // toujours hors référence.
+    const BUILD_REFERENCE = /(?<![\p{L}\p{N}])(?:supprimé|supprimée|supprimés|supprimées|modifié|modifiée|modifiés|modifiées|créé|créée|créés|créées|ajouté|ajoutée|ajoutés|ajoutées|généré|générés|changé|changés|enlevé|enlevés|retiré|retirés)(?![\p{L}\p{N}])/iu;
     const wantsAnswerOnly = (realIntent.category === 'QUESTION' || realIntent.category === 'EXPLAIN')
-      && body.isModification !== true
-      && !BUILD_VERBS.test(body.message || '')
+      // É49-C2 — le verrou `body.isModification !== true` est LEVÉ : les DEUX
+      // chemins de l'UI (accueil + espace de travail) envoient TOUJOURS
+      // isModification:true (preuve réseau É49 : chaque POST /stream porte
+      // {"isModification":true}), le flag ne portait donc AUCUNE information
+      // et masquait toute demande d'explication. Preuve production É49 (S10) :
+      // EXPLAIN@0.9 exécuté en modification destructive (−215 lignes, −35 %
+      // du fichier). Le moteur d'intention (LLM temp 0 + repli regex, P2)
+      // est l'autorité pour QUESTION/EXPLAIN ; BUILD_VERBS reste la barrière
+      // anti-régression pour les directives à l'impératif, sauf participe
+      // passé (référence à l'historique).
+      && (!BUILD_VERBS.test(body.message || '') || BUILD_REFERENCE.test(body.message || ''))
       // LOT CLARIF-RESUME — pendant une clarification, le message suivant est
       // la RÉPONSE : il agit, il ne re-déclenche pas une réponse-pure.
       && clarifResume === undefined;
@@ -1964,6 +2503,9 @@ export async function handleConversationRoutes(
         }
       }, 2000);
       try {
+        // É53 LOT E3 — CORRECTION A : le signal du tour atteint le transport
+        // HTTP de l'adapter streaming (annulation acceptée → coupure réelle
+        // en plein appel ; déconnexion client → idem).
         // @ts-expect-error — generateStream existe sur les adaptateurs Mistral et Gemini
         const answerStream = qAdapter.generateStream(
           {
@@ -1974,7 +2516,8 @@ export async function handleConversationRoutes(
             temperature: 0.4,
             maxTokens: 2048,
             timeoutMs: 60000,
-            requestId
+            requestId,
+            signal: turnAbortController.signal
           },
           resolveStreamCredentials(req, context.tenantId, qAdapter.descriptor.providerId)
         );
@@ -1986,6 +2529,27 @@ export async function handleConversationRoutes(
         }
       } catch (answerError) {
         clearInterval(qWaitTicker);
+        // É53 LOT E3 — CORRECTION B : un abandon causé par CE tour (annulation
+        // utilisateur acceptée / déconnexion client) n'est JAMAIS transformé
+        // en erreur LLM ordinaire. L'arbitrage E1 (cancelInterrupted) reste
+        // l'autorité de l'issue : claim atomique + frame ⏹ unique.
+        if (turnAbortedAs('user_cancel')) {
+          cancelInterrupted();
+          activeCancelFlags.delete(executionId);
+          res.end();
+          return true;
+        }
+        if (turnAbortedAs('client_disconnect')) {
+          logger.warn('Appel LLM (réponse-pure) interrompu par une déconnexion client', {
+            component: 'conversation-route-stream',
+            tenantId: context.tenantId,
+            projectId
+          });
+          if (recorder) executionStore.cancelExecution(executionId, 'client_gone');
+          activeCancelFlags.delete(executionId);
+          res.end();
+          return true;
+        }
         const message = answerError instanceof Error ? answerError.message : String(answerError);
         emit({ type: 'error', error: message.slice(0, 300) });
         if (recorder) executionStore.failExecution(executionId, message.slice(0, 300));
@@ -2139,6 +2703,26 @@ export async function handleConversationRoutes(
     // Mémoire résolue — utilisée à la fois par la Décision (CDC §15) et par
     // les hypothèses (CDC §16) : une seule source, jamais deux lectures.
     const decisionMemory = preparedTurn?.projectMemory ?? realProjectMemory ?? undefined;
+    // É49-C1 — contraintes/interdictions actives : intent du tour (extraite
+    // par le moteur, extraction É49 dans intent-engine) + mémoire projet
+    // persistée (MÊME source que la Décision ci-dessus). Une seule liste
+    // dédupliquée, transmise aux DEUX voies de génération : chemin direct
+    // (userPrompt, repli quand la chaîne est indisponible) et chaîne
+    // d'agents (input.constraints → bloc INTERDICTIONS dans les 3
+    // descriptions). Aucune transformation sémantique : textes bruts.
+    // Preuve É49 (UI S5 + sonde E5) : « N'ajoute surtout pas de système de
+    // paiement » n'était respectée que par la bonne volonté du LLM, jamais
+    // transmise aux agents.
+    const streamConstraints: string[] = [
+      ...new Set([
+        ...(realIntent.constraints ?? []),
+        ...((decisionMemory?.knownConstraints ?? []) as readonly string[])
+      ])
+    ];
+    const streamConstraintBlock = streamConstraints.length > 0
+      ? `\n\nINTERDICTIONS STRICTES DE L'UTILISATEUR (à respecter à la lettre, aucune exception) :\n` +
+        streamConstraints.map((c) => `- ${c}`).join('\n') + `\n`
+      : '';
     // CDC §15 — LOT ADR AUTO (2026-11-03, audit moteurs) : la décision
     // consultative est ENREGISTRÉE au Decision Ledger quand elle porte sur
     // une vraie modification de l'application (CREATE/MODIFY/DELETE/
@@ -2458,6 +3042,10 @@ export async function handleConversationRoutes(
       }
       emit({
         type: 'done',
+        // É53 LOT B — contrat de vérité : PlanFirst n'écrit rien → `updated`
+        // explicite à false (le client lit d'abord awaitingConfirmation ;
+        // ce champ garantit qu'aucun done n'est ambigu).
+        updated: false,
         awaitingConfirmation: true,
         ...(preparationSummary ? { preparation: preparationSummary } : {})
       });
@@ -2498,6 +3086,19 @@ export async function handleConversationRoutes(
     const isModificationMode = body.isModification !== undefined
       ? Boolean(body.isModification)
       : (currentHtml.trim().length > 200);
+
+    // É53 LOT B — PLACEHOLDER PRISTIN d'un projet neuf. `FileStore`
+    // (file-explorer/store.ts, getOrCreateProjectMap) sème ce document par
+    // défaut au premier accès : ce n'est PAS un contenu utilisateur à
+    // préserver. Une CRÉATION explicite (isModificationMode:false) qui le
+    // remplace ne doit pas être jugée comme une perte de contenu protégé —
+    // sinon AUCUNE création n'était possible sur un projet neuf (le titre
+    // « Hello VibeCode » n'existe pas dans le HTML généré → refus du contrat
+    // de préservation). Le contrat est alors construit sur un document vide
+    // (scope « creation » : rien à préserver). Tout contenu NON seedé —
+    // c'est-à-dire tout travail réel — reste intégralement protégé.
+    const DEFAULT_PROJECT_SEED_HTML =
+      '<!DOCTYPE html>\n<html>\n<head><title>App</title></head>\n<body><h1>Hello VibeCode</h1></body>\n</html>';
 
     // === SYSTÈME PROMPT MODE CRÉATION ===
     // (comportement actuel : génère un site complet section par section)
@@ -2615,11 +3216,13 @@ export async function handleConversationRoutes(
     );
 
     // Pour le mode modification, on inclut TOUJOURS le HTML actuel comme contexte
+    // É49-C1 — le bloc d'interdictions suit le prompt dans les TROIS formes :
+    // sans la chaîne d'agents (repli direct), le LLM reste lié aux interdits.
     const userPrompt = isModificationMode
-      ? `Voici le code HTML ACTUEL de l'application :\n\`\`\`html\n${currentHtml}\n\`\`\`\n\nDemande de modification de l'utilisateur : ${body.message}\n\nApplique les modifications nécessaires en respectant le format <SECTION name="..." mode="modify">.${buildPageContext(currentHtml)}`
+      ? `Voici le code HTML ACTUEL de l'application :\n\`\`\`html\n${currentHtml}\n\`\`\`\n\nDemande de modification de l'utilisateur : ${body.message}\n\nApplique les modifications nécessaires en respectant le format <SECTION name="..." mode="modify">.${buildPageContext(currentHtml)}${streamConstraintBlock}`
       : (isModification
-        ? `Voici le code HTML actuel de l'application :\n\`\`\`html\n${currentHtml}\n\`\`\`\n\nDemande de l'utilisateur : ${body.message}${buildPageContext(currentHtml)}`
-        : `Demande de l'utilisateur : ${body.message}`);
+        ? `Voici le code HTML actuel de l'application :\n\`\`\`html\n${currentHtml}\n\`\`\`\n\nDemande de l'utilisateur : ${body.message}${buildPageContext(currentHtml)}${streamConstraintBlock}`
+        : `Demande de l'utilisateur : ${body.message}${streamConstraintBlock}`);
 
     let fullText = '';
     let inSection = false;
@@ -2668,6 +3271,27 @@ export async function handleConversationRoutes(
     // =====================================================================
     let upstreamSource: AsyncIterable<string> | null = null;
     let agentChainFailures: string[] = [];
+    // É53 LOT E4.1 — CORRECTION B : pré-checks — une annulation déjà armée
+    // pendant la classification/décision ne lance AUCUN travail d'agent ni
+    // d'appel direct. L'issue reste l'arbitrage E1/E2 (⏹ unique).
+    // É53 LOT E4.2 — CORRECTION F3 (audit G3) : ces returns anticipés sont
+    // AVANT le try/finally qui nettoie le heartbeat SSE (créé ci-dessus) —
+    // l'intervalle est donc explicitement arrêté sur chaque sortie.
+    if (turnAbortedAs('user_cancel')) {
+      if (heartbeat) clearInterval(heartbeat);
+      cancelInterrupted();
+      return true;
+    }
+    if (turnAbortedAs('client_disconnect')) {
+      if (heartbeat) clearInterval(heartbeat);
+      logger.warn('Déconnexion client avant la chaîne d agents — aucun appel lancé', {
+        component: 'conversation-route-stream',
+        tenantId: context.tenantId,
+        projectId
+      });
+      if (recorder) executionStore.cancelExecution(executionId, 'client_gone');
+      return true;
+    }
     try {
       const agentChain = await runAgentGenerationPipeline({
         tenantId: context.tenantId,
@@ -2680,6 +3304,10 @@ export async function handleConversationRoutes(
         userPrompt,
         isModificationMode,
         currentHtml,
+        constraints: streamConstraints,
+        // É53 LOT E4.1 — CORRECTION B : le MÊME signal du tour est transmis à
+        // la chaîne (chaque agent, chaque étape, transport inclus).
+        signal: turnAbortController.signal,
         onStep: (stepReport: AgentChainStepReport): void => {
           emitNamed('on_agent_step', {
             step: stepReport.step,
@@ -2772,6 +3400,9 @@ export async function handleConversationRoutes(
       // CHAÎNE D'AGENTS — la source finale du stream : le texte produit par
       // la chaîne (UI → Backend → Sécurité) s'il existe, sinon l'appel direct
       // historique tel quel (plamen repli, non-régression stricte).
+      // É53 LOT E3 — CORRECTION A : le signal du tour atteint le transport
+      // HTTP de l'adapter streaming réellement utilisé par /stream (repli
+      // appel direct : Mistral/Gemini/openai-compatible selon le registre).
       // @ts-expect-error — generateStream existe sur les adaptateurs concrets (Mistral/Gemini)
       const legacyStream: unknown = upstreamSource ? null : adapter.generateStream(
         {
@@ -2782,7 +3413,8 @@ export async function handleConversationRoutes(
           temperature: 0.4,
           maxTokens: 8192,
           timeoutMs: 120000,
-          requestId
+          requestId,
+          signal: turnAbortController.signal
         },
         resolveStreamCredentials(req, context.tenantId, adapter.descriptor.providerId)
       );
@@ -2857,7 +3489,10 @@ export async function handleConversationRoutes(
             const firstTagMatch = sectionContent.match(/<[a-zA-Z]/);
             if (firstTagMatch && firstTagMatch.index !== undefined) {
               currentSectionText = sectionContent.slice(0, firstTagMatch.index).trim();
-              currentSectionHtml = sectionContent.slice(firstTagMatch.index).trim();
+              // LOT A-C2 — point de parse UNIQUE : balises Markdown et
+              // enveloppes/fermetures orphelines partent ICI, avant que le
+              // HTML n'atteigne serverSections (tous les chemins passent là).
+              currentSectionHtml = sanitizeSectionHtml(currentSectionName, sectionContent.slice(firstTagMatch.index));
             } else {
               currentSectionText = sectionContent.trim();
               currentSectionHtml = '';
@@ -2908,15 +3543,17 @@ export async function handleConversationRoutes(
       // T5 — annulation explicite de l'utilisateur : on n'assemble ni ne
       // sauvegarde rien, on enregistre CANCELLED (⏹ pas ❌, CDC §20) et on
       // prévient le client qui a demandé l'arrêt.
-      if (cancelFlag.cancelled) {
+      // É53 LOT E2 — POINT DE CONTRÔLE n°0 : immédiatement après la boucle de
+      // génération — ni drain, ni assemblage, ni mutation, ni persistance.
+      // Le contrôle est centralisé (`cancelInterrupted`) : il consomme
+      // l'arbitrage E1 et émet ⏹ une seule fois.
+      if (cancelInterrupted()) {
         logger.warn('Génération annulée par l\'utilisateur — HTML non sauvegardé', {
           component: 'conversation-route-stream',
           tenantId: context.tenantId,
           projectId,
           charsReceived: fullText.length
         });
-        sendSSE({ type: 'cancelled' });
-        if (recorder) executionStore.cancelExecution(executionId, 'user_cancel');
         return true;
       }
 
@@ -2935,14 +3572,136 @@ export async function handleConversationRoutes(
         return true;
       }
 
-      // À la fin, envoie tout texte restant comme chat final
-      if (fullText.trim()) {
+      // É53 LOT B — DRAIN FINAL DES FRONTIÈRES COMPLÈTES. La machine à états
+      // ci-dessus ne traite QU'UNE frontière par itération : après une
+      // ouverture (l.3203) ou une fermeture (l.3257), le `continue` reporte la
+      // suite au chunk SUIVANT. Si le flux se termine juste après, la suite
+      // n'était JAMAIS parsée : section_start sans section_end (section
+      // perdue), troncature non détectée, contenu resté hors assemblage.
+      // Ce drain rejoue la MÊME machine à états, à l'identique (mêmes frames
+      // section_start/section_end, mêmes compteurs, même assainissement, même
+      // capture DNA de préambule) sur ce qui reste, jusqu'à épuisement des
+      // frontières complètes. Un reste SANS frontière complète est laissé au
+      // traitement final (chat final / détection de troncature ci-dessous).
+      let drainIterations = 0;
+      while (!cancelFlag.cancelled && !clientGone && drainIterations < 200) {
+        drainIterations++;
+        if (inSection) {
+          // Miroir du traitement de fermeture (l.3209-3256).
+          const drainCloseIdx = fullText.indexOf('</SECTION>');
+          if (drainCloseIdx === -1) break; // frontière incomplète → troncature
+          const drainContent = fullText.slice(0, drainCloseIdx);
+          const drainTag = drainContent.match(/<[a-zA-Z]/);
+          if (drainTag && drainTag.index !== undefined) {
+            currentSectionText = drainContent.slice(0, drainTag.index).trim();
+            currentSectionHtml = sanitizeSectionHtml(currentSectionName, drainContent.slice(drainTag.index));
+          } else {
+            currentSectionText = drainContent.trim();
+            currentSectionHtml = '';
+          }
+          emit({
+            type: 'section_end',
+            name: currentSectionName,
+            mode: currentSectionMode,
+            after: currentSectionAfter,
+            index: sectionIndex,
+            text: currentSectionText,
+            html: currentSectionHtml
+          }, {
+            type: currentSectionMode === 'delete' ? 'FILE_DELETED' : currentSectionMode === 'modify' ? 'FILE_MODIFIED' : 'FILE_CREATED',
+            phase: 'IMPLEMENT',
+            status: 'COMPLETED',
+            title: 'Section ' + currentSectionName + ' générée',
+            detail: { section: currentSectionName, mode: currentSectionMode, chars: currentSectionHtml.length }
+          });
+          serverSections.push({
+            name: currentSectionName,
+            mode: currentSectionMode,
+            after: currentSectionAfter,
+            html: currentSectionHtml
+          });
+          inSection = false;
+          currentSectionName = '';
+          currentSectionMode = 'create';
+          currentSectionAfter = '';
+          currentSectionHtml = '';
+          currentSectionText = '';
+          fullText = fullText.slice(drainCloseIdx + '</SECTION>'.length);
+          continue;
+        }
+        // Miroir du traitement d'ouverture (l.3156-3202).
+        const drainOpen = fullText.match(/<SECTION\s+name=["']([^"']+)["']\s*(?:\s+mode=["']([^"']+)["'])?\s*(?:\s+after=["']([^"']+)["'])?\s*>/);
+        if (!drainOpen || drainOpen.index === undefined) break; // reste = chat final
+        const drainBefore = fullText.slice(0, drainOpen.index);
+        const drainDna = extractDesignDna(drainBefore);
+        if (drainDna.dna && !streamDesignDna) streamDesignDna = drainDna.dna;
+        if (drainBefore.trim()) {
+          const drainClean = stripHtmlComments(drainDna.cleaned).replace(/<SECTION[^>]*>/g, '').trim();
+          if (drainClean) {
+            sendSSE({ type: 'chat', text: drainClean });
+          }
+        }
+        inSection = true;
+        currentSectionName = drainOpen[1] || '';
+        currentSectionMode = drainOpen[2] || 'create';
+        currentSectionAfter = drainOpen[3] || '';
+        currentSectionHtml = '';
+        currentSectionText = '';
+        sectionIndex++;
+        if (recorder) executionStore.transitionPhase(executionId, 'IMPLEMENT');
+        emit({ type: 'compass', state: 'EXECUTING' });
+        emit({
+          type: 'section_start',
+          name: currentSectionName,
+          mode: currentSectionMode,
+          after: currentSectionAfter,
+          index: sectionIndex
+        }, {
+          type: currentSectionMode === 'delete' ? 'FILE_DELETED' : currentSectionMode === 'modify' ? 'FILE_MODIFIED' : 'FILE_CREATED',
+          phase: 'IMPLEMENT',
+          status: 'RUNNING',
+          title: (currentSectionMode === 'delete'
+            ? 'Suppression de la section '
+            : currentSectionMode === 'modify'
+              ? 'Modification de la section '
+              : 'Construction de la section ') + currentSectionName,
+          detail: { section: currentSectionName, mode: currentSectionMode, index: sectionIndex }
+        });
+        fullText = fullText.slice(drainOpen.index + drainOpen[0].length);
+      }
+
+      // É53 LOT E2 — POINT DE CONTRÔLE n°1 : après le drainage de la
+      // génération — aucune étape ultérieure (chat final, assemblage,
+      // persistance) ne continue inutilement.
+      if (cancelInterrupted()) {
+        logger.warn('Génération annulée après le drainage — assemblage et persistance annulés', {
+          component: 'conversation-route-stream',
+          tenantId: context.tenantId,
+          projectId
+        });
+        return true;
+      }
+
+      // À la fin, envoie tout texte restant comme chat final. Si une section
+      // reste OUVERTE (drain épuisé : frontière incomplète), ce reste est le
+      // CONTENU de cette section — jamais du chat : ne pas le réémettre.
+      if (fullText.trim() && !inSection) {
         // LOT LEAK-FIX — même assainissement que le préambule : les
         // commentaires internes (PAGE_TITLE…) ne fuient pas en clôture.
         const cleanText = stripHtmlComments(fullText.replace(/<SECTION[^>]*>[\s\S]*?<\/SECTION>/g, '')).trim();
         if (cleanText) {
           sendSSE({ type: 'chat', text: cleanText });
         }
+      }
+
+      // É53 LOT E2 — POINT DE CONTRÔLE n°2 : avant l'assemblage HTML final.
+      if (cancelInterrupted()) {
+        logger.warn('Génération annulée avant l\'assemblage HTML', {
+          component: 'conversation-route-stream',
+          tenantId: context.tenantId,
+          projectId
+        });
+        return true;
       }
 
       // === ASSEMBLE LE HTML FINAL ET SAUVEGARDE DANS FILESTORE ===
@@ -2958,8 +3717,12 @@ export async function handleConversationRoutes(
         });
       }
       let assembledHtml = '';
-      // T4 — diffs réels par section, émis au client et persistés
-      const sectionDiffs: Array<{ name: string; mode: string; applied: boolean; added: number; removed: number }> = [];
+      // T4 — diffs réels par section, émis au client et persistés.
+      // É53 LOT B — `targetFound` distingue « cible trouvée, contenu identique »
+      // (écho fidèle du LLM : livré sans changement de bytes) d'une vraie cible
+      // introuvable (non livrée). Pur ajout d'information : aucune logique de
+      // merge modifiée (zones Lot A intactes).
+      const sectionDiffs: Array<{ name: string; mode: string; applied: boolean; targetFound: boolean; added: number; removed: number }> = [];
 
       if (isModificationMode && currentHtml) {
         // Mode modification : on part du HTML existant et on applique les modifications
@@ -2997,15 +3760,26 @@ export async function handleConversationRoutes(
             // Remplace la section existante par la nouvelle version
             // IMPORTANT : sec.html peut déjà contenir un wrapper <div data-section="...">
             // si le LLM l'a inclus (cf system prompt example). On ne re-wrappe PAS.
-            const cleanHtml = sec.html.replace(/^<div[^>]*data-section="[^"]*"[^>]*>([\s\S]*)<\/div>$/, '$1').trim();
+            // LOT A-C2 — sanitizeSectionHtml remplace l'unwrap fragile : il ne
+            // coupe un `</div>` final QUE si l'équilibre div le confirme, et
+            // retire les balises Markdown avant (idempotent sur HTML propre).
+            const cleanHtml = sanitizeSectionHtml(sec.name, sec.html);
             // Tente par data-section d'abord (notre format stitchReveal)
             const dataAttrRegex = new RegExp(`<div[^>]*data-section="${sec.name}"[^>]*>[\\s\\S]*?(?=<div[^>]*data-section|<\\/body>|$)`, 'g');
             const dataMatch = dataAttrRegex.exec(modifiedHtml);
+            const foundByData = dataMatch !== null;
             if (dataMatch) oldBlock = dataMatch[0];
             const before = modifiedHtml;
             modifiedHtml = modifiedHtml.replace(new RegExp(dataAttrRegex.source, 'g'), `<div class="vibe-stitched" data-section="${sec.name}">${cleanHtml}</div>`);
             // Si pas de remplacement, tente par ID de section
-            if (modifiedHtml === before) {
+            // LOT A-C2 — le gardien teste l'existence de la cible, pas l'identité du
+            // fichier : un replace byte-identique (écho fidèle du LLM d'une section
+            // inchangée) n'est PAS un échec de recherche. Sur `=== before`, les replis
+            // s'enclenchaient à tort sur chaque écho fidèle : l'id-path double-emboîtait
+            // la section (wrapper externe évincé ensuite par dedupe → un `</div>` en
+            // excès par bloc, +4 constatés en campagne) et le repli P3 insérait un
+            // doublon avant </body> (résidu `\n` dans le squelette après éviction).
+            if (!foundByData) {
               const idRegex = new RegExp(`<section[^>]*id="${sec.name}"[^>]*>[\\s\\S]*?<\\/section>`, 'g');
               const idMatch = idRegex.exec(modifiedHtml);
               if (idMatch && !oldBlock) oldBlock = idMatch[0];
@@ -3013,13 +3787,13 @@ export async function handleConversationRoutes(
               // STITCH : même contrat que le chemin data-section — la section
               // insérée porte TOUJOURS son wrapper data-section (halo,
               // diff-guard et ancrages des générations suivantes en dépendent).
-              modifiedHtml = modifiedHtml.replace(new RegExp(idRegex.source, 'g'), `<div class="vibe-stitched" data-section="${sec.name}">${sec.html}</div>`);
+              modifiedHtml = modifiedHtml.replace(new RegExp(idRegex.source, 'g'), `<div class="vibe-stitched" data-section="${sec.name}">${sanitizeSectionHtml(sec.name, sec.html)}</div>`);
               // Si toujours pas, tente par balise (header, footer, nav)
               if (modifiedHtml === before2 && (sec.name === 'header' || sec.name === 'footer' || sec.name === 'nav')) {
                 const tagRegex = new RegExp(`<${sec.name}[\\s\\S]*?<\\/${sec.name}>`, 'g');
                 const tagMatch = tagRegex.exec(modifiedHtml);
                 if (tagMatch && !oldBlock) oldBlock = tagMatch[0];
-                modifiedHtml = modifiedHtml.replace(new RegExp(tagRegex.source, 'g'), `<div class="vibe-stitched" data-section="${sec.name}">${sec.html}</div>`);
+                modifiedHtml = modifiedHtml.replace(new RegExp(tagRegex.source, 'g'), `<div class="vibe-stitched" data-section="${sec.name}">${sanitizeSectionHtml(sec.name, sec.html)}</div>`);
               }
               // P3-fix — mode="modify" sur un nom INEXISTANT (l'IA a inventé
               // un nom, ex: « navbar » au lieu de « header ») : la section
@@ -3040,7 +3814,7 @@ export async function handleConversationRoutes(
             // existe DÉJÀ est un REMPLACEMENT, pas un doublon — sinon chaque
             // génération ré-émettant header/footer empilait des copies
             // (footer ×3, header ×2 constatés en production).
-            const cleanAddHtml = sec.html.replace(/^<div[^>]*data-section="[^"]*"[^>]*>([\s\S]*)<\/div>$/, '$1').trim();
+            const cleanAddHtml = sanitizeSectionHtml(sec.name, sec.html);
             const existsRe = new RegExp(`<div[^>]*data-section="${sec.name}"[^>]*>[\\s\\S]*?(?=<div[^>]*data-section|<\\/body>|$)`, 'i');
             const existing = existsRe.exec(modifiedHtml);
             if (existing) {
@@ -3056,7 +3830,7 @@ export async function handleConversationRoutes(
               if (modifiedHtml === before) {
                 // Tente par ID — avec wrapper (même contrat que le chemin principal)
                 const idAfterRegex = new RegExp(`(<section[^>]*id="${sec.after}"[^>]*>[\\s\\S]*?<\\/section>)`, 'g');
-                modifiedHtml = modifiedHtml.replace(idAfterRegex, `$1\n<div class="vibe-stitched" data-section="${sec.name}">${sec.html}</div>`);
+                modifiedHtml = modifiedHtml.replace(idAfterRegex, `$1\n<div class="vibe-stitched" data-section="${sec.name}">${sanitizeSectionHtml(sec.name, sec.html)}</div>`);
               }
               if (modifiedHtml === before) {
                 // T4/T7 — l'ancre est la DERNIÈRE section : insertion avant
@@ -3074,7 +3848,7 @@ export async function handleConversationRoutes(
             // UNICITÉ : « create » sur un nom déjà présent = remplacement
             // (le LLM ré-émet souvent header/footer en mode create — sans
             // cette garde, chaque génération ajoutait un doublon en fin de page).
-            const cleanCreateHtml = sec.html.replace(/^<div[^>]*data-section="[^"]*"[^>]*>([\s\S]*)<\/div>$/, '$1').trim();
+            const cleanCreateHtml = sanitizeSectionHtml(sec.name, sec.html);
             const existsRe = new RegExp(`<div[^>]*data-section="${sec.name}"[^>]*>[\\s\\S]*?(?=<div[^>]*data-section|<\\/body>|$)`, 'i');
             const existing = existsRe.exec(modifiedHtml);
             if (existing) {
@@ -3087,7 +3861,7 @@ export async function handleConversationRoutes(
           // T4 — delta réel de la section (bloc remplacé vs contenu généré)
           const applied = modifiedHtml !== htmlBeforeSection;
           const delta = countLineDelta(oldBlock, sec.mode === 'delete' ? '' : (sec.html || ''));
-          sectionDiffs.push({ name: sec.name, mode: sec.mode, applied, added: delta.added, removed: delta.removed });
+          sectionDiffs.push({ name: sec.name, mode: sec.mode, applied, targetFound: Boolean(oldBlock), added: delta.added, removed: delta.removed });
         }
         // B2 — le merge préserve l'ordre d'arrivée : on réordonne les blocs
         // (footer TOUJOURS dernier), sans toucher au reste du document.
@@ -3099,8 +3873,9 @@ export async function handleConversationRoutes(
         // T4 — en création, tout est ajout : delta réel par section.
         for (const sec of canonicalSectionOrder(serverSections)) {
           if (sec.html) {
-            assembledHtml += `<div class="vibe-stitched" data-section="${sec.name}">${sec.html}</div>\n`;
-            sectionDiffs.push({ name: sec.name, mode: sec.mode || 'create', applied: true, added: countLineDelta('', sec.html).added, removed: 0 });
+            const cleanCreateHtml = sanitizeSectionHtml(sec.name, sec.html);
+            assembledHtml += `<div class="vibe-stitched" data-section="${sec.name}">${cleanCreateHtml}</div>\n`;
+            sectionDiffs.push({ name: sec.name, mode: sec.mode || 'create', applied: true, targetFound: true, added: countLineDelta('', cleanCreateHtml).added, removed: 0 });
           }
         }
       }
@@ -3202,12 +3977,39 @@ export async function handleConversationRoutes(
       // n'est pas injecté, le repli direct reste possible mais il est TRACÉ
       // (MUTATION_FALLBACK) — jamais silencieux.
       let persistenceError: string | undefined;
+      // É53 LOT B — FAITS DE VÉRITÉ (audit §3). La décision de persistance et
+      // le verdict final reposent sur ces faits, JAMAIS sur la longueur du
+      // HTML ni sur l'annonce du LLM :
+      //   - en modification, il faut au moins une section dont les bytes ont
+      //     réellement changé (un écho identique n'est pas un changement) ;
+      //   - en création, il faut au moins une section avec du contenu réel.
+      const truthSectionFacts = new Map<string, { applied: boolean; delivered: boolean }>();
+      for (const diff of sectionDiffs) {
+        truthSectionFacts.set(diff.name, { applied: diff.applied, delivered: diff.applied || diff.targetFound });
+      }
+      const changedSectionCount = sectionDiffs.filter((d) => d.applied).length;
+      const hasExploitableChange = isModificationMode
+        ? changedSectionCount > 0
+        : serverSections.some((s) => (s.html || '').trim().length > 0);
+      // É53 LOT E2 — attemptedPersistence/mutationApplied/fallbackWritten/
+      // persistedVerified sont déclarés avec le contrôle centralisé (tôt dans
+      // le handler) ; les affectations ci-dessous gardent leur place.
       // V7-LOT5 — préflight d'ingénierie sur le contenu candidat, AVANT la
       // mutation. Il bloque uniquement les défauts durs (enveloppe absente,
       // contenu vide/nul, taille hors plafond) ; les alertes restent
       // consultatives et le Quality Gate visuel garde l'autorité de score.
       let engineeringValidation: EngineeringPreflightReport | null = null;
-      if (assembledHtml.trim().length > 100) {
+      // É53 LOT E2 — POINT DE CONTRÔLE n°3 : avant le préflight d'ingénierie.
+      if (cancelInterrupted()) {
+        logger.warn('Génération annulée avant le préflight — aucune persistance tentée', {
+          component: 'conversation-route-stream',
+          tenantId: context.tenantId,
+          projectId
+        });
+        return true;
+      }
+      if (hasExploitableChange && assembledHtml.trim().length > 100) {
+        attemptedPersistence = true;
         engineeringValidation = runEngineeringPreflight(assembledHtml, STREAM_MUTATION_PATH);
         emitNamed('on_engineering_validated', {
           verdict: engineeringValidation.verdict,
@@ -3248,10 +4050,86 @@ export async function handleConversationRoutes(
             blockers: engineeringValidation.blockers
           });
         } else {
+        // É50 — GARDE-FOU D'EXFILTRATION (P0 S8) : contrôle déterministe du
+        // contenu candidat à la frontière de persistance, AVANT la mutation.
+        // Situé à ce point de bifurcation, il couvre à la fois le Mutation
+        // Orchestrator et le repli direct fileStore.saveFile ci-dessous.
+        // Refus par défaut : toute destination réseau absolu non whitelistée
+        // (ou non parseable) bloque l'écriture — indépendant des prompts LLM.
+        const exfiltrationReport = runExfiltrationGuard(assembledHtml, STREAM_MUTATION_PATH);
+        emitNamed('on_security_scan_completed', {
+          verdict: exfiltrationReport.verdict,
+          passed: exfiltrationReport.passed,
+          path: exfiltrationReport.path,
+          contentHash: exfiltrationReport.contentHash,
+          byteLength: exfiltrationReport.byteLength,
+          findings: exfiltrationReport.findings.map((f) => ({ id: f.id, channel: f.channel, destination: f.destination, severity: f.severity })),
+          blockers: [...exfiltrationReport.blockers],
+          warnings: [...exfiltrationReport.warnings]
+        }, {
+          type: exfiltrationReport.passed ? 'VALIDATION_COMPLETED' : 'VALIDATION_FAILED',
+          phase: 'VALIDATE',
+          status: exfiltrationReport.passed ? 'COMPLETED' : 'FAILED',
+          title: `Garde-fou exfiltration : ${exfiltrationReport.verdict} (${exfiltrationReport.findings.length} constats)`,
+          detail: {
+            stage: 'EXFILTRATION_GUARD',
+            verdict: exfiltrationReport.verdict,
+            contentHash: exfiltrationReport.contentHash,
+            byteLength: exfiltrationReport.byteLength,
+            blockers: exfiltrationReport.blockers.length,
+            warnings: exfiltrationReport.warnings.length
+          }
+        });
+        if (!exfiltrationReport.passed) {
+          persistenceError = describeExfiltrationBlocker(exfiltrationReport);
+          logger.warn('Garde-fou exfiltration refusé : aucune écriture tentée', {
+            component: 'conversation-route-stream',
+            tenantId: context.tenantId,
+            projectId,
+            blockers: exfiltrationReport.blockers
+          });
+        } else {
+        // É53 LOT E2 — POINT DE CONTRÔLE n°4 : avant l'appel au Mutation
+        // Orchestrator et avant TOUTE persistance. L'écriture orchestrée et
+        // le repli direct sont dans le bloc ci-dessous SANS await entre eux :
+        // ce contrôle unique arme le CAS B au plus près de l'écriture.
+        if (cancelInterrupted()) {
+          logger.warn('Génération annulée avant la mutation — fichier intact', {
+            component: 'conversation-route-stream',
+            tenantId: context.tenantId,
+            projectId
+          });
+          return true;
+        }
         try {
-          const fileExists = Boolean(
-            fileStore.getFile(context.tenantId, projectId, STREAM_MUTATION_PATH)
-          );
+          const existingFile = fileStore.getFile(context.tenantId, projectId, STREAM_MUTATION_PATH);
+          const fileExists = Boolean(existingFile);
+          // É53 LOT B — source du contrat : le placeholder pristine d'un
+          // projet neuf n'est pas un contenu à préserver (voir
+          // DEFAULT_PROJECT_SEED_HTML) ; tout autre contenu reste la source
+          // de préservation intégrale.
+          const contractSourceHtml = !isModificationMode && existingFile?.content === DEFAULT_PROJECT_SEED_HTML
+            ? ''
+            : (existingFile?.content ?? '');
+          // É53 LOT B — CRÉATION EXPLICITE = REMPLACEMENT (comportement
+          // documenté E48 : « crée un site » alors qu'un fichier existe doit
+          // REMPLACER le fichier, pas fusionner dedans). Le client a demandé
+          // un site frais : le site précédent n'est PAS un contenu à
+          // préserver, sinon toute relance de création échouait au contrat
+          // (PROTECTED_CONTENT_LOST). Un contrat scope « creation » est
+          // construit ICI (contract.ts importé, Lot A gelé — aucune
+          // modification de ce fichier) et fourni au pont, qui le vérifie
+          // comme n'importe quel contrat. En modification, le contrat reste
+          // construit par le pont (préservation intégrale du site existant).
+          const replaceContract = !isModificationMode
+            ? buildMutationContract({
+                beforeHtml: contractSourceHtml,
+                userMessage: body.message || '',
+                intentCategory: 'CREATE',
+                targetFiles: [STREAM_MUTATION_PATH],
+                mode: 'create'
+              })
+            : undefined;
           const mutationOutcome = applyStreamFileMutationWithStreamEngine({
             tenantId: context.tenantId,
             projectId,
@@ -3259,10 +4137,29 @@ export async function handleConversationRoutes(
             role: context.role,
             content: assembledHtml,
             mode: fileExists ? 'update' : 'create',
-            riskLevel: impactSummary?.riskLevel
+            riskLevel: impactSummary?.riskLevel,
+            // LOT A (É53) — MUTATION CONTRACT : le HTML existant (source de
+            // préservation) + la demande réelle + l'intention calculée. Le
+            // pont construit le contrat, vérifie la préservation AVANT toute
+            // écriture, et refuse fail-closed toute perte non autorisée.
+            existingContent: contractSourceHtml,
+            userMessage: body.message || '',
+            intentCategory: realIntent?.category,
+            ...(replaceContract ? { contract: replaceContract } : {})
           });
 
           if (mutationOutcome.applied) {
+            // É53 LOT B — écriture orchestrée confirmée : le moteur a exécuté
+            // le plan ET les invariants post-écriture (CONTENT_PRESERVED).
+            mutationApplied = true;
+            // É53 LOT E1 — POINT DE LINÉARISATION DE LA PERSISTANCE : les
+            // octets sont sur disque (écriture synchrone, rollback du moteur
+            // déjà conclu à l'intérieur de l'appel). La claim est posée dans
+            // le MÊME tick que l'écriture (aucun await entre les deux) :
+            // toute annulation déjà demandée mais non encore consommée par la
+            // route est désormais refusée honnêtement (CAS B) — l'écriture ne
+            // peut plus être niée par un ⏹ tardif.
+            executionStore.claimPersistenceWin(executionId);
             emit({
               type: mutationOutcome.mode === 'create' ? 'file_created' : 'file_modified',
               path: STREAM_MUTATION_PATH,
@@ -3289,6 +4186,37 @@ export async function handleConversationRoutes(
                 warnings: mutationOutcome.warnings.length
               }
             });
+          } else if (mutationOutcome.stage === 'contract') {
+            // LOT A (É53) — REFUS DU CONTRAT DE PRÉSERVATION : la mutation
+            // proposée perdait du contenu protégé non autorisé (ou visait un
+            // fichier hors périmètre). AUCUNE écriture : le repli direct est
+            // INTERDIT ici — il persisterait le contenu rejeté (c'est le
+            // contournement que le Lot A ferme). Le fichier existant reste
+            // intact ; le flux s'arrête honnêtement (persistenceError).
+            emit({
+              type: 'mutation_contract_refused',
+              path: STREAM_MUTATION_PATH,
+              reason: mutationOutcome.reason
+            }, {
+              type: 'MUTATION_CONTRACT_REFUSED',
+              phase: 'IMPLEMENT',
+              status: 'FAILED',
+              title: 'Modification refusée — contenu existant protégé',
+              detail: {
+                path: STREAM_MUTATION_PATH,
+                engine: 'AINT-006',
+                reason: mutationOutcome.reason,
+                violations: mutationOutcome.contractViolations ?? []
+              }
+            });
+            logger.warn('Contrat de mutation : écriture refusée avant persistance (aucun repli)', {
+              component: 'conversation-route-stream',
+              tenantId: context.tenantId,
+              projectId,
+              reason: mutationOutcome.reason,
+              violations: mutationOutcome.contractViolations ?? []
+            });
+            persistenceError = `Modification refusée par le contrat de préservation : ${mutationOutcome.reason}`;
           } else if (mutationOutcome.stage === 'execution') {
             // L'écriture a été TENTÉE puis annulée par le rollback : interdiction
             // de rejouer un repli direct (on persisterait un contenu rejeté).
@@ -3308,9 +4236,21 @@ export async function handleConversationRoutes(
               }
             });
             persistenceError = `La mutation de ${STREAM_MUTATION_PATH} a été annulée : ${mutationOutcome.reason}`;
-          } else {
-            // Repli explicite : moteur absent ou plan refusé AVANT toute écriture.
+          } else if (mutationOutcome.fallbackAllowed) {
+            // É53 LOT B — INDISPONIBILITÉ TECHNIQUE du moteur (stage 'engine',
+            // service non configuré) : seul cas où le repli direct reste
+            // possible. Les validations obligatoires (preflight ingénierie +
+            // garde exfiltration) ont DÉJÀ couru sur CE contenu exact avant la
+            // mutation — le repli ne les contourne pas. Il est TRACÉ et sa
+            // persistance est ensuite VÉRIFIÉE par lecture à rebours :
+            // `viaFallback` n'est jamais une justification de succès à lui
+            // seul (la preuve est l'écriture relue, pas le drapeau).
             fileStore.saveFile(context.tenantId, projectId, STREAM_MUTATION_PATH, assembledHtml);
+            fallbackWritten = true;
+            // É53 LOT E1 — POINT DE LINÉARISATION DE LA PERSISTANCE (repli
+            // direct) : mêmes garanties que le chemin orchestré — la claim est
+            // synchrone et collée à l'écriture effective (CAS B armé).
+            executionStore.claimPersistenceWin(executionId);
             emit({
               type: 'mutation_fallback',
               path: STREAM_MUTATION_PATH,
@@ -3333,6 +4273,58 @@ export async function handleConversationRoutes(
               stage: mutationOutcome.stage,
               reason: mutationOutcome.reason
             });
+          } else {
+            // É53 LOT B — REFUS MÉTIER/SÉCURITÉ de l'orchestrateur (stages
+            // 'contract', 'plan', 'validation') : JAMAIS de contournement par
+            // fileStore.saveFile(). Le contenu rejeté ne persiste pas ; le
+            // flux s'arrête honnêtement (persistenceError → frame error).
+            emit({
+              type: 'mutation_refused',
+              path: STREAM_MUTATION_PATH,
+              stage: mutationOutcome.stage,
+              reason: mutationOutcome.reason
+            }, {
+              type: 'MUTATION_ORCHESTRATOR_REFUSED',
+              phase: 'IMPLEMENT',
+              status: 'FAILED',
+              title: `Mutation refusée par l'orchestrateur (${mutationOutcome.stage})`,
+              detail: {
+                path: STREAM_MUTATION_PATH,
+                stage: mutationOutcome.stage,
+                reason: mutationOutcome.reason
+              }
+            });
+            logger.warn('Orchestrateur : refus métier/sécurité — aucune écriture, repli interdit', {
+              component: 'conversation-route-stream',
+              tenantId: context.tenantId,
+              projectId,
+              stage: mutationOutcome.stage,
+              reason: mutationOutcome.reason
+            });
+            persistenceError = `Mutation refusée par l'orchestrateur (${mutationOutcome.stage}) : ${mutationOutcome.reason}`;
+          }
+          if (!persistenceError) {
+            // É53 LOT B — VÉRIFICATION POST-ÉCRITURE RÉELLE (les deux canaux) :
+            // le fichier est RELU et comparé au contenu généré. Pour le repli
+            // direct c'est la SEULE vérification (le moteur n'a rien contrôlé) ;
+            // pour le chemin orchestré, c'est la confirmation indépendante du
+            // moteur + invariants. Sans cette preuve : pas de succès déclaré.
+            const persistedReadBack = fileStore.getFile(context.tenantId, projectId, STREAM_MUTATION_PATH);
+            persistedVerified = Boolean(persistedReadBack && persistedReadBack.content === assembledHtml);
+            // É53 LOT E2 — la preuve du CAS B est publiée sur le drapeau :
+            // même en télémétrie OFF (aucun record, hasPersistenceWon inerte),
+            // la route POST cancel voit qu'une écriture validée existe déjà.
+            if (persistedVerified) {
+              cancelFlag.persistenceVerified = true;
+            }
+            if (!persistedVerified) {
+              persistenceError = 'vérification post-écriture en échec : le fichier relu ne correspond pas au contenu généré';
+              logger.warn('Persistance non confirmée par lecture à rebours', {
+                component: 'conversation-route-stream',
+                tenantId: context.tenantId,
+                projectId
+              });
+            }
           }
         } catch (saveErr) {
           persistenceError = saveErr instanceof Error ? saveErr.message : String(saveErr);
@@ -3342,7 +4334,19 @@ export async function handleConversationRoutes(
           });
         }
         }
+        }
 
+        // É53 LOT E2 — POINT DE CONTRÔLE n°5 : avant la création de la
+        // révision automatique (CAS B : le contrôle refuse — une mutation
+        // déjà validée n'est jamais interrompue artificiellement).
+        if (cancelInterrupted()) {
+          logger.warn('Génération annulée avant la révision automatique', {
+            component: 'conversation-route-stream',
+            tenantId: context.tenantId,
+            projectId
+          });
+          return true;
+        }
         if (!persistenceError) {
           // P3-fix — le dernier format généré pour ce projet est HTML :
           // la reprise du preview ne doit pas réafficher un bundle React obsolète.
@@ -3364,6 +4368,16 @@ export async function handleConversationRoutes(
               projectId,
               error: revErr instanceof Error ? revErr.message : String(revErr)
             });
+          }
+          // É53 LOT E2 — POINT DE CONTRÔLE n°6 : avant le rafraîchissement de
+          // l'Application Model.
+          if (cancelInterrupted()) {
+            logger.warn('Génération annulée avant le rafraîchissement de l\'Application Model', {
+              component: 'conversation-route-stream',
+              tenantId: context.tenantId,
+              projectId
+            });
+            return true;
           }
           // V7 — APPLICATION MODEL : après une mutation réellement persistée
           // (fichier + révision), la racine applicative est recalculée depuis
@@ -3464,6 +4478,18 @@ export async function handleConversationRoutes(
         throw new Error(`Persistance de ${STREAM_MUTATION_PATH} impossible : ${persistenceError}`);
       }
 
+      // É53 LOT E2 — POINT DE CONTRÔLE n°7 : avant le Quality Gate serveur
+      // (fenêtre await : une annulation arrivée ici et post-écriture est
+      // refusée par l'arbitrage CAS B — jamais d'interruption artificielle).
+      if (cancelInterrupted()) {
+        logger.warn('Génération annulée avant le Quality Gate', {
+          component: 'conversation-route-stream',
+          tenantId: context.tenantId,
+          projectId
+        });
+        return true;
+      }
+
       // T6 (CDC §24/§31) — QUALITY GATE SERVEUR : source de vérité unique.
       // Le gate tourne sur le HTML EXACTEMENT sauvegardé (fin de la bifurcation
       // client/serveur) et son résultat part dans la frame done + le store.
@@ -3543,6 +4569,17 @@ export async function handleConversationRoutes(
         readonly reportHash: string;
         readonly stages: ReadonlyArray<{ readonly id: string; readonly status: string; readonly durationMs: number }>;
       } | null = null;
+      // É53 LOT E2 — POINT DE CONTRÔLE n°8 : avant les validations
+      // complémentaires (chaîne structure → syntaxe → a11y → design → tests) ;
+      // il attrape aussi les annulations arrivées pendant l'await du gate.
+      if (cancelInterrupted()) {
+        logger.warn('Génération annulée avant la validation en chaîne', {
+          component: 'conversation-route-stream',
+          tenantId: context.tenantId,
+          projectId
+        });
+        return true;
+      }
       if (gateEligible) {
         recordOnly({
           type: 'VALIDATION_STARTED',
@@ -3629,27 +4666,81 @@ export async function handleConversationRoutes(
           detail: { section: diff.name, mode: diff.mode, applied: diff.applied, addedLines: diff.added, removedLines: diff.removed }
         });
       }
-      if (recorder) {
-        executionStore.completeExecution(executionId, {
-          sectionsCreated: serverSections.filter((s) => s.mode === 'create' || s.mode === 'add').length,
-          sectionsModified: serverSections.filter((s) => s.mode === 'modify').length,
-          sectionsDeleted: serverSections.filter((s) => s.mode === 'delete').length,
-          filesTouched: ['index.html'],
-          htmlChars: assembledHtml.length,
-          addedLines: totalAdded,
-          removedLines: totalRemoved,
-          ...(gateResult ? { score: gateResult.score } : {}),
-          ...(savedRevisionId ? { revisionId: savedRevisionId } : {})
+      // É53 LOT E1 — ARBITRAGE FINAL ANNULATION / PERSISTANCE (point de
+      // linéarisation explicite de la terminaison), consommé via le contrôle
+      // centralisé E2 (`cancelInterrupted`). CAS A (annulation gagnante,
+      // aucune écriture) : arrêt net — aucun verdict, aucune révision, aucune
+      // clôture COMPLETED/FAILED. CAS B (persistance gagnée) : le contrôle
+      // refuse l'interruption et le flux continue vers le `done` de vérité —
+      // le serveur ne prétendra jamais « rien n'a été enregistré ».
+      if (cancelInterrupted()) {
+        logger.warn('Génération annulée par l\'utilisateur avant clôture — aucune écriture validée', {
+          component: 'conversation-route-stream',
+          tenantId: context.tenantId,
+          projectId
         });
+        return true;
+      }
+
+      // É53 LOT B — AUTORITÉ DE VÉRITÉ : verdict déterministe fondé sur les
+      // faits réellement disponibles (écriture confirmée + lecture à rebours,
+      // révision créée, sections réellement appliquées, troncature, gate).
+      const streamTruth = computeStreamTruth({
+        isModificationMode,
+        attemptedPersistence,
+        mutationApplied,
+        fallbackWritten,
+        persistedVerified,
+        persistenceError,
+        revisionCreated: Boolean(savedRevisionId),
+        truncatedGeneration,
+        gateEligible,
+        gateResult: gateResult ? { score: gateResult.score, passed: gateResult.passed } : null,
+        sections: serverSections.map((s) => ({
+          name: s.name,
+          mode: s.mode,
+          changed: truthSectionFacts.get(s.name)?.applied === true,
+          delivered: truthSectionFacts.get(s.name)?.delivered === true
+        })),
+        hasExploitableChange
+      });
+      if (recorder) {
+        if (streamTruth.updated) {
+          // Bilan réel : seules les sections RÉELLEMENT changées comptent.
+          executionStore.completeExecution(executionId, {
+            sectionsCreated: serverSections.filter((s) => truthSectionFacts.get(s.name)?.applied === true && (s.mode === 'create' || s.mode === 'add')).length,
+            sectionsModified: serverSections.filter((s) => truthSectionFacts.get(s.name)?.applied === true && s.mode === 'modify').length,
+            sectionsDeleted: serverSections.filter((s) => truthSectionFacts.get(s.name)?.applied === true && s.mode === 'delete').length,
+            filesTouched: ['index.html'],
+            htmlChars: assembledHtml.length,
+            addedLines: totalAdded,
+            removedLines: totalRemoved,
+            ...(gateResult ? { score: gateResult.score } : {}),
+            ...(savedRevisionId ? { revisionId: savedRevisionId } : {})
+          });
+        } else {
+          // Aucune écriture persistée : l'exécution est marquée en échec honnête
+          // (pas de bilan de « fichiers touchés » fictif).
+          executionStore.failExecution(executionId, (`Aucune écriture persistée — ${streamTruth.reason ?? 'raison inconnue'}`).slice(0, 300));
+        }
       }
 
       // T7 — synthèse finale : une phrase honnête, des chiffres réels
-      const synthesisText = buildFinalSynthesis({
-        sections: serverSections.map((s) => ({ name: s.name, mode: s.mode })),
+      const synthesisResult = buildFinalSynthesis({
+        verdict: streamTruth.verdict,
+        partialReasons: streamTruth.partialReasons,
+        failureReason: streamTruth.reason,
+        sections: serverSections.map((s) => ({
+          name: s.name,
+          mode: s.mode,
+          changed: truthSectionFacts.get(s.name)?.applied === true
+        })),
         sectionDiffs,
         gateScore: gateResult ? gateResult.score : null,
+        gateAvailable: Boolean(gateResult),
         durationSec: Math.round((Date.now() - streamStartedAt) / 1000)
       });
+      const synthesisText = synthesisResult.text;
       recordOnly({
         type: 'SUMMARY_GENERATED',
         phase: 'COMPLETE',
@@ -3683,12 +4774,11 @@ export async function handleConversationRoutes(
 
       // P4-FINITION — prise de parole de clôture (déterministe : faits réels,
       // 1-2 phrases) + suggestions d'actions rapides (chips du Studio).
-      // Compteur = sections ANNONCÉES à l'UI (sectionIndex, incrémenté à
-      // chaque section_start), pas serverSections : en cas de chunk unique
-      // ouverture+fermeture, l'accumulateur de sauvegarde peut rester vide
-      // alors que l'utilisateur a vu la section se construire.
-      const closedCount = sectionIndex;
-      const closingMessage = `C'est en place : ${closedCount} section${closedCount > 1 ? 's' : ''} ${isModificationMode ? 'mise(s) à jour' : 'créée(s)'}${gateResult ? ` — qualité ${gateResult.score}/100` : ''}. Dis-moi ce que tu veux ajuster !`;
+      // É53 LOT B — le compteur est le nombre de sections RÉELLEMENT
+      // appliquées (bytes changés), plus l'annonce UI (sectionIndex) ; un
+      // résultat partiel est nommé tel quel dans la clôture.
+      const appliedSectionCount = sectionDiffs.filter((d) => d.applied).length;
+      const closingMessage = `C'est en place : ${appliedSectionCount} section${appliedSectionCount > 1 ? 's' : ''} ${isModificationMode ? 'mise(s) à jour' : 'créée(s)'}${streamTruth.partial ? ` — partiel : ${streamTruth.partialReasons.join(' ; ')}` : ''}${gateResult ? ` — qualité ${gateResult.score}/100` : ''}. Dis-moi ce que tu veux ajuster !`;
       const quickSuggestions = [
         'Changer la palette de couleurs',
         'Ajouter une section avis clients',
@@ -3751,12 +4841,48 @@ export async function handleConversationRoutes(
         });
       }
 
+      // É53 LOT B — LA FRAME DE VÉRITÉ. `updated` ne vaut true que si une
+      // écriture réellement persistée a été confirmée par la vérification
+      // post-écriture ; `partial` distingue l'incomplet (motifs exacts) ;
+      // `reason` explique tout échec ; `committedFiles`/`unmetFiles` sont
+      // établis depuis les faits réels du parcours (jamais le pipeline E47).
+      // Aucun succès fictif : un échec ne porte ni html ni clôture de succès.
+      // É53 LOT E2 — POINT DE CONTRÔLE n°9 : immédiatement avant l'émission
+      // de `done` — après une annulation gagnante, aucune frame de résultat
+      // normal n'est émise (le CAS B passe : la mutation validée est honorée).
+      if (cancelInterrupted()) {
+        logger.warn('Génération annulée avant l\'émission du done', {
+          component: 'conversation-route-stream',
+          tenantId: context.tenantId,
+          projectId
+        });
+        return true;
+      }
+      if (!streamTruth.updated) {
+        emit({
+          type: 'done',
+          updated: false,
+          reason: streamTruth.reason ?? 'aucune écriture persistée',
+          committedFiles: [],
+          unmetFiles: streamTruth.unmetFiles,
+          thinking: fullText.replace(/<SECTION[^>]*>[\s\S]*?<\/SECTION>/g, '').trim(),
+          synthesis: { text: synthesisText, verdict: synthesisResult.verdict }
+        });
+        // Pas de balayage de tests ni de clôture LLM : rien n'a été persisté.
+        return true;
+      }
       emit({
         type: 'done',
         updated: true,
+        ...(streamTruth.partial ? { partial: true, partialReasons: [...streamTruth.partialReasons] } : {}),
+        persistedVia: fallbackWritten ? 'fallback' : 'engine',
+        ...(savedRevisionId ? { revisionId: savedRevisionId } : {}),
+        committedFiles: streamTruth.committedFiles,
+        unmetFiles: streamTruth.unmetFiles,
+        ...(streamTruth.gateUnavailable ? { gateUnavailable: true } : {}),
         html: assembledHtml,
         thinking: fullText.replace(/<SECTION[^>]*>[\s\S]*?<\/SECTION>/g, '').trim(),
-        synthesis: { text: synthesisText },
+        synthesis: { text: synthesisText, verdict: synthesisResult.verdict },
         closingPending: true,
         closingMessage,
         suggestions: quickSuggestions,
@@ -3770,7 +4896,12 @@ export async function handleConversationRoutes(
 
       // CLOTURE-LLM — synthèse rédigée + suggestions contextuelles, en frame
       // séparée après « done » (repli : textes déterministes ci-dessus).
-      if (!clientGone && !cancelFlag.cancelled) {
+      // É53 LOT E1 — la garde lit l'ÉTAT ARBITRÉ (statut du store), pas le
+      // drapeau brut : si la persistance a gagné la course (CAS B) et que le
+      // tour s'est achevé honnêtement en COMPLETED, la clôture suit le done
+      // normalement — l'annulation tardive a été refusée, elle n'est pas un
+      // motif de clôture muette.
+      if (!clientGone && executionStore.getExecution(executionId)?.status !== 'CANCELLED') {
         let closingText = closingMessage;
         // LOT CONVERS-CHIPS — le repli reflète le VRAI site : les rubriques
         // h1-h3 réellement générées deviennent des actions concrètes. Le trio
@@ -3793,7 +4924,12 @@ export async function handleConversationRoutes(
               temperature: 0.4,
               maxTokens: 400,
               timeoutMs: 20000,
-              requestId
+              requestId,
+              // É53 LOT E4.1 — CORRECTION A : le signal du tour atteint
+              // l'appel non-streaming de clôture (annulation acceptée /
+              // déconnexion → transport coupé en plein appel ; CAS B refusé
+              // → signal jamais armé → clôture normale inchangée).
+              signal: turnAbortController.signal
             },
             resolveStreamCredentials(req, context.tenantId, adapter.descriptor.providerId)
           ).then((r) => r.text),
@@ -3811,6 +4947,12 @@ export async function handleConversationRoutes(
           closingText = llmClosing.summary;
           if (llmClosing.suggestions.length >= 2) closingChips = llmClosing.suggestions;
         }
+        // É53 LOT E4.1 — CORRECTION A : résultat TARDIF de la clôture. Si le
+        // client est parti (ou le tour abandonné) pendant l'appel de 20 s,
+        // AUCUNE frame n'est émise sur un socket mort / après un ⏹.
+        if (clientGone || turnAbortController.signal.aborted) {
+          return true;
+        }
         emit({
           type: 'closing',
           closingMessage: closingText,
@@ -3826,6 +4968,64 @@ export async function handleConversationRoutes(
       const friendly = /HTTP\s*40[13]/.test(message)
         ? "Ta clé Mistral est refusée par l'API (HTTP 401) — elle est invalide ou révoquée. Génère une nouvelle clé sur console.mistral.ai, place-la dans .env (MISTRAL_API_KEY=...) puis redémarre le serveur."
         : message;
+      // É53 LOT E3 — CORRECTION B : classification de l'abandon AVANT tout
+      // traitement générique. Une interruption du transport LLM causée par
+      // CE tour (annulation utilisateur acceptée / déconnexion client) n'est
+      // jamais une erreur LLM ordinaire ; l'issue reste l'arbitrage E1/E2
+      // (cancelInterrupted : claim atomique + frame ⏹ unique, points de
+      // contrôle E2 gelés).
+      if (turnAbortedAs('user_cancel')) {
+        if (cancelInterrupted()) {
+          logger.warn('Transport LLM interrompu par une annulation acceptée — terminal ⏹ posé par l\u2019arbitrage E1', {
+            component: 'conversation-route-stream',
+            tenantId: context.tenantId,
+            projectId,
+            error: message
+          });
+          return true;
+        }
+        // Refus du claim (CAS B : la persistance a gagné entre-temps) —
+        // l'issue honnête appartient à la persistance : aucune fausse erreur
+        // n'est émise, aucun statut alternatif fabriqué.
+        if (executionStore.hasPersistenceWon(executionId) || persistedVerified) {
+          logger.warn('Abandon d\u2019une annulation supplantée par la persistance (CAS B) — terminal de la persistance préservé', {
+            component: 'conversation-route-stream',
+            tenantId: context.tenantId,
+            projectId,
+            error: message
+          });
+          return true;
+        }
+      } else if (turnAbortedAs('client_disconnect')) {
+        // Miroir du cas post-boucle (client parti en cours de génération) :
+        // annulation honnête ⏹ (client_gone), jamais une erreur technique.
+        logger.warn('Transport LLM interrompu par une déconnexion client', {
+          component: 'conversation-route-stream',
+          tenantId: context.tenantId,
+          projectId,
+          charsReceived: fullText.length,
+          error: message
+        });
+        if (recorder) executionStore.cancelExecution(executionId, 'client_gone');
+        return true;
+      }
+      // É53 LOT E1 — ARBITRAGE : une annulation gagnante n'est jamais une
+      // erreur technique. Si le terminal ⏹ a déjà gagné la course, on ne
+      // failExécute pas (le guard du store le refuserait) et on n'émet pas de
+      // frame `error` — l'issue du tour reste CANCELLED, unique et cohérente.
+      if (executionStore.getExecution(executionId)?.status === 'CANCELLED') {
+        logger.warn('Erreur survenue après une annulation gagnante — terminal ⏹ préservé', {
+          component: 'conversation-route-stream',
+          tenantId: context.tenantId,
+          projectId,
+          error: message
+        });
+        if (!clientGone && !cancelFrameEmitted) {
+          cancelFrameEmitted = true;
+          sendSSE({ type: 'cancelled' });
+        }
+        return true;
+      }
       logger.warn("Erreur pendant le streaming conversationnel", {
         component: 'conversation-route-stream',
         tenantId: context.tenantId,

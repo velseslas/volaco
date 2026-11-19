@@ -122,6 +122,28 @@ export interface PlanStep {
   readonly targetFiles?: readonly string[] | undefined;
   readonly operation: 'ANALYZE' | 'CREATE' | 'MODIFY' | 'DELETE' | 'VERIFY';
   readonly requiresApproval: boolean;
+  /**
+   * É39 — dépendances EXPLICITES entre étapes : les stepIndex des étapes
+   * dont celle-ci dépend. Optionnel : les plans existants (rule-based et la
+   * majorité des plans LLM) n'en déclarent aucune, et la canonicalisation du
+   * hash de plan (JSON trié par clé) n'inclut que les clés présentes —
+   * planHash inchangé quand le champ est absent. Aucune dépendance implicite
+   * n'est jamais fabriquée : l'adaptateur multi-agents (É39) ne conserve QUE
+   * celles déclarées ici, et refuse explicitement une dépendance inconnue,
+   * auto-référencée ou visant une étape jamais exécutée par un agent.
+   */
+  readonly dependsOn?: readonly number[] | undefined;
+  /**
+   * É40 — capacités d'agent réellement nécessaires à l'étape, telles que
+   * déclarées par le générateur (ex. ['FILE_MUTATION'] pour une étape de
+   * mutation). REPRÉSENTATION uniquement : l'exécution reste gouvernée par
+   * le routage/registry (É34) et l'adaptateur multi-agents (É39), qui
+   * exigent eux-mêmes FILE_MUTATION pour toute mutation. Champ optionnel :
+   * la canonicalisation du planHash n'inclut que les clés présentes, et les
+   * étapes ANALYZE/VERIFY n'en déclarent pas (aucune capability d'analyse
+   * n'existe dans le contrat — ne rien inventer).
+   */
+  readonly requiredCapabilities?: readonly string[] | undefined;
 }
 
 export interface EngineeringPlan {

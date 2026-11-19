@@ -106,7 +106,11 @@ export type InvariantKind =
   | 'IMPORT_EXISTS'
   | 'NO_UNRELATED_FILE_MODIFIED'
   | 'NO_SECRET_TOUCHED'
-  | 'NO_SYNTAX_ERROR';
+  | 'NO_SYNTAX_ERROR'
+  // LOT A (É53) — les éléments protégés du document existant (contrat de
+  // mutation) restent présents après la mutation. Évalué réellement par
+  // engine/verification.ts (présence des empreintes dans le contenu persisté).
+  | 'CONTENT_PRESERVED';
 
 export interface PostMutationInvariant {
   readonly kind: InvariantKind;
@@ -121,6 +125,124 @@ export interface MutationExecutionOptions {
   readonly allowBreaking?: boolean | undefined;
   readonly skipImpactCheck?: boolean | undefined;
   readonly invariants?: readonly PostMutationInvariant[] | undefined;
+  /**
+   * LOT A (É53) — MUTATION CONTRACT : périmètre vérifiable de la mutation.
+   * Présent, il est appliqué AVANT toute écriture (refus fail-closed si une
+   * perte non autorisée est détectée) et ses `requiredInvariants` sont
+   * fusionnés dans la vérification post-mutation. Voir `contract.ts`.
+   */
+  readonly contract?: MutationContract | undefined;
+}
+
+// ============================================================================
+// 3.5 MUTATION CONTRACT (LOT A — É53)
+// ============================================================================
+
+/** Types d'éléments identifiables de façon déterministe dans un document. */
+export type ContractElementKind =
+  | 'section'
+  | 'form'
+  | 'image'
+  | 'title'
+  | 'heading'
+  | 'button'
+  | 'nav'
+  | 'font';
+
+/** Élément existant que la mutation doit préserver (présence + fidélité). */
+export interface ProtectedElement {
+  /** Identifiant stable : `section:<id>`, `image:<fingerprint>`, `font:<valeur>`… */
+  readonly elementId: string;
+  readonly kind: ContractElementKind;
+  /** Libellé humain pour les refus et la future autorité de vérité (Lot B). */
+  readonly label: string;
+  /** `data-section="id"` pour une section, texte brut pour un bouton… */
+  readonly presenceFingerprint: string;
+  /** Section porteuse de l'élément (bouton, image, titre interne…), sinon undefined. */
+  readonly ownerSectionId?: string | undefined;
+}
+
+/** Suppression explicitement demandée par l'utilisateur (élément identifié). */
+export interface DeletionAuthorization {
+  readonly elementId: string;
+  readonly kind: ContractElementKind;
+  readonly label: string;
+  /** Extrait de la demande utilisateur qui autorise la suppression. */
+  readonly evidence: string;
+}
+
+/** Nature et périmètre de l'opération demandée. */
+export interface OperationScope {
+  readonly kind: 'targeted-modification' | 'full-rebuild' | 'deletion' | 'creation';
+  /** Cibles détectées de façon déterministe (ids de sections, kinds d'éléments). */
+  readonly requestedTargets: readonly string[];
+  /** Demande utilisateur tronquée (preuve d'autorisation, traçabilité Lot B). */
+  readonly requestDigest: string;
+  /** true uniquement si une reconstruction complète explicitement demandée. */
+  readonly rebuildExplicitlyRequested: boolean;
+  /** true si le document existant n'a fourni AUCUN élément identifiable. */
+  readonly inventoryReliable: boolean;
+}
+
+/** Révision de référence : état initial au moment de la construction du contrat. */
+export interface SourceRevisionRef {
+  /** SHA-256 du contenu existant au moment de la construction du contrat. */
+  readonly contentHash?: string | undefined;
+  /** Identifiant de révision, quand l'appelant en dispose. */
+  readonly revisionId?: string | undefined;
+}
+
+/**
+ * LOT A — Contrat de mutation : ce que la mutation PEUT modifier, DOIT
+ * préserver et PEUT supprimer. Typé, validable, appliqué avant toute
+ * écriture par `contract.ts` (pont `/stream` + Mutation Orchestrator).
+ */
+export interface MutationContract {
+  readonly contractVersion: '1.0.0';
+  /** Fichiers autorisés à être modifiés. */
+  readonly targetFiles: readonly string[];
+  /** Éléments existants à préserver (non ciblés, non autorisés à la suppression). */
+  readonly protectedContent: readonly ProtectedElement[];
+  /** Suppressions explicitement autorisées (demande utilisateur appariée). */
+  readonly allowedDeletions: readonly DeletionAuthorization[];
+  /** Invariants obligatoires après mutation — uniquement des kinds réellement évalués. */
+  readonly requiredInvariants: readonly PostMutationInvariant[];
+  readonly sourceRevision: SourceRevisionRef;
+  readonly operationScope: OperationScope;
+  /**
+   * LOT A — par section : tokens des éléments ciblés ou autorisés à la
+   * suppression, exclus du contrôle de fidélité de cette section (l'utilisateur
+   * les a autorisés à changer). Absent = aucune exemption.
+   */
+  readonly coverageExemptions?: Readonly<Record<string, readonly string[]>> | undefined;
+}
+
+export type ContractViolationCode =
+  | 'PROTECTED_CONTENT_LOST'
+  | 'TARGET_OUT_OF_SCOPE'
+  | 'DELETION_NOT_AUTHORIZED'
+  | 'SOURCE_REVISION_MISMATCH'
+  | 'PRESERVATION_UNVERIFIABLE'
+  | 'MALFORMED_CONTRACT';
+
+/** Violation détectée : traçable et exploitable par l'autorité de vérité (Lot B). */
+export interface ContractViolation {
+  readonly code: ContractViolationCode;
+  readonly elementId?: string | undefined;
+  readonly message: string;
+}
+
+/** Verdict par élément protégé (preuve de préservation, traçabilité Lot B). */
+export interface ContractElementCheck {
+  readonly elementId: string;
+  readonly verdict: 'preserved' | 'targeted' | 'authorized-deletion' | 'lost';
+  readonly detail?: string | undefined;
+}
+
+export interface MutationContractCheck {
+  readonly allowed: boolean;
+  readonly violations: readonly ContractViolation[];
+  readonly checks: readonly ContractElementCheck[];
 }
 
 // ============================================================================
@@ -300,5 +422,21 @@ export class MutationInvariantError extends AppError {
   constructor(message: string, context?: Record<string, unknown>, requestId?: string) {
     super(message, 'INTERNAL_ERROR', 500, context, requestId);
     this.name = 'MutationInvariantError';
+  }
+}
+
+// ============================================================================
+// 7. LOT A (É53) — CONTRACT VIOLATION
+// ============================================================================
+
+/**
+ * LOT A — violation du contrat de mutation : le refus précède TOUTE écriture
+ * (aucun snapshot à annuler, aucun contenu rejeté persisté). Statut 422 :
+ * le contenu généré est syntactiquement recevable mais NON AUTORISÉ.
+ */
+export class MutationContractViolationError extends AppError {
+  constructor(message: string, context?: Record<string, unknown>, requestId?: string) {
+    super(message, 'CONTRACT_VIOLATION', 422, context, requestId);
+    this.name = 'MutationContractViolationError';
   }
 }

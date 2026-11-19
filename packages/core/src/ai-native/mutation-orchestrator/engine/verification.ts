@@ -148,7 +148,63 @@ function evaluatePostMutationInvariant(
       }
       break;
     }
+    case 'IMPORT_EXISTS': {
+      const file = fileSource.getFile(tenantId, projectId, inv.target);
+      if (!file || (inv.expectedValue !== undefined && !file.content.includes(inv.expectedValue))) {
+        throw new MutationInvariantError(
+          `Invariant post-mutation violé: l'import '${inv.expectedValue}' est introuvable dans '${inv.target}'`,
+          { invariant: inv },
+          requestId
+        );
+      }
+      break;
+    }
+    // LOT A (É53) — invariant du contrat de mutation : les empreintes de
+    // présence des éléments protégés (data-section, <form>, src d'image,
+    // texte de bouton…) doivent subsister dans le contenu PERSISTÉ.
+    // Évalué réellement (plus jamais déclaré sans vérification) : toute
+    // violation déclenche le rollback automatique de executePlan.
+    case 'CONTENT_PRESERVED': {
+      const file = fileSource.getFile(tenantId, projectId, inv.target);
+      if (!file) {
+        throw new MutationInvariantError(
+          `Invariant post-mutation violé (CONTENT_PRESERVED): le fichier '${inv.target}' est introuvable`,
+          { invariant: inv },
+          requestId
+        );
+      }
+      let fingerprints: ReadonlyArray<{ elementId?: string; fingerprint?: string }> = [];
+      try {
+        fingerprints = JSON.parse(inv.expectedValue ?? '[]') as ReadonlyArray<{ elementId?: string; fingerprint?: string }>;
+      } catch {
+        throw new MutationInvariantError(
+          "Invariant post-mutation violé (CONTENT_PRESERVED): empreintes illisibles",
+          { invariant: inv },
+          requestId
+        );
+      }
+      for (const fp of fingerprints) {
+        // Inclusion insensible à la casse : alignée sur l'étage de vérification
+        // du contrat (fold). Ex. police « Inter » — empreinte pliée 'inter',
+        // contenu réel "font-family: 'Inter'".
+        if (
+          fp.fingerprint &&
+          !file.content.toLowerCase().includes(fp.fingerprint.toLowerCase())
+        ) {
+          throw new MutationInvariantError(
+            `Invariant post-mutation violé (CONTENT_PRESERVED): l'élément protégé '${fp.elementId ?? fp.fingerprint}' a disparu de '${inv.target}'`,
+            { invariant: inv, lostElement: fp.elementId ?? fp.fingerprint },
+            requestId
+          );
+        }
+      }
+      break;
+    }
     default:
+      // NO_UNRELATED_FILE_MODIFIED / NO_SECRET_TOUCHED : non évalués ici —
+      // la protection équivalente est appliquée EN AMONT par le contrat de
+      // mutation (targetFiles : toute mutation hors périmètre est refusée
+      // avant écriture) et par la liste noire de chemins (security.ts).
       break;
   }
 }

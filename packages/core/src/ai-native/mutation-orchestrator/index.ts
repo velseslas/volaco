@@ -21,3 +21,4 @@ export * from './engine/diff.js';
 export * from './engine/mutation-engine.js';
 export * from './engine/rollback.js';
 export * from './engine/verification.js';
+export * from './contract.js';

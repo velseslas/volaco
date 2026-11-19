@@ -73,7 +73,13 @@ describe('CLOTURE-LLM — flux /stream de bout en bout', () => {
   let closingJson = '';
   const realFetch = globalThis.fetch;
   const H = { 'Content-Type': 'application/json', 'x-tenant-id': 'closing-t1', 'x-user-role': 'OWNER' };
-  const SSE = 'data: {"choices":[{"delta":{"content":"<SECTION name=\\"hero\\" mode=\\"create\\"><h1>Salut</h1></SECTION>"}}]}\n\n' + 'data: [DONE]\n\n';
+  // É53 LOT B — le fragment dégénéré d'origine (« <h1>Salut</h1> », ~60
+  // caractères) est sous le seuil de document viable (>100) : avec l'autorité
+  // de vérité, ce flux n'écrit RIEN (done updated:false, sans closing). Pour
+  // tester l'objet réel de cette suite (closing « llm » vs « fallback » APRÈS
+  // done), le mock produit une création viable qui passe le seuil, se
+  // persiste, et déclenche la clôture.
+  const SSE = 'data: {"choices":[{"delta":{"content":"<SECTION name=\\"hero\\" mode=\\"create\\"><h1>Bienvenue</h1><p>Une page d\'accueil claire et chaleureuse pour vos visiteurs, avec un message direct dès l\'arrivée.</p>"}}]}\n\n' + 'data: {"choices":[{"delta":{"content":"</SECTION>"}}]}\n\n' + 'data: [DONE]\n\n';
 
   before(async () => {
     globalThis.fetch = (async (_url: unknown, init?: { body?: unknown }) => {
